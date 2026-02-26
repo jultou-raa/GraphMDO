@@ -64,7 +64,7 @@ def main():
 
     evaluator = LocalEvaluator(prob)
     bounds = torch.tensor([[-10.0, -10.0], [10.0, 10.0]], dtype=torch.double)
-    
+
     # We want to minimize f_xy with respect to x, y
     optimizer = BayesianOptimizer(
         evaluator=evaluator, design_vars=["x", "y"], objective="f_xy", bounds=bounds
