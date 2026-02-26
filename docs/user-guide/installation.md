@@ -14,7 +14,7 @@ We recommend using `uv` for dependency management. See [astral.sh/uv](https://as
 1.  **Clone the Repository**
 
     ```bash
-    git clone https://github.com/your-repo/graph-mdo.git
+    git clone https://github.com/jultou-raa/GraphMDO.git
     cd graph-mdo
     ```
 

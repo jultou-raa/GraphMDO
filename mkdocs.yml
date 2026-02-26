@@ -1,6 +1,6 @@
 site_name: GraphMDO
-site_url: https://github.com/your-repo/graph-mdo
-repo_url: https://github.com/your-repo/graph-mdo
+site_url: https://github.com/jultou-raa/GraphMDO
+repo_url: https://github.com/jultou-raa/GraphMDO
 theme:
   name: material
   features:

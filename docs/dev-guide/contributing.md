@@ -9,7 +9,7 @@ We welcome contributions!
 
 2.  **Clone the Repository**:
     ```bash
-    git clone https://github.com/your-repo/graph-mdo.git
+    git clone https://github.com/jultou-raa/GraphMDO.git
     cd graph-mdo
     ```
 

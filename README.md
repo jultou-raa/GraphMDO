@@ -1,9 +1,9 @@
 # GraphMDO: Dynamic Multi-Fidelity MDO Framework
 
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
-[![Quality Checks](https://github.com/your-repo/graph-mdo/actions/workflows/quality.yml/badge.svg)](https://github.com/your-repo/graph-mdo/actions/workflows/quality.yml)
-[![Security Scan](https://github.com/your-repo/graph-mdo/actions/workflows/security.yml/badge.svg)](https://github.com/your-repo/graph-mdo/actions/workflows/security.yml)
-[![Deploy Documentation](https://github.com/your-repo/graph-mdo/actions/workflows/docs.yml/badge.svg)](https://github.com/your-repo/graph-mdo/actions/workflows/docs.yml)
+[![Quality Checks](https://github.com/jultou-raa/GraphMDO/actions/workflows/quality.yml/badge.svg)](https://github.com/jultou-raa/GraphMDO/actions/workflows/quality.yml)
+[![Security Scan](https://github.com/jultou-raa/GraphMDO/actions/workflows/security.yml/badge.svg)](https://github.com/jultou-raa/GraphMDO/actions/workflows/security.yml)
+[![Deploy Documentation](https://github.com/jultou-raa/GraphMDO/actions/workflows/docs.yml/badge.svg)](https://github.com/jultou-raa/GraphMDO/actions/workflows/docs.yml)
 
 GraphMDO is an advanced Multidisciplinary Design Optimization (MDO) framework that integrates graph databases with state-of-the-art optimization and surrogate modeling tools.
 
@@ -30,7 +30,7 @@ This project uses `uv` for dependency management.
 
 2.  **Clone and Install**:
     ```bash
-    git clone https://github.com/your-repo/graph-mdo.git
+    git clone https://github.com/jultou-raa/GraphMDO.git
     cd graph-mdo
     uv sync
     ```
