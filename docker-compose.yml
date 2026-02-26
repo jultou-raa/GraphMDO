@@ -1,0 +1,41 @@
+services:
+  falkordb:
+    image: falkordb/falkordb
+    ports:
+      - "6379:6379"
+    volumes:
+      - falkordb_data:/data
+
+  graph-service:
+    build: .
+    command: uv run uvicorn services.graph.main:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    environment:
+      - FALKORDB_HOST=falkordb
+      - FALKORDB_PORT=6379
+    depends_on:
+      - falkordb
+
+  execution-service:
+    build: .
+    command: uv run uvicorn services.execution.main:app --host 0.0.0.0 --port 8002
+    ports:
+      - "8002:8002"
+    environment:
+      - GRAPH_SERVICE_URL=http://graph-service:8001
+    depends_on:
+      - graph-service
+
+  optimization-service:
+    build: .
+    command: uv run uvicorn services.optimization.main:app --host 0.0.0.0 --port 8003
+    ports:
+      - "8003:8003"
+    environment:
+      - EXECUTION_SERVICE_URL=http://execution-service:8002
+    depends_on:
+      - execution-service
+
+volumes:
+  falkordb_data:

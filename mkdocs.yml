@@ -1,0 +1,46 @@
+site_name: GraphMDO
+site_url: https://github.com/jultou-raa/GraphMDO
+repo_url: https://github.com/jultou-raa/GraphMDO
+theme:
+  name: material
+  features:
+    - content.code.copy
+    - content.tabs.link
+    - navigation.expand
+    - navigation.sections
+    - navigation.top
+    - toc.follow
+    - search.suggest
+    - search.highlight
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+
+nav:
+  - Home: index.md
+  - User Guide:
+    - Quick Start: user-guide/quick-start.md
+    - Installation: user-guide/installation.md
+    - Running Optimization: user-guide/running-optimization.md
+  - Technical Reference:
+    - Architecture: technical-reference/architecture.md
+    - Microservices: technical-reference/microservices.md
+  - API Reference:
+    - Core:
+      - Translator: api/core/translator.md
+      - Components: api/core/components.md
+      - Surrogates: api/core/surrogates.md
+    - Database:
+      - Graph Manager: api/db/graph_manager.md
+      - Client: api/db/client.md
+    - Optimization:
+      - Optimizer: api/optimization/optimizer.md
+  - Developer Guide: dev-guide/contributing.md

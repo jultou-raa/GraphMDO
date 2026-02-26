@@ -1,0 +1,38 @@
+[project]
+name = "mdo-framework"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "jultou-raa", email = "64092886+jultou-raa@users.noreply.github.com" },
+    { name = "google-labs-jules[bot]", email = "161369871+google-labs-jules[bot]@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "botorch>=0.17.0",
+    "falkordb>=1.6.0",
+    "fastapi>=0.133.1",
+    "httpx>=0.28.1",
+    "networkx>=3.6.1",
+    "numpy>=2.4.2",
+    "openmdao>=3.42.0",
+    "pymoo>=0.6.1.6",
+    "scipy>=1.17.1",
+    "smt>=2.11.1",
+    "uvicorn>=0.41.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.26,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.7.3",
+    "mkdocstrings[python]>=1.0.3",
+    "pre-commit>=4.5.1",
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.15.2",
+]
