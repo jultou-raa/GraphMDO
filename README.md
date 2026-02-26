@@ -4,6 +4,7 @@
 [![Quality Checks](https://github.com/jultou-raa/GraphMDO/actions/workflows/quality.yml/badge.svg)](https://github.com/jultou-raa/GraphMDO/actions/workflows/quality.yml)
 [![Security Scan](https://github.com/jultou-raa/GraphMDO/actions/workflows/security.yml/badge.svg)](https://github.com/jultou-raa/GraphMDO/actions/workflows/security.yml)
 [![Deploy Documentation](https://github.com/jultou-raa/GraphMDO/actions/workflows/docs.yml/badge.svg)](https://github.com/jultou-raa/GraphMDO/actions/workflows/docs.yml)
+[![codecov](https://codecov.io/gh/jultou-raa/GraphMDO/graph/badge.svg?token=YOUR_CODECOV_TOKEN)](https://codecov.io/gh/jultou-raa/GraphMDO)
 
 GraphMDO is an advanced Multidisciplinary Design Optimization (MDO) framework that integrates graph databases with state-of-the-art optimization and surrogate modeling tools.
 
@@ -31,7 +32,7 @@ This project uses `uv` for dependency management.
 2.  **Clone and Install**:
     ```bash
     git clone https://github.com/jultou-raa/GraphMDO.git
-    cd graph-mdo
+    cd GraphMDO
     uv sync
     ```
 

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
+    { name = "jultou-raa", email = "64092886+jultou-raa@users.noreply.github.com" },
     { name = "google-labs-jules[bot]", email = "161369871+google-labs-jules[bot]@users.noreply.github.com" }
 ]
 requires-python = ">=3.12"

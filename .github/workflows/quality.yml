@@ -20,4 +20,10 @@ jobs:
       - name: Run Tests
         env:
           PYTHONPATH: .
-        run: uv run pytest tests/
+        run: uv run pytest --cov=src/mdo_framework --cov=src/services --cov-report=xml tests/
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.xml
+          fail_ci_if_error: true
