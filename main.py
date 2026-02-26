@@ -1,6 +1,6 @@
 from mdo_framework.db.graph_manager import GraphManager
 from mdo_framework.core.translator import GraphProblemBuilder
-from mdo_framework.optimization.optimizer import BayesianOptimizer
+from mdo_framework.optimization.optimizer import BayesianOptimizer, LocalEvaluator
 
 
 # --- Sellar Problem Functions ---
@@ -50,7 +50,7 @@ def main():
 
     # 3. Translate to OpenMDAO
     print("Translating Graph to OpenMDAO Problem...")
-    builder = GraphProblemBuilder(gm)
+    builder = GraphProblemBuilder(gm.get_graph_schema())
 
     try:
         prob = builder.build_problem(TOOL_REGISTRY)
@@ -62,13 +62,13 @@ def main():
     print("Starting Optimization...")
     import torch
 
+    evaluator = LocalEvaluator(prob)
+    bounds = torch.tensor([[-10.0, -10.0], [10.0, 10.0]], dtype=torch.double)
+    
     # We want to minimize f_xy with respect to x, y
     optimizer = BayesianOptimizer(
-        problem=prob, design_vars=["x", "y"], objective="f_xy"
+        evaluator=evaluator, design_vars=["x", "y"], objective="f_xy", bounds=bounds
     )
-
-    # Override bounds
-    optimizer.bounds = torch.tensor([[-10.0, -10.0], [10.0, 10.0]], dtype=torch.double)
 
     try:
         result = optimizer.optimize(n_steps=10, n_init=5)
