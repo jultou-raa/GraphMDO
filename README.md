@@ -1,5 +1,10 @@
 # GraphMDO: Dynamic Multi-Fidelity MDO Framework
 
+[![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
+[![Quality Checks](https://github.com/your-repo/graph-mdo/actions/workflows/quality.yml/badge.svg)](https://github.com/your-repo/graph-mdo/actions/workflows/quality.yml)
+[![Security Scan](https://github.com/your-repo/graph-mdo/actions/workflows/security.yml/badge.svg)](https://github.com/your-repo/graph-mdo/actions/workflows/security.yml)
+[![Deploy Documentation](https://github.com/your-repo/graph-mdo/actions/workflows/docs.yml/badge.svg)](https://github.com/your-repo/graph-mdo/actions/workflows/docs.yml)
+
 GraphMDO is an advanced Multidisciplinary Design Optimization (MDO) framework that integrates graph databases with state-of-the-art optimization and surrogate modeling tools.
 
 ## Key Features
@@ -21,7 +26,7 @@ GraphMDO is an advanced Multidisciplinary Design Optimization (MDO) framework th
 This project uses `uv` for dependency management.
 
 1.  **Install uv** (if not installed):
-    See https://docs.astral.sh/uv/getting-started/installation/
+    See [astral.sh/uv](https://astral.sh/uv).
 
 2.  **Clone and Install**:
     ```bash
@@ -68,7 +73,8 @@ Once the graph is populated, you can run the optimization workflow. You need to 
 
 ```python
 from mdo_framework.core.translator import GraphProblemBuilder
-from mdo_framework.optimization.optimizer import BayesianOptimizer
+from mdo_framework.optimization.optimizer import BayesianOptimizer, LocalEvaluator
+import torch
 
 # Define tool implementation
 def my_tool_func(x, y):
@@ -80,14 +86,17 @@ tool_registry = {
 }
 
 # Build OpenMDAO Problem from Graph
-builder = GraphProblemBuilder(gm)
+schema = gm.get_graph_schema()
+builder = GraphProblemBuilder(schema)
 prob = builder.build_problem(tool_registry)
 
 # Run Optimization
+evaluator = LocalEvaluator(prob)
 optimizer = BayesianOptimizer(
-    problem=prob,
+    evaluator=evaluator,
     design_vars=["x", "y"],
-    objective="z"
+    objective="z",
+    bounds=torch.tensor([[0.0, 0.0], [10.0, 10.0]], dtype=torch.double)
 )
 
 result = optimizer.optimize(n_steps=10)
