@@ -2,54 +2,50 @@ import unittest
 import openmdao.api as om
 from mdo_framework.core.components import ToolComponent
 
+
 def simple_func(x, y):
     return x + y
+
 
 class TestToolComponent(unittest.TestCase):
     def test_simple_execution(self):
         prob = om.Problem()
 
         comp = ToolComponent(
-            name='add',
-            func=simple_func,
-            inputs=['x', 'y'],
-            outputs=['z']
+            name="add", func=simple_func, inputs=["x", "y"], outputs=["z"]
         )
 
-        prob.model.add_subsystem('comp', comp, promotes=['*'])
+        prob.model.add_subsystem("comp", comp, promotes=["*"])
 
         prob.setup()
 
-        prob.set_val('x', 2.0)
-        prob.set_val('y', 3.0)
+        prob.set_val("x", 2.0)
+        prob.set_val("y", 3.0)
 
         prob.run_model()
 
-        self.assertAlmostEqual(prob.get_val('z')[0], 5.0)
+        self.assertAlmostEqual(prob.get_val("z")[0], 5.0)
 
     def test_dict_output(self):
         def dict_func(a):
-            return {'b': a * 2, 'c': a + 1}
+            return {"b": a * 2, "c": a + 1}
 
         prob = om.Problem()
 
         comp = ToolComponent(
-            name='dict_comp',
-            func=dict_func,
-            inputs=['a'],
-            outputs=['b', 'c']
+            name="dict_comp", func=dict_func, inputs=["a"], outputs=["b", "c"]
         )
 
-        prob.model.add_subsystem('comp', comp, promotes=['*'])
+        prob.model.add_subsystem("comp", comp, promotes=["*"])
 
         prob.setup()
 
-        prob.set_val('a', 10.0)
+        prob.set_val("a", 10.0)
 
         prob.run_model()
 
-        self.assertAlmostEqual(prob.get_val('b')[0], 20.0)
-        self.assertAlmostEqual(prob.get_val('c')[0], 11.0)
+        self.assertAlmostEqual(prob.get_val("b")[0], 20.0)
+        self.assertAlmostEqual(prob.get_val("c")[0], 11.0)
 
     def test_tuple_output(self):
         def tuple_func(a):
@@ -58,36 +54,33 @@ class TestToolComponent(unittest.TestCase):
         prob = om.Problem()
 
         comp = ToolComponent(
-            name='tuple_comp',
-            func=tuple_func,
-            inputs=['a'],
-            outputs=['b', 'c']
+            name="tuple_comp", func=tuple_func, inputs=["a"], outputs=["b", "c"]
         )
 
-        prob.model.add_subsystem('comp', comp, promotes=['*'])
+        prob.model.add_subsystem("comp", comp, promotes=["*"])
 
         prob.setup()
 
-        prob.set_val('a', 10.0)
+        prob.set_val("a", 10.0)
 
         prob.run_model()
 
-        self.assertAlmostEqual(prob.get_val('b')[0], 20.0)
-        self.assertAlmostEqual(prob.get_val('c')[0], 11.0)
+        self.assertAlmostEqual(prob.get_val("b")[0], 20.0)
+        self.assertAlmostEqual(prob.get_val("c")[0], 11.0)
 
     def test_derivatives_setup(self):
         # Just verifying that declare_partials is called with exact method
         prob = om.Problem()
 
         comp = ToolComponent(
-            name='deriv_comp',
+            name="deriv_comp",
             func=simple_func,
-            inputs=['x', 'y'],
-            outputs=['z'],
-            derivatives=True
+            inputs=["x", "y"],
+            outputs=["z"],
+            derivatives=True,
         )
 
-        prob.model.add_subsystem('comp', comp, promotes=['*'])
+        prob.model.add_subsystem("comp", comp, promotes=["*"])
         prob.setup()
         # No easy way to check internal state without mocking openmdao internals,
         # but execution should pass.
@@ -96,22 +89,22 @@ class TestToolComponent(unittest.TestCase):
     def test_compute_partials(self):
         # Call compute_partials manually to cover the lines
         comp = ToolComponent(
-            name='deriv_comp',
+            name="deriv_comp",
             func=simple_func,
-            inputs=['x', 'y'],
-            outputs=['z'],
-            derivatives=True
+            inputs=["x", "y"],
+            outputs=["z"],
+            derivatives=True,
         )
 
         # We need to initialize options manually if not running via setup
         # But easier to let setup handle it.
         prob = om.Problem()
-        prob.model.add_subsystem('comp', comp, promotes=['*'])
+        prob.model.add_subsystem("comp", comp, promotes=["*"])
         prob.setup()
 
         # Manually call compute_partials
-        inputs = {'x': 1.0, 'y': 2.0}
-        partials = {} # Dummy
+        inputs = {"x": 1.0, "y": 2.0}
+        partials = {}  # Dummy
         comp.compute_partials(inputs, partials)
         # Should just pass (pass statement in code)
 
@@ -143,24 +136,25 @@ class TestToolComponent(unittest.TestCase):
         prob = om.Problem()
 
         comp = ToolComponent(
-            name='mismatch',
+            name="mismatch",
             func=mismatch_args,
-            inputs=['x', 'y'], # Mismatch 'a', 'b'
-            outputs=['z']
+            inputs=["x", "y"],  # Mismatch 'a', 'b'
+            outputs=["z"],
         )
 
-        prob.model.add_subsystem('comp', comp, promotes=['*'])
+        prob.model.add_subsystem("comp", comp, promotes=["*"])
         prob.setup()
 
-        prob.set_val('x', 1.0)
-        prob.set_val('y', 2.0)
+        prob.set_val("x", 1.0)
+        prob.set_val("y", 2.0)
 
         # This should trigger the fallback to positional args
         # Because mismatch_args(x=1, y=2) raises TypeError.
         # Then mismatch_args(1, 2) succeeds.
         prob.run_model()
 
-        self.assertAlmostEqual(prob.get_val('z')[0], 3.0)
+        self.assertAlmostEqual(prob.get_val("z")[0], 3.0)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()

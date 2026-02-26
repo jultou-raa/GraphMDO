@@ -2,14 +2,15 @@ import unittest
 import numpy as np
 from mdo_framework.core.surrogates import SMTSurrogate
 
+
 class TestSMTSurrogate(unittest.TestCase):
     def test_krg_training_and_prediction(self):
         # 1. Generate dummy data (y = x^2)
         xt = np.array([[0.0], [1.0], [2.0], [3.0], [4.0]])
-        yt = xt ** 2
+        yt = xt**2
 
         # 2. Train Surrogate
-        surrogate = SMTSurrogate(model_type='KRG', multi_fidelity=False)
+        surrogate = SMTSurrogate(model_type="KRG", multi_fidelity=False)
         surrogate.train(xt, yt)
 
         # 3. Predict
@@ -29,7 +30,7 @@ class TestSMTSurrogate(unittest.TestCase):
 
         # KPLS needs more points/dims ratio usually, and default n_comp might be 1.
         # Ensure dimensions match.
-        surrogate = SMTSurrogate(model_type='KPLS', multi_fidelity=False)
+        surrogate = SMTSurrogate(model_type="KPLS", multi_fidelity=False)
 
         # NOTE: SMT KPLS default n_comp is 1.
         # My implementation initializes theta0 based on xt.shape[1].
@@ -44,7 +45,7 @@ class TestSMTSurrogate(unittest.TestCase):
 
     def test_invalid_model_type(self):
         with self.assertRaises(ValueError):
-            surrogate = SMTSurrogate(model_type='INVALID')
+            surrogate = SMTSurrogate(model_type="INVALID")
             surrogate.train(np.array([[0]]), np.array([[0]]))
 
     def test_multi_fidelity_mock(self):
@@ -64,5 +65,6 @@ class TestSMTSurrogate(unittest.TestCase):
             # If SMT complains about data size/singular matrix, that's fine for unit test coverage of OUR code
             pass
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()

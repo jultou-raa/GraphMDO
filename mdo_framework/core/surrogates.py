@@ -2,16 +2,24 @@ import numpy as np
 from smt.surrogate_models import KRG, KPLS
 from smt.applications import MFK
 
+
 class SMTSurrogate:
     """
     Wrapper for SMT surrogate models, supporting single and multi-fidelity.
     """
-    def __init__(self, model_type='KRG', multi_fidelity=False):
+
+    def __init__(self, model_type="KRG", multi_fidelity=False):
         self.model_type = model_type
         self.multi_fidelity = multi_fidelity
         self.model = None
 
-    def train(self, xt: np.ndarray, yt: np.ndarray, x_lf: np.ndarray = None, y_lf: np.ndarray = None):
+    def train(
+        self,
+        xt: np.ndarray,
+        yt: np.ndarray,
+        x_lf: np.ndarray = None,
+        y_lf: np.ndarray = None,
+    ):
         """
         Trains the surrogate model.
 
@@ -32,14 +40,16 @@ class SMTSurrogate:
             self.model.set_training_values(xt, yt)
 
         else:
-            if self.model_type == 'KRG':
+            if self.model_type == "KRG":
                 self.model = KRG(theta0=[1e-2] * n_dims, print_global=False)
-            elif self.model_type == 'KPLS':
+            elif self.model_type == "KPLS":
                 # KPLS reduces dimensions. n_comp defaults to 1.
                 # theta0 must match n_comp, NOT n_dims.
                 # Default n_comp=1 in SMT KPLS.
                 n_comp = 1
-                self.model = KPLS(theta0=[1e-2] * n_comp, n_comp=n_comp, print_global=False)
+                self.model = KPLS(
+                    theta0=[1e-2] * n_comp, n_comp=n_comp, print_global=False
+                )
             else:
                 raise ValueError(f"Unknown model type: {self.model_type}")
 

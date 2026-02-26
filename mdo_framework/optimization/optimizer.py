@@ -5,61 +5,69 @@ from botorch.utils import standardize
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from botorch.optim import optimize_acqf
 from botorch.acquisition import ExpectedImprovement
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Protocol
 import openmdao.api as om
+import httpx
+
+
+class Evaluator(Protocol):
+    def evaluate(
+        self, x: torch.Tensor, design_vars: List[str], objective: str
+    ) -> torch.Tensor:
+        ...
+
+
+class LocalEvaluator:
+    def __init__(self, problem: om.Problem):
+        self.problem = problem
+
+    def evaluate(
+        self, x: torch.Tensor, design_vars: List[str], objective: str
+    ) -> torch.Tensor:
+        x_np = x.detach().numpy().flatten()
+        for i, name in enumerate(design_vars):
+            self.problem.set_val(name, x_np[i])
+        self.problem.run_model()
+        obj_val = self.problem.get_val(objective)
+        return torch.tensor([obj_val], dtype=torch.double).reshape(1, 1)
+
+
+class RemoteEvaluator:
+    def __init__(self, service_url: str):
+        self.service_url = service_url
+
+    def evaluate(
+        self, x: torch.Tensor, design_vars: List[str], objective: str
+    ) -> torch.Tensor:
+        payload = {
+            "inputs": {
+                name: float(val)
+                for name, val in zip(design_vars, x.detach().numpy().flatten())
+            },
+            "objective": objective,
+        }
+        response = httpx.post(f"{self.service_url}/evaluate", json=payload)
+        response.raise_for_status()
+        data = response.json()
+        return torch.tensor([data["result"]], dtype=torch.double).reshape(1, 1)
 
 
 class BayesianOptimizer:
     """
-    Bayesian Optimizer using BoTorch to drive OpenMDAO execution.
+    Bayesian Optimizer using BoTorch to drive execution via an Evaluator.
     """
 
     def __init__(
         self,
-        problem: om.Problem,
+        evaluator: Evaluator,
         design_vars: List[str],
         objective: str,
-        constraints: List[str] = None,
+        bounds: torch.Tensor,
     ):
-        self.problem = problem
+        self.evaluator = evaluator
         self.design_vars = design_vars
         self.objective = objective
-        self.constraints = constraints or []
-        self.bounds = self._get_bounds()
-
-    def _get_bounds(self) -> torch.Tensor:
-        """Extracts bounds from OpenMDAO problem."""
-        # This assumes design variables are scalar and have bounds set in the problem
-        # or we need to query the metadata.
-        # For simplicity, we assume generic [0, 1] bounds if not specified,
-        # but robust implementation should read from self.problem.model.get_io_metadata()
-
-        # Placeholder: assume 1D design variables for now, or get from problem
-        # We need to introspect the problem.
-        # For this skeleton, we'll assume bounds are passed or defaulted.
-        # Let's assume user sets them in OpenMDAO and we retrieve them.
-
-        # We'll use a fixed range [0, 10] for demo purposes if not found.
-        n_vars = len(self.design_vars)
-        return torch.tensor([[0.0] * n_vars, [10.0] * n_vars], dtype=torch.double)
-
-    def _evaluate(self, x: torch.Tensor) -> torch.Tensor:
-        """Evaluates the objective function using OpenMDAO."""
-        # x is (q, d) tensor. We handle q=1 for now.
-        x_np = x.detach().numpy().flatten()
-
-        # Set design variables
-        for i, name in enumerate(self.design_vars):
-            self.problem.set_val(name, x_np[i])
-
-        # Run model
-        self.problem.run_model()
-
-        # Get objective
-        obj_val = self.problem.get_val(self.objective)
-
-        # Return as tensor
-        return torch.tensor([obj_val], dtype=torch.double).reshape(1, 1)
+        self.bounds = bounds
 
     def optimize(self, n_steps: int = 5, n_init: int = 5) -> Dict[str, Any]:
         """Runs the optimization loop."""
@@ -71,7 +79,14 @@ class BayesianOptimizer:
             * (self.bounds[1] - self.bounds[0])
             + self.bounds[0]
         )
-        train_y = torch.cat([self._evaluate(x.unsqueeze(0)) for x in train_x])
+        train_y = torch.cat(
+            [
+                self.evaluator.evaluate(
+                    x.unsqueeze(0), self.design_vars, self.objective
+                )
+                for x in train_x
+            ]
+        )
 
         for i in range(n_steps):
             # Normalize data
@@ -95,7 +110,7 @@ class BayesianOptimizer:
             )
 
             # Evaluate new candidate
-            new_y = self._evaluate(candidate)
+            new_y = self.evaluator.evaluate(candidate, self.design_vars, self.objective)
 
             # Update training data
             train_x = torch.cat([train_x, candidate])

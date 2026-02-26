@@ -77,3 +77,26 @@ class GraphManager:
         """
         result = self.graph.query(query)
         return [r[0] for r in result.result_set]
+
+    def get_graph_schema(self) -> Dict[str, Any]:
+        """
+        Returns a serializable dictionary representing the entire graph structure.
+        """
+        tools = self.get_tools()
+        variables = self.get_variables()
+        schema = {"tools": [], "variables": variables}
+
+        for tool in tools:
+            name = tool["name"]
+            inputs = self.get_tool_inputs(name)
+            outputs = self.get_tool_outputs(name)
+            schema["tools"].append(
+                {
+                    "name": name,
+                    "fidelity": tool["fidelity"],
+                    "inputs": inputs,
+                    "outputs": outputs,
+                }
+            )
+
+        return schema
