@@ -18,4 +18,6 @@ jobs:
       - name: Run Ruff
         run: uv run ruff check .
       - name: Run Tests
+        env:
+          PYTHONPATH: .
         run: uv run pytest tests/
