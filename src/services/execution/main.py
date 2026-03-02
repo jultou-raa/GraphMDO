@@ -1,13 +1,21 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Dict
+from typing import Dict, Optional
 import httpx
 import os
+import asyncio
+import time
 from mdo_framework.core.translator import GraphProblemBuilder
 
 app = FastAPI(title="Execution Service")
 
 GRAPH_SERVICE_URL = os.getenv("GRAPH_SERVICE_URL", "http://localhost:8001")
+
+# --- Cache Configuration ---
+SCHEMA_CACHE: Optional[Dict] = None
+SCHEMA_CACHE_EXPIRY: float = 0
+CACHE_TTL = 60.0  # seconds
+cache_lock = asyncio.Lock()
 
 
 # --- Tool Registry ---
@@ -29,16 +37,21 @@ class EvaluateRequest(BaseModel):
 
 @app.post("/evaluate")
 async def evaluate(req: EvaluateRequest):
-    # 1. Fetch Schema from Graph Service
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.get(f"{GRAPH_SERVICE_URL}/schema")
-            resp.raise_for_status()
-            schema = resp.json()
-        except httpx.RequestError as e:
-            raise HTTPException(
-                status_code=503, detail=f"Could not reach Graph Service: {e}"
-            )
+    # 1. Fetch Schema from Graph Service (with caching)
+    global SCHEMA_CACHE, SCHEMA_CACHE_EXPIRY
+    async with cache_lock:
+        if SCHEMA_CACHE is None or time.time() > SCHEMA_CACHE_EXPIRY:
+            async with httpx.AsyncClient() as client:
+                try:
+                    resp = await client.get(f"{GRAPH_SERVICE_URL}/schema")
+                    resp.raise_for_status()
+                    SCHEMA_CACHE = resp.json()
+                    SCHEMA_CACHE_EXPIRY = time.time() + CACHE_TTL
+                except httpx.RequestError as e:
+                    raise HTTPException(
+                        status_code=503, detail=f"Could not reach Graph Service: {e}"
+                    )
+    schema = SCHEMA_CACHE
 
     # 2. Build Problem
     builder = GraphProblemBuilder(schema)
