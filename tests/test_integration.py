@@ -1,7 +1,9 @@
 import unittest
+
+import torch
+
 from mdo_framework.core.translator import GraphProblemBuilder
 from mdo_framework.optimization.optimizer import BayesianOptimizer, LocalEvaluator
-import torch
 
 
 class TestIntegration(unittest.TestCase):

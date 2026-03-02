@@ -1,5 +1,7 @@
+from typing import Any, Callable, Dict
+
 import openmdao.api as om
-from typing import Dict, Callable, Any
+
 from mdo_framework.core.components import ToolComponent
 
 

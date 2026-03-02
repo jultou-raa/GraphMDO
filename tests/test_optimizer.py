@@ -1,14 +1,16 @@
 import unittest
 from unittest.mock import MagicMock, patch
+
+import openmdao.api as om
 import torch
+from gpytorch.likelihoods import GaussianLikelihood
+from gpytorch.models import GP
+
 from mdo_framework.optimization.optimizer import (
     BayesianOptimizer,
     LocalEvaluator,
     RemoteEvaluator,
 )
-import openmdao.api as om
-from gpytorch.likelihoods import GaussianLikelihood
-from gpytorch.models import GP
 
 
 class TestOptimizer(unittest.TestCase):
