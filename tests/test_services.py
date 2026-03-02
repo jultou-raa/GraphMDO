@@ -37,28 +37,51 @@ class TestExecutionService(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(execution_app)
 
-    @patch("services.execution.main.httpx.AsyncClient")
-    def test_evaluate(self, mock_client_cls):
-        mock_client = AsyncMock()
-        mock_client_cls.return_value.__aenter__.return_value = mock_client
+    def test_evaluate(self):
+        # We need to mock the state because we're using TestClient which might not run lifespan
+        # and we want to test the caching logic explicitly.
+        from services.execution.main import SchemaProvider, ProblemPool, TOOL_REGISTRY
 
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        # Return a schema for Paraboloid
-        mock_resp.json.return_value = {
-            "tools": [
-                {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]}
-            ],
-            "variables": [{"name": "x"}, {"name": "y"}],
-        }
-        mock_client.get.return_value = mock_resp
+        with execution_app.container_context() if hasattr(
+            execution_app, "container_context"
+        ) else patch.dict(execution_app.state.__dict__, {}):
+            mock_client = AsyncMock()
+            execution_app.state.schema_provider = SchemaProvider(mock_client)
+            # Use a small pool for testing
+            execution_app.state.problem_pool = ProblemPool(TOOL_REGISTRY, size=1)
 
-        payload = {"inputs": {"x": 3.0, "y": -4.0}, "objective": "f_xy"}
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {
+                "tools": [
+                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]}
+                ],
+                "variables": [{"name": "x"}, {"name": "y"}],
+            }
+            mock_resp.raise_for_status = MagicMock()
+            mock_client.get.return_value = mock_resp
 
-        response = self.client.post("/evaluate", json=payload)
+            payload = {"inputs": {"x": 3.0, "y": -4.0}, "objective": "f_xy"}
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["result"], -15.0)
+            # 1. First call (cache miss)
+            response = self.client.post("/evaluate", json=payload)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["result"], -15.0)
+            self.assertEqual(mock_client.get.call_count, 1)
+
+            # 2. Second call (cache hit)
+            response = self.client.post("/evaluate", json=payload)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(mock_client.get.call_count, 1)
+
+            # 3. Third call (expired cache)
+            import time
+
+            # Force expiry
+            execution_app.state.schema_provider.expiry = time.time() - 1
+            response = self.client.post("/evaluate", json=payload)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(mock_client.get.call_count, 2)
 
 
 class TestOptimizationService(unittest.TestCase):
