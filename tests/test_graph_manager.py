@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, patch
+
 from mdo_framework.db.graph_manager import GraphManager
 
 

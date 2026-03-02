@@ -1,8 +1,10 @@
+import os
+from typing import List
+
+import torch
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List
-import os
-import torch
+
 from mdo_framework.optimization.optimizer import BayesianOptimizer, RemoteEvaluator
 
 app = FastAPI(title="Optimization Service")

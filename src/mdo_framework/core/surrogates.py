@@ -1,6 +1,6 @@
 import numpy as np
-from smt.surrogate_models import KRG, KPLS
 from smt.applications import MFK
+from smt.surrogate_models import KPLS, KRG
 
 
 class SMTSurrogate:

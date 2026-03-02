@@ -1,6 +1,8 @@
+from typing import Optional
+
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import Optional
+
 from mdo_framework.db.graph_manager import GraphManager
 
 app = FastAPI(title="Graph Service")

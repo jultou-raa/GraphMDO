@@ -1,4 +1,5 @@
 import os
+
 from falkordb import FalkorDB
 
 
