@@ -1,7 +1,8 @@
+import os
 import unittest
 from unittest.mock import patch
+
 from mdo_framework.db.client import FalkorDBClient
-import os
 
 
 class TestFalkorDBClient(unittest.TestCase):

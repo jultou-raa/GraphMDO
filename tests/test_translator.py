@@ -1,6 +1,8 @@
 import unittest
-from mdo_framework.core.translator import GraphProblemBuilder
+
 import openmdao.api as om
+
+from mdo_framework.core.translator import GraphProblemBuilder
 
 
 class TestTranslator(unittest.TestCase):

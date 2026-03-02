@@ -1,6 +1,7 @@
 # ruff: noqa: E402
 import unittest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
 from fastapi.testclient import TestClient
 
 # Pre-patch GraphManager to avoid DB connection during import of services.graph.main
@@ -10,8 +11,8 @@ MockGraphManager = gm_patcher.start()
 mock_gm_instance = MockGraphManager.return_value
 
 # Now safe to import
-from services.graph.main import app as graph_app
 from services.execution.main import app as execution_app
+from services.graph.main import app as graph_app
 from services.optimization.main import app as optimization_app
 
 
@@ -40,11 +41,13 @@ class TestExecutionService(unittest.TestCase):
     def test_evaluate(self):
         # We need to mock the state because we're using TestClient which might not run lifespan
         # and we want to test the caching logic explicitly.
-        from services.execution.main import SchemaProvider, ProblemPool, TOOL_REGISTRY
+        from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
 
-        with execution_app.container_context() if hasattr(
-            execution_app, "container_context"
-        ) else patch.dict(execution_app.state.__dict__, {}):
+        with (
+            execution_app.container_context()
+            if hasattr(execution_app, "container_context")
+            else patch.dict(execution_app.state.__dict__, {})
+        ):
             mock_client = AsyncMock()
             execution_app.state.schema_provider = SchemaProvider(mock_client)
             # Use a small pool for testing

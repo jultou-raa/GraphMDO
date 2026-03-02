@@ -1,20 +1,20 @@
+from typing import Any, Dict, List, Protocol
+
+import httpx
+import openmdao.api as om
 import torch
-from botorch.models import SingleTaskGP
+from botorch.acquisition import ExpectedImprovement
 from botorch.fit import fit_gpytorch_mll
+from botorch.models import SingleTaskGP
+from botorch.optim import optimize_acqf
 from botorch.utils import standardize
 from gpytorch.mlls import ExactMarginalLogLikelihood
-from botorch.optim import optimize_acqf
-from botorch.acquisition import ExpectedImprovement
-from typing import List, Dict, Any, Protocol
-import openmdao.api as om
-import httpx
 
 
 class Evaluator(Protocol):
     def evaluate(
         self, x: torch.Tensor, design_vars: List[str], objective: str
-    ) -> torch.Tensor:
-        ...
+    ) -> torch.Tensor: ...
 
 
 class LocalEvaluator:

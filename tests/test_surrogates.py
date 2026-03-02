@@ -1,5 +1,7 @@
 import unittest
+
 import numpy as np
+
 from mdo_framework.core.surrogates import SMTSurrogate
 
 
