@@ -15,7 +15,7 @@ Manages the FalkorDB property graph.
 
 Runs the OpenMDAO problem.
 
--   **POST /evaluate**: Accepts input values and an objective name. Retrieves the graph schema, builds the OpenMDAO problem, sets inputs, runs the model, and returns the objective value.
+-   **POST /evaluate**: Accepts input values and an objective name. Retrieves the graph schema (utilizing robust caching with TTL and backoff strategies), handles asynchronous execution via a pre-built `ProblemPool` of OpenMDAO instances to avoid per-request rebuild overhead, offloads synchronous OpenMDAO execution to worker threads, and returns the objective value. The service automatically detects schema changes and self-heals the problem pool.
 
 ## Optimization Service (Port 8003)
 

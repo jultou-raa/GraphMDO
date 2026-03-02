@@ -27,18 +27,19 @@ The architecture consists of three primary layers:
 The framework exposes these layers as independent microservices:
 
 *   **Graph Service**: Manages the FalkorDB connection and provides APIs for graph manipulation (CRUD operations on nodes/edges) and schema export.
-*   **Execution Service**: Consumes the graph schema, builds the OpenMDAO problem instance, and exposes an evaluation endpoint (`/evaluate`). It abstracts the complexity of running the underlying engineering models.
+*   **Execution Service**: Consumes the graph schema, builds and pools OpenMDAO problem instances (`ProblemPool`), caches schema data (`SchemaProvider`), and exposes an evaluation endpoint (`/evaluate`). It abstracts the complexity of running the underlying engineering models while offloading synchronous execution to local threads.
 *   **Optimization Service**: The "brain" of the operation. It runs the optimization loop (e.g., BoTorch), deciding which design points to evaluate next by calling the Execution Service.
 
 ## Data Flow
 
 1.  **Problem Definition**: User defines the problem graph via the Graph Service API.
-2.  **Schema Retrieval**: Execution Service fetches the current graph schema from Graph Service.
+2.  **Schema Retrieval (Cached)**: Execution Service fetches the current graph schema from Graph Service. The schema is robustly cached with TTL (`CACHE_TTL`) and self-heals by fetching fresh hashes upon expiry.
 3.  **Optimization Request**: User sends an optimization request (design vars, objective, bounds) to Optimization Service.
 4.  **Evaluation Loop**:
     *   Optimization Service selects a candidate point `x`.
     *   Sends `x` to Execution Service via HTTP.
-    *   Execution Service runs the OpenMDAO model and returns objective `y`.
+    *   Execution Service acquires a pre-built OpenMDAO problem from the `ProblemPool` (auto-rebuilt if schema hashing changes out-of-band).
+    *   Execution Service runs the OpenMDAO model on a worker thread and returns objective `y`.
     *   Optimization Service updates its internal model (GP) with `(x, y)`.
     *   Repeat until convergence or step limit.
 5.  **Result**: Optimization Service returns the best design point found.
