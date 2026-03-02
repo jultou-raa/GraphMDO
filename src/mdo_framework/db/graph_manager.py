@@ -18,9 +18,9 @@ class GraphManager:
         """Adds a variable node to the graph."""
         query = f"""
         MERGE (v:Variable {{name: '{name}'}})
-        SET v.value = {value if value is not None else 'null'},
-            v.lower = {lower if lower is not None else 'null'},
-            v.upper = {upper if upper is not None else 'null'}
+        SET v.value = {value if value is not None else "null"},
+            v.lower = {lower if lower is not None else "null"},
+            v.upper = {upper if upper is not None else "null"}
         """
         self.graph.query(query)
 

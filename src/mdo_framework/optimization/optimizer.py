@@ -63,11 +63,13 @@ class BayesianOptimizer:
         design_vars: List[str],
         objective: str,
         bounds: torch.Tensor,
-    ):
+        maximize: bool = True,
+    ) -> None:
         self.evaluator = evaluator
         self.design_vars = design_vars
         self.objective = objective
         self.bounds = bounds
+        self.maximize = maximize
 
     def optimize(self, n_steps: int = 5, n_init: int = 5) -> Dict[str, Any]:
         """Runs the optimization loop."""
@@ -98,7 +100,8 @@ class BayesianOptimizer:
             fit_gpytorch_mll(mll)
 
             # Define Acquisition Function (Expected Improvement)
-            EI = ExpectedImprovement(gp, best_f=train_y_std.max())
+            best_f = train_y_std.max() if self.maximize else train_y_std.min()
+            EI = ExpectedImprovement(gp, best_f=best_f, maximize=self.maximize)
 
             # Optimize Acquisition Function
             candidate, _ = optimize_acqf(
@@ -117,7 +120,7 @@ class BayesianOptimizer:
             train_y = torch.cat([train_y, new_y])
 
         # Find best result
-        best_idx = train_y.argmax()
+        best_idx = train_y.argmax() if self.maximize else train_y.argmin()
         best_x = train_x[best_idx]
         best_y = train_y[best_idx]
 

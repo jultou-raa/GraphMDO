@@ -67,7 +67,11 @@ def main():
 
     # We want to minimize f_xy with respect to x, y
     optimizer = BayesianOptimizer(
-        evaluator=evaluator, design_vars=["x", "y"], objective="f_xy", bounds=bounds
+        evaluator=evaluator,
+        design_vars=["x", "y"],
+        objective="f_xy",
+        bounds=bounds,
+        maximize=False,
     )
 
     try:
