@@ -4,7 +4,7 @@
 [![Quality Checks](https://github.com/jultou-raa/GraphMDO/actions/workflows/quality.yml/badge.svg)](https://github.com/jultou-raa/GraphMDO/actions/workflows/quality.yml)
 [![Security Scan](https://github.com/jultou-raa/GraphMDO/actions/workflows/security.yml/badge.svg)](https://github.com/jultou-raa/GraphMDO/actions/workflows/security.yml)
 [![Deploy Documentation](https://github.com/jultou-raa/GraphMDO/actions/workflows/docs.yml/badge.svg)](https://github.com/jultou-raa/GraphMDO/actions/workflows/docs.yml)
-[![codecov](https://codecov.io/gh/jultou-raa/GraphMDO/graph/badge.svg?token=YOUR_CODECOV_TOKEN)](https://codecov.io/gh/jultou-raa/GraphMDO)
+[![codecov](https://codecov.io/gh/jultou-raa/GraphMDO/graph/badge.svg?token=f2150ayDNv)](https://codecov.io/gh/jultou-raa/GraphMDO)
 
 GraphMDO is an advanced Multidisciplinary Design Optimization (MDO) framework that integrates graph databases with state-of-the-art optimization and surrogate modeling tools.
 
