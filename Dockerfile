@@ -11,6 +11,7 @@ COPY README.md ./
 # Copy source code BEFORE sync, as uv sync needs to build the package (editable install or source check)
 # Since we moved to src/ layout, copy src/ to src/
 COPY src/ src/
+COPY .git/ .git/
 
 # Install dependencies
 RUN uv sync --frozen
