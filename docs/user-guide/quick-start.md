@@ -23,6 +23,7 @@ gm.clear_graph()  # Start fresh
 gm.add_variable("x", value=1.0, lower=0.0, upper=10.0)
 gm.add_variable("y", value=2.0, lower=0.0, upper=10.0)
 gm.add_variable("z", value=0.0)
+gm.add_variable("c_xy", value=0.0)
 
 # 2. Define Tools
 # Tools are functions or external codes that compute outputs from inputs.
@@ -33,6 +34,7 @@ gm.add_tool("MyTool")
 gm.connect_input_to_tool("x", "MyTool")
 gm.connect_input_to_tool("y", "MyTool")
 gm.connect_tool_to_output("MyTool", "z")
+gm.connect_tool_to_output("MyTool", "c_xy")
 ```
 
 ## Run Optimization
@@ -46,7 +48,9 @@ import torch
 
 # 1. Define Tool Implementation
 def my_tool_func(x, y):
-    return x + y  # Example function: z = x + y
+    z = x + y
+    c_xy = x - y
+    return z, c_xy  # Example function returning objective and constraint
 
 # Registry maps graph tool names to Python callables
 tool_registry = {
@@ -67,6 +71,7 @@ optimizer = BayesianOptimizer(
         {"name": "y", "type": "range", "bounds": [0.0, 10.0]}
     ],
     objectives=[{"name": "z", "minimize": True}],
+    constraints=[{"name": "c_xy", "op": "<=", "bound": 0.0}]
 )
 
 # 4. Execute Optimization
