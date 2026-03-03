@@ -113,7 +113,29 @@ class BayesianOptimizer:
         self.use_bonsai = use_bonsai
 
     def optimize(self, n_steps: int = 5, n_init: int = 5) -> dict[str, Any]:
-        """Runs the optimization loop using AxClient."""
+        """Runs the optimization loop using AxClient.
+
+        Iteratively generates candidate parameters, evaluates them using the
+        provided evaluator, and updates the underlying Gaussian Process model.
+
+        Args:
+            n_steps: Number of Bayesian optimization steps to perform. Default is 5.
+            n_init: Number of initial Sobol (quasi-random) exploration steps. Default is 5.
+
+        Returns:
+            A dictionary containing:
+            - 'best_parameters': The optimal parameters found (or None if unresolved).
+            - 'best_objectives': The metrics associated with the optimal parameters.
+            - 'history': List of dicts representing all evaluated trials.
+            - 'serialized_client': JSON string representation of the Ax client state.
+
+        Example:
+            ```python
+            optimizer = BayesianOptimizer(evaluator, parameters, objectives)
+            result = optimizer.optimize(n_steps=10, n_init=10)
+            print(result["best_parameters"])
+            ```
+        """
 
         # Determine client setup
 

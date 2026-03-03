@@ -23,7 +23,24 @@ class GraphManager:
         choices: list = None,
         value_type: str = "float",
     ):
-        """Adds a variable node to the graph."""
+        """Adds a variable node to the graph.
+
+        Args:
+            name: The unique name of the variable.
+            value: The initial or default value of the variable.
+            lower: The lower bound for optimization (applicable if param_type is range/continuous).
+            upper: The upper bound for optimization (applicable if param_type is range/continuous).
+            param_type: The type of parameter ("continuous", "range", "choice", or "fixed").
+            choices: A list of valid options if the param_type is "choice".
+            value_type: The underlying data type ("float", "int", "str").
+
+        Example:
+            ```python
+            gm = GraphManager()
+            gm.add_variable("wing_span", value=10.0, lower=5.0, upper=15.0, param_type="range")
+            gm.add_variable("material", value="aluminum", choices=["aluminum", "composite"], param_type="choice", value_type="str")
+            ```
+        """
         import json
 
         choices_str = json.dumps(choices) if choices is not None else "null"
@@ -39,12 +56,33 @@ class GraphManager:
         self.graph.query(query)
 
     def add_tool(self, name: str, fidelity: str = "high"):
-        """Adds a tool node to the graph."""
+        """Adds a tool node to the graph.
+
+        Args:
+            name: The unique name of the engineering tool or solver.
+            fidelity: The fidelity level of the tool ("high", "low", etc.). Default is "high".
+
+        Example:
+            ```python
+            gm.add_tool("CFD_Solver", fidelity="high")
+            gm.add_tool("Vortex_Lattice", fidelity="low")
+            ```
+        """
         query = f"MERGE (t:Tool {{name: '{name}', fidelity: '{fidelity}'}})"
         self.graph.query(query)
 
     def connect_tool_to_output(self, tool_name: str, variable_name: str):
-        """Connects a tool to an output variable (Tool -> Variable)."""
+        """Connects a tool to an output variable (Tool -> Variable).
+
+        Args:
+            tool_name: The name of the source tool.
+            variable_name: The name of the target output variable.
+
+        Example:
+            ```python
+            gm.connect_tool_to_output("CFD_Solver", "drag_coefficient")
+            ```
+        """
         query = f"""
         MATCH (t:Tool {{name: '{tool_name}'}}), (v:Variable {{name: '{variable_name}'}})
         MERGE (t)-[:OUTPUTS]->(v)
@@ -52,7 +90,17 @@ class GraphManager:
         self.graph.query(query)
 
     def connect_input_to_tool(self, variable_name: str, tool_name: str):
-        """Connects an input variable to a tool (Variable -> Tool)."""
+        """Connects an input variable to a tool (Variable -> Tool).
+
+        Args:
+            variable_name: The name of the source input variable.
+            tool_name: The name of the target tool consuming the variable.
+
+        Example:
+            ```python
+            gm.connect_input_to_tool("wing_span", "CFD_Solver")
+            ```
+        """
         query = f"""
         MATCH (v:Variable {{name: '{variable_name}'}}), (t:Tool {{name: '{tool_name}'}})
         MERGE (v)-[:INPUTS_TO]->(t)
@@ -116,6 +164,15 @@ class GraphManager:
     def get_graph_schema(self) -> dict[str, Any]:
         """
         Returns a serializable dictionary representing the entire graph structure.
+
+        Returns:
+            A dictionary containing 'tools' and 'variables' lists defining the topology.
+
+        Example:
+            ```python
+            schema = gm.get_graph_schema()
+            print(schema["tools"][0]["name"])
+            ```
         """
         tools = self.get_tools()
         variables = self.get_variables()
