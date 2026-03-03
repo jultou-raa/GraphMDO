@@ -1,7 +1,6 @@
 import os
 from typing import List, Optional, Union
 
-import torch
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -58,12 +57,6 @@ async def optimize(req: OptimizeRequest):
         result = optimizer.optimize(n_steps=req.n_steps, n_init=req.n_init)
 
         # Convert tensor/numpy to lists for JSON
-        def to_list(obj):
-            if isinstance(obj, torch.Tensor):
-                return obj.tolist()
-            if hasattr(obj, "tolist"):
-                return obj.tolist()
-            return obj
 
         return {
             "best_parameters": result.get("best_parameters"),

@@ -104,7 +104,7 @@ class BayesianOptimizer:
                         num_trials=n_init,
                         min_trials_observed=n_init,
                     ),
-                    GenerationStep(generator=Models.BONSAI, num_trials=-1),
+                    GenerationStep(generator=Models.BOTORCH_MODULAR, num_trials=-1),
                 ],
             )
 
@@ -205,7 +205,7 @@ class BayesianOptimizer:
                 }
             else:
                 best_parameters, metrics = client.get_best_parameters()
-                best_obj = {k: v[0] for k, v in metrics.items()}
+                best_obj = {k: v for k, v in metrics[0].items()}
                 return {
                     "best_parameters": best_parameters,
                     "best_objectives": best_obj,
