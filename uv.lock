@@ -1146,7 +1146,6 @@ wheels = [
 
 [[package]]
 name = "mdo-framework"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "ax-platform" },
