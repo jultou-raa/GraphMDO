@@ -620,3 +620,26 @@ if __name__ == "__main__":
 
         response = self.client.post("/optimize", json=payload)
         self.assertEqual(response.status_code, 500)
+
+    @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
+    def test_optimize_with_constraints_service(self, mock_optimize):
+
+        mock_optimize.return_value = {
+            "best_parameters": {"x": 0.5, "y": 0.5},
+            "best_objectives": {"f_xy": 0.0},
+            "history": [],
+        }
+
+        payload = {
+            "parameters": [
+                {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
+                {"name": "y", "type": "range", "bounds": [0.0, 1.0]},
+            ],
+            "objectives": [{"name": "f_xy"}],
+            "constraints": [{"name": "g_xy", "op": "<=", "bound": 0.0}],
+            "n_steps": 1,
+            "n_init": 1,
+        }
+
+        response = self.client.post("/optimize", json=payload)
+        self.assertEqual(response.status_code, 200)

@@ -27,9 +27,16 @@ class ObjectiveConfig(BaseModel):
     )
 
 
+class ConstraintConfig(BaseModel):
+    name: str
+    bound: float
+    op: str = "<="  # "<=" or ">="
+
+
 class OptimizeRequest(BaseModel):
     parameters: List[ParameterConfig]
     objectives: List[ObjectiveConfig]
+    constraints: Optional[List[ConstraintConfig]] = None
     fidelity_parameter: Optional[str] = (
         None  # Name of the parameter determining fidelity
     )
@@ -45,10 +52,15 @@ async def optimize(req: OptimizeRequest):
 
     # 2. Setup Optimizer
     try:
+        constraints = (
+            [c.model_dump() for c in req.constraints] if req.constraints else None
+        )
+
         optimizer = BayesianOptimizer(
             evaluator=evaluator,
             parameters=[p.model_dump() for p in req.parameters],
             objectives=[o.model_dump() for o in req.objectives],
+            constraints=constraints,
             fidelity_parameter=req.fidelity_parameter,
             use_bonsai=req.use_bonsai,
         )

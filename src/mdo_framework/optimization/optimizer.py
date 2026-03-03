@@ -80,12 +80,14 @@ class BayesianOptimizer:
         evaluator: Evaluator,
         parameters: List[Dict[str, Any]],
         objectives: List[Dict[str, Any]],
+        constraints: Optional[List[Dict[str, Any]]] = None,
         fidelity_parameter: Optional[str] = None,
         use_bonsai: bool = False,
     ) -> None:
         self.evaluator = evaluator
         self.parameters = parameters
         self.objectives = objectives
+        self.constraints = constraints or []
         self.fidelity_parameter = fidelity_parameter
         self.use_bonsai = use_bonsai
 
@@ -162,12 +164,17 @@ class BayesianOptimizer:
             name="mdo_optimization",
             parameters=ax_params,
             objectives=ax_objectives,
+            outcome_constraints=[
+                f"{c['name']} {c['op']} {c['bound']}" for c in self.constraints
+            ],
         )
 
         history = []
 
         total_trials = n_init + n_steps
-        objective_names = [o["name"] for o in self.objectives]
+        objective_names = [o["name"] for o in self.objectives] + [
+            c["name"] for c in self.constraints
+        ]
 
         for _ in range(total_trials):
             parameters, trial_index = client.get_next_trial()

@@ -139,3 +139,24 @@ class TestOptimizer(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    @patch("mdo_framework.optimization.optimizer.AxClient")
+    def test_optimize_with_constraints(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.get_next_trial.return_value = ({"x": 0.5, "y": 0.5}, 0)
+        mock_client.get_best_parameters.return_value = (
+            {"x": 0.5, "y": 0.5},
+            ({"f_xy": (42.0, None)}, None),
+        )
+
+        constraints = [{"name": "g_xy", "op": "<=", "bound": 0.0}]
+
+        opt = BayesianOptimizer(
+            self.evaluator, self.parameters, self.objectives, constraints=constraints
+        )
+
+        result = opt.optimize(n_steps=1, n_init=2)
+
+        self.assertIn("best_parameters", result)
+        self.assertEqual(len(result["history"]), 3)
