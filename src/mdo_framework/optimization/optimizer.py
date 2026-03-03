@@ -27,10 +27,14 @@ class Evaluator(Protocol):
 
 
 class LocalEvaluator:
+    """
+    Evaluates the design parameters locally using an OpenMDAO Problem instance.
+
+    Args:
+        problem: An instantiated OpenMDAO Problem object.
+    """
+
     def __init__(self, problem: om.Problem):
-        """
-        Initializes the local evaluator with an OpenMDAO Problem instance.
-        """
         self.problem = problem
 
     def evaluate(
@@ -51,10 +55,14 @@ class LocalEvaluator:
 
 
 class RemoteEvaluator:
+    """
+    Evaluates the design parameters remotely by communicating with the Execution microservice.
+
+    Args:
+        service_url: The URL of the execution service.
+    """
+
     def __init__(self, service_url: str):
-        """
-        Initializes the remote evaluator communicating with the Execution microservice.
-        """
         self.service_url = service_url
 
     def evaluate(
@@ -83,6 +91,14 @@ class RemoteEvaluator:
 class BayesianOptimizer:
     """
     Bayesian Optimizer using Ax Platform.
+
+    Args:
+        evaluator: Local or Remote implementation of Evaluator protocol.
+        parameters: Dict defining the variables bounds, choices, and types.
+        objectives: Dict defining the targeted metrics and their directions.
+        constraints: Dict defining boundaries mapped out of OpenMDAO runs.
+        fidelity_parameter: Name of variable designating multi-fidelity.
+        use_bonsai: Toggle for experimental algorithmic execution.
     """
 
     def __init__(
@@ -94,17 +110,6 @@ class BayesianOptimizer:
         fidelity_parameter: str | None = None,
         use_bonsai: bool = False,
     ) -> None:
-        """
-        Initializes the Bayesian Optimizer via Ax-Platform.
-
-        Args:
-            evaluator: Local or Remote implementation of Evaluator protocol.
-            parameters: Dict defining the variables bounds, choices, and types.
-            objectives: Dict defining the targeted metrics and their directions.
-            constraints: Dict defining boundaries mapped out of OpenMDAO runs.
-            fidelity_parameter: Name of variable designating multi-fidelity.
-            use_bonsai: Toggle for experimental algorithmic execution.
-        """
         self.evaluator = evaluator
         self.parameters = parameters
         self.objectives = objectives
