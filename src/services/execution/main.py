@@ -54,12 +54,14 @@ def build_and_init(
     return GraphProblemBuilder(schema).build_problem(registry)
 
 
-def execute_problem(prob: Any, inputs: dict[str, float], objective: str) -> Any:
+def execute_problem(
+    prob: Any, inputs: dict[str, float], objectives: list[str]
+) -> dict[str, Any]:
     """Sets values and executes the model in a worker thread."""
     for name, val in inputs.items():
         prob.set_val(name, val)
     prob.run_model()
-    return prob.get_val(objective)
+    return {obj: prob.get_val(obj) for obj in objectives}
 
 
 def to_float(val: Any) -> float:
@@ -293,7 +295,7 @@ async def get_problem_pool(request: Request) -> ProblemPool:
 # --- Request Models ---
 class EvaluateRequest(BaseModel):
     inputs: dict[str, float]
-    objective: str = Field(..., min_length=1, max_length=100)
+    objectives: list[str] = Field(..., min_length=1)
 
     @field_validator("inputs")
     @classmethod
@@ -342,10 +344,9 @@ async def evaluate(
     envelope = await schema_p.get_schema()
 
     # 1. Validation against Schema
-    if req.objective not in envelope.known_objectives:
-        raise HTTPException(
-            status_code=422, detail=f"Unknown objective: {req.objective}"
-        )
+    for obj in req.objectives:
+        if obj not in envelope.known_objectives:
+            raise HTTPException(status_code=422, detail=f"Unknown objective: {obj}")
 
     unknown = set(req.inputs.keys()) - envelope.known_vars
     if unknown:
@@ -357,15 +358,15 @@ async def evaluate(
     try:
         try:
             # Offload synchronous math to thread
-            raw_result = await asyncio.to_thread(
-                execute_problem, instance, req.inputs, req.objective
+            raw_results = await asyncio.to_thread(
+                execute_problem, instance, req.inputs, req.objectives
             )
             execution_succeeded = True
 
             # 3. Safe result transformation
             try:
-                result = to_float(raw_result)
-                return {"result": result}
+                results = {obj: to_float(val) for obj, val in raw_results.items()}
+                return {"results": results}
             except (IndexError, TypeError, ValueError) as e:
                 logger.error("Result transformation failed.", exc_info=True)
                 raise HTTPException(

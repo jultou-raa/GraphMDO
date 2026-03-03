@@ -97,7 +97,7 @@ class TestExecutionService(unittest.TestCase):
             mock_resp.raise_for_status = MagicMock()
             mock_client.get.return_value = mock_resp
 
-            payload = {"inputs": {"x": 3.0, "y": -4.0}, "objective": "f_xy"}
+            payload = {"inputs": {"x": 3.0, "y": -4.0}, "objectives": ["f_xy"]}
 
             # Reset local expiry cache to ensure isolated test runs do not trip each other
             execution_app.state.schema_provider.expiry = 0
@@ -107,7 +107,7 @@ class TestExecutionService(unittest.TestCase):
             # 1. First call (cache miss)
             response = self.client.post("/evaluate", json=payload)
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json()["result"], -15.0)
+            self.assertEqual(response.json()["results"]["f_xy"], -15.0)
             self.assertEqual(mock_client.get.call_count, 1)
 
             # 2. Second call (cache hit)
@@ -142,14 +142,15 @@ class TestExecutionService(unittest.TestCase):
 
             # Unknown objective
             response = self.client.post(
-                "/evaluate", json={"inputs": {"x": 1.0}, "objective": "unknown_obj"}
+                "/evaluate", json={"inputs": {"x": 1.0}, "objectives": ["unknown_obj"]}
             )
             self.assertEqual(response.status_code, 422)
             self.assertIn("Unknown objective", response.json()["detail"])
 
             # Unknown input
             response = self.client.post(
-                "/evaluate", json={"inputs": {"unknown_var": 1.0}, "objective": "f_xy"}
+                "/evaluate",
+                json={"inputs": {"unknown_var": 1.0}, "objectives": ["f_xy"]},
             )
             self.assertEqual(response.status_code, 422)
             # This triggers on unknown inputs before objective since it's hardcoded to f_xy logic inside
@@ -159,20 +160,20 @@ class TestExecutionService(unittest.TestCase):
         # inputs > 100
         large_inputs = {f"var_{i}": 1.0 for i in range(101)}
         response = self.client.post(
-            "/evaluate", json={"inputs": large_inputs, "objective": "f_xy"}
+            "/evaluate", json={"inputs": large_inputs, "objectives": ["f_xy"]}
         )
         self.assertEqual(response.status_code, 422)
 
         # input key > 50 chars
         large_key = "a" * 51
         response = self.client.post(
-            "/evaluate", json={"inputs": {large_key: 1.0}, "objective": "f_xy"}
+            "/evaluate", json={"inputs": {large_key: 1.0}, "objectives": ["f_xy"]}
         )
         self.assertEqual(response.status_code, 422)
 
         # empty inputs
         response = self.client.post(
-            "/evaluate", json={"inputs": {}, "objective": "f_xy"}
+            "/evaluate", json={"inputs": {}, "objectives": ["f_xy"]}
         )
         self.assertEqual(response.status_code, 422)
 
@@ -203,7 +204,7 @@ class TestExecutionService(unittest.TestCase):
             ):
                 response = self.client.post(
                     "/evaluate",
-                    json={"inputs": {"x": 1.0, "y": 1.0}, "objective": "f_xy"},
+                    json={"inputs": {"x": 1.0, "y": 1.0}, "objectives": ["f_xy"]},
                 )
                 self.assertEqual(response.status_code, 500)
                 self.assertEqual(response.json()["detail"], "Invalid result shape.")
@@ -240,7 +241,7 @@ class TestExecutionService(unittest.TestCase):
                 ):
                     response = self.client.post(
                         "/evaluate",
-                        json={"inputs": {"x": 1.0, "y": 1.0}, "objective": "f_xy"},
+                        json={"inputs": {"x": 1.0, "y": 1.0}, "objectives": ["f_xy"]},
                     )
                     self.assertEqual(response.status_code, 500)
                     self.assertEqual(
@@ -494,16 +495,18 @@ class TestOptimizationService(unittest.TestCase):
         }
 
         payload = {
-            "design_vars": ["x", "y"],
-            "objective": "f_xy",
-            "bounds": [[0.0, 1.0], [0.0, 1.0]],
+            "parameters": [
+                {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
+                {"name": "y", "type": "range", "bounds": [0.0, 1.0]},
+            ],
+            "objectives": [{"name": "f_xy"}],
             "n_steps": 1,
             "n_init": 1,
         }
 
         response = self.client.post("/optimize", json=payload)
         self.assertEqual(response.status_code, 200)
-        self.assertIn("best_x", response.json())
+        self.assertIn("best_parameters", response.json())
 
 
 if __name__ == "__main__":

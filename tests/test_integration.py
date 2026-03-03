@@ -1,6 +1,5 @@
 import unittest
 
-import torch
 
 from mdo_framework.core.translator import GraphProblemBuilder
 from mdo_framework.optimization.optimizer import BayesianOptimizer, LocalEvaluator
@@ -47,14 +46,16 @@ class TestIntegration(unittest.TestCase):
 
         optimizer = BayesianOptimizer(
             evaluator=evaluator,
-            design_vars=["x", "y"],
-            objective="f_xy",
-            bounds=torch.tensor([[0.0, 0.0], [10.0, 10.0]], dtype=torch.double),
+            parameters=[
+                {"name": "x", "type": "range", "bounds": [0.0, 10.0]},
+                {"name": "y", "type": "range", "bounds": [0.0, 10.0]},
+            ],
+            objectives=[{"name": "f_xy"}],
         )
 
         try:
             result = optimizer.optimize(n_steps=1, n_init=2)
-            self.assertIn("best_y", result)
+            self.assertIn("best_objectives", result)
         except Exception as e:
             self.fail(f"Optimization failed: {e}")
 

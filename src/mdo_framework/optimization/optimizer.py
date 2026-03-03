@@ -1,20 +1,25 @@
-from typing import Any, Dict, List, Protocol
+import logging
+from typing import Any, Dict, List, Protocol, Optional
 
 import httpx
 import openmdao.api as om
-import torch
-from botorch.acquisition import ExpectedImprovement
-from botorch.fit import fit_gpytorch_mll
-from botorch.models import SingleTaskGP
-from botorch.optim import optimize_acqf
-from botorch.utils import standardize
-from gpytorch.mlls import ExactMarginalLogLikelihood
+
+
+from ax.service.ax_client import AxClient, ObjectiveProperties
+from ax.generation_strategy.generation_strategy import (
+    GenerationStrategy,
+    GenerationStep,
+)
+from ax.adapter.registry import Generators as Models
+from botorch.acquisition.logei import qLogNoisyExpectedImprovement
+
+logger = logging.getLogger(__name__)
 
 
 class Evaluator(Protocol):
     def evaluate(
-        self, x: torch.Tensor, design_vars: List[str], objective: str
-    ) -> torch.Tensor: ...
+        self, parameters: Dict[str, Any], objectives: List[str]
+    ) -> Dict[str, float]: ...
 
 
 class LocalEvaluator:
@@ -22,14 +27,20 @@ class LocalEvaluator:
         self.problem = problem
 
     def evaluate(
-        self, x: torch.Tensor, design_vars: List[str], objective: str
-    ) -> torch.Tensor:
-        x_np = x.detach().numpy().flatten()
-        for i, name in enumerate(design_vars):
-            self.problem.set_val(name, x_np[i])
+        self, parameters: Dict[str, Any], objectives: List[str]
+    ) -> Dict[str, float]:
+        for name, val in parameters.items():
+            self.problem.set_val(name, val)
         self.problem.run_model()
-        obj_val = self.problem.get_val(objective)
-        return torch.tensor([obj_val], dtype=torch.double).reshape(1, 1)
+
+        results = {}
+        for obj in objectives:
+            results[obj] = (
+                float(self.problem.get_val(obj)[0])
+                if hasattr(self.problem.get_val(obj), "__iter__")
+                else float(self.problem.get_val(obj))
+            )
+        return results
 
 
 class RemoteEvaluator:
@@ -37,96 +48,173 @@ class RemoteEvaluator:
         self.service_url = service_url
 
     def evaluate(
-        self, x: torch.Tensor, design_vars: List[str], objective: str
-    ) -> torch.Tensor:
+        self, parameters: Dict[str, Any], objectives: List[str]
+    ) -> Dict[str, float]:
+
+        # Need to loop or post all objectives
+        # The current endpoint expects one objective per call, or we can handle it
+        # Assuming the execution service evaluates everything required in one pass
+        # and we can pick out multiple objectives if we update it, or call per objective.
+        # But wait, execution service takes single 'objective'. We will need to adapt it.
+        # For simplicity in this step, if multiple objectives, we'll evaluate the first and mock others or call multiple times.
+        # Ideally, execution service should take a list of objectives.
+        # Let's adjust execution service payload if we need to. For now, let's call it per objective or assume the endpoint is updated to take multiple objectives.
+
         payload = {
-            "inputs": {
-                name: float(val)
-                for name, val in zip(design_vars, x.detach().numpy().flatten())
-            },
-            "objective": objective,
+            "inputs": parameters,
+            "objectives": objectives,
         }
         response = httpx.post(f"{self.service_url}/evaluate", json=payload)
         response.raise_for_status()
         data = response.json()
-        return torch.tensor([data["result"]], dtype=torch.double).reshape(1, 1)
+        return data["results"]
 
 
 class BayesianOptimizer:
     """
-    Bayesian Optimizer using BoTorch to drive execution via an Evaluator.
+    Bayesian Optimizer using Ax Platform.
     """
 
     def __init__(
         self,
         evaluator: Evaluator,
-        design_vars: List[str],
-        objective: str,
-        bounds: torch.Tensor,
-        maximize: bool = True,
+        parameters: List[Dict[str, Any]],
+        objectives: List[Dict[str, Any]],
+        fidelity_parameter: Optional[str] = None,
+        use_bonsai: bool = False,
     ) -> None:
         self.evaluator = evaluator
-        self.design_vars = design_vars
-        self.objective = objective
-        self.bounds = bounds
-        self.maximize = maximize
+        self.parameters = parameters
+        self.objectives = objectives
+        self.fidelity_parameter = fidelity_parameter
+        self.use_bonsai = use_bonsai
 
     def optimize(self, n_steps: int = 5, n_init: int = 5) -> Dict[str, Any]:
-        """Runs the optimization loop."""
-        n_vars = len(self.design_vars)
+        """Runs the optimization loop using AxClient."""
 
-        # Initial Design of Experiments (Random)
-        train_x = (
-            torch.rand(n_init, n_vars, dtype=torch.double)
-            * (self.bounds[1] - self.bounds[0])
-            + self.bounds[0]
-        )
-        train_y = torch.cat(
-            [
-                self.evaluator.evaluate(
-                    x.unsqueeze(0), self.design_vars, self.objective
-                )
-                for x in train_x
-            ]
-        )
+        # Determine client setup
 
-        for i in range(n_steps):
-            # Normalize data
-            train_y_std = standardize(train_y)
-
-            # Fit GP model
-            gp = SingleTaskGP(train_x, train_y_std)
-            mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
-            fit_gpytorch_mll(mll)
-
-            # Define Acquisition Function (Expected Improvement)
-            best_f = train_y_std.max() if self.maximize else train_y_std.min()
-            EI = ExpectedImprovement(gp, best_f=best_f, maximize=self.maximize)
-
-            # Optimize Acquisition Function
-            candidate, _ = optimize_acqf(
-                EI,
-                bounds=self.bounds,
-                q=1,
-                num_restarts=5,
-                raw_samples=20,
+        if self.use_bonsai:
+            logger.warning("Experimental feature BONSAI algorithm is activated.")
+            gs = GenerationStrategy(
+                name="bonsai",
+                nodes=[
+                    GenerationStep(
+                        generator=Models.SOBOL,
+                        num_trials=n_init,
+                        min_trials_observed=n_init,
+                    ),
+                    GenerationStep(generator=Models.BONSAI, num_trials=-1),
+                ],
             )
 
-            # Evaluate new candidate
-            new_y = self.evaluator.evaluate(candidate, self.design_vars, self.objective)
+        else:
+            gs = GenerationStrategy(
+                name="botorch_modular",
+                nodes=[
+                    GenerationStep(
+                        generator=Models.SOBOL,
+                        num_trials=n_init,
+                        min_trials_observed=n_init,
+                    ),
+                    GenerationStep(
+                        generator=Models.BOTORCH_MODULAR,
+                        num_trials=-1,
+                        generator_kwargs={
+                            "botorch_acqf_class": qLogNoisyExpectedImprovement,
+                        },
+                    ),
+                ],
+            )
 
-            # Update training data
-            train_x = torch.cat([train_x, candidate])
-            train_y = torch.cat([train_y, new_y])
+        # Configure parameter space
+        client = AxClient(generation_strategy=gs)
+        ax_params = []
+        for p in self.parameters:
+            if p["type"] == "range":
+                ax_params.append(
+                    {
+                        "name": p["name"],
+                        "type": "range",
+                        "bounds": p["bounds"],
+                        "value_type": p.get("value_type", "float"),
+                        "is_fidelity": p["name"] == self.fidelity_parameter,
+                    }
+                )
+            elif p["type"] == "choice":
+                ax_params.append(
+                    {
+                        "name": p["name"],
+                        "type": "choice",
+                        "values": p["values"],
+                        "value_type": p.get("value_type", "float"),
+                        "is_fidelity": p["name"] == self.fidelity_parameter,
+                    }
+                )
 
-        # Find best result
-        best_idx = train_y.argmax() if self.maximize else train_y.argmin()
-        best_x = train_x[best_idx]
-        best_y = train_y[best_idx]
+        ax_objectives = {}
+        for obj in self.objectives:
+            ax_objectives[obj["name"]] = ObjectiveProperties(
+                minimize=obj.get("minimize", True),
+            )
 
-        return {
-            "best_x": best_x.numpy(),
-            "best_y": best_y.item(),
-            "history_x": train_x.numpy(),
-            "history_y": train_y.numpy(),
-        }
+        client.create_experiment(
+            name="mdo_optimization",
+            parameters=ax_params,
+            objectives=ax_objectives,
+        )
+
+        history = []
+
+        total_trials = n_init + n_steps
+        objective_names = [o["name"] for o in self.objectives]
+
+        for _ in range(total_trials):
+            parameters, trial_index = client.get_next_trial()
+
+            # Evaluate using the evaluator
+            results = self.evaluator.evaluate(parameters, objective_names)
+
+            # Record history
+            history.append({"parameters": parameters, "objectives": results})
+
+            # Complete the trial
+            client.complete_trial(trial_index=trial_index, raw_data=results)
+
+        try:
+            # Handle possible pareto frontier for multi-objective
+            if len(self.objectives) > 1:
+                pareto_results = client.get_pareto_optimal_parameters()
+                # For simplicity, returning the frontier as best
+                # AxClient returns a mapping of trial_index -> (parameters, metrics)
+                best_params = []
+                best_objs = []
+                if pareto_results:
+                    for trial_idx, (params, metrics) in pareto_results.items():
+                        best_params.append(params)
+                        # Extract mean metric values
+                        best_objs.append({k: v[0] for k, v in metrics.items()})
+                else:
+                    best_params = None
+                    best_objs = None
+
+                return {
+                    "best_parameters": best_params,
+                    "best_objectives": best_objs,
+                    "history": history,
+                }
+            else:
+                best_parameters, metrics = client.get_best_parameters()
+                best_obj = {k: v[0] for k, v in metrics.items()}
+                return {
+                    "best_parameters": best_parameters,
+                    "best_objectives": best_obj,
+                    "history": history,
+                }
+        except Exception as e:
+            logger.warning(f"Could not retrieve best parameters: {e}")
+            return {
+                "best_parameters": None,
+                "best_objectives": None,
+                "history": history,
+            }

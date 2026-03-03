@@ -63,15 +63,16 @@ def main():
     import torch
 
     evaluator = LocalEvaluator(prob)
-    bounds = torch.tensor([[-10.0, -10.0], [10.0, 10.0]], dtype=torch.double)
+    torch.tensor([[-10.0, -10.0], [10.0, 10.0]], dtype=torch.double)
 
     # We want to minimize f_xy with respect to x, y
     optimizer = BayesianOptimizer(
         evaluator=evaluator,
-        design_vars=["x", "y"],
-        objective="f_xy",
-        bounds=bounds,
-        maximize=False,
+        parameters=[
+            {"name": "x", "type": "range", "bounds": [-10.0, 10.0]},
+            {"name": "y", "type": "range", "bounds": [-10.0, 10.0]},
+        ],
+        objectives=[{"name": "f_xy", "minimize": True}],
     )
 
     try:
