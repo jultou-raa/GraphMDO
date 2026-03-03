@@ -62,14 +62,16 @@ prob = builder.build_problem(tool_registry)
 evaluator = LocalEvaluator(prob)
 optimizer = BayesianOptimizer(
     evaluator=evaluator,
-    design_vars=["x", "y"],
-    objective="z",
-    bounds=torch.tensor([[0.0, 0.0], [10.0, 10.0]], dtype=torch.double)
+    parameters=[
+        {"name": "x", "type": "range", "bounds": [0.0, 10.0]},
+        {"name": "y", "type": "range", "bounds": [0.0, 10.0]}
+    ],
+    objectives=[{"name": "z", "minimize": True}],
 )
 
 # 4. Execute Optimization
 result = optimizer.optimize(n_steps=10)
-print(f"Best Result: {result['best_y']} at {result['best_x']}")
+print(f"Best Result: {result['best_objectives']} at {result['best_parameters']}")
 ```
 
 ## Next Steps

@@ -44,9 +44,13 @@ Send an optimization request. The Optimization Service will coordinate with the 
 curl -X POST http://localhost:8003/optimize \
      -H "Content-Type: application/json" \
      -d '{
-           "design_vars": ["x", "y"],
-           "objective": "f_xy",
-           "bounds": [[0.0, 10.0], [0.0, 10.0]],
+           "parameters": [
+               {"name": "x", "type": "range", "bounds": [0.0, 10.0]},
+               {"name": "y", "type": "range", "bounds": [0.0, 10.0]}
+           ],
+           "objectives": [
+               {"name": "f_xy", "minimize": true}
+           ],
            "n_steps": 10
          }'
 ```
