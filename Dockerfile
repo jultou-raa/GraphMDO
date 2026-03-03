@@ -11,7 +11,12 @@ COPY README.md ./
 # Copy source code BEFORE sync, as uv sync needs to build the package (editable install or source check)
 # Since we moved to src/ layout, copy src/ to src/
 COPY src/ src/
-COPY .git/ .git/
+
+# Pass a dummy version to setuptools-scm during the docker build to prevent failures
+# since the .git directory is explicitly not copied (bloat, layer caching, security).
+# This image is primarily used for Security Scanning in the CI.
+ARG SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MDO_FRAMEWORK="0.0.0"
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MDO_FRAMEWORK=${SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MDO_FRAMEWORK}
 
 # Install dependencies
 RUN uv sync --frozen
