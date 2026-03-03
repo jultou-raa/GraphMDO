@@ -9,6 +9,12 @@ class TopologicalAnalyzer:
     """
 
     def __init__(self, schema: dict[str, Any]):
+        """
+        Initializes the analyzer with the provided graph schema.
+
+        Args:
+            schema: Dictionary representing the full graph tools and variables.
+        """
         self.schema = schema
         self.tools = {t["name"]: t for t in schema.get("tools", [])}
         self.variables = {v["name"]: v for v in schema.get("variables", [])}

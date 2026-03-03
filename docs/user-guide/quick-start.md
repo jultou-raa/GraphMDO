@@ -50,7 +50,7 @@ from mdo_framework.core.topology import TopologicalAnalyzer
 def my_tool_func(x, y):
     z = x + y
     c_xy = x - y
-    return z, c_xy  # Example function returning objective and constraint
+    return {"z": z, "c_xy": c_xy}  # Best practice: return a dictionary mapping outputs
 
 # Registry maps graph tool names to Python callables
 tool_registry = {

@@ -12,6 +12,12 @@ class GraphProblemBuilder:
 
     def __init__(self, schema: dict[str, Any]):
         """
+        Initializes the builder with the given graph schema.
+
+        Args:
+            schema: Dictionary representing tools, inputs, and outputs.
+        """
+        """
         Args:
             schema: A dictionary containing 'tools' and 'variables' definitions.
                    Produced by GraphManager.get_graph_schema().
@@ -19,6 +25,15 @@ class GraphProblemBuilder:
         self.schema = schema
 
     def build_problem(self, tool_registry: dict[str, Callable]) -> om.Problem:
+        """
+        Constructs an OpenMDAO problem from the parsed schema.
+
+        Args:
+            tool_registry: Mapping of tool names to Python callables.
+
+        Returns:
+            An instantiated OpenMDAO Problem object.
+        """
         """
         Constructs and sets up the OpenMDAO problem.
 

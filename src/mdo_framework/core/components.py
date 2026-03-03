@@ -37,6 +37,7 @@ class ToolComponent(om.ExplicitComponent):
             self.declare_partials("*", "*", method="fd")
 
     def compute(self, inputs, outputs):
+        """Computes outputs given inputs. Expects function to return dict."""
         func = self.options["func"]
         # Prepare inputs as a dictionary
         input_vals = {name: inputs[name] for name in self.options["inputs"]}

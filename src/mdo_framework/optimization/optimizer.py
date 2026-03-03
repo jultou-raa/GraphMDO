@@ -19,11 +19,18 @@ logger = logging.getLogger(__name__)
 class Evaluator(Protocol):
     def evaluate(
         self, parameters: dict[str, Any], objectives: list[str]
-    ) -> dict[str, float]: ...
+    ) -> dict[str, float]:
+        """
+        Evaluates the requested objectives given the design parameters.
+        """
+        ...
 
 
 class LocalEvaluator:
     def __init__(self, problem: om.Problem):
+        """
+        Initializes the local evaluator with an OpenMDAO Problem instance.
+        """
         self.problem = problem
 
     def evaluate(
@@ -45,6 +52,9 @@ class LocalEvaluator:
 
 class RemoteEvaluator:
     def __init__(self, service_url: str):
+        """
+        Initializes the remote evaluator communicating with the Execution microservice.
+        """
         self.service_url = service_url
 
     def evaluate(
@@ -84,6 +94,17 @@ class BayesianOptimizer:
         fidelity_parameter: str | None = None,
         use_bonsai: bool = False,
     ) -> None:
+        """
+        Initializes the Bayesian Optimizer via Ax-Platform.
+
+        Args:
+            evaluator: Local or Remote implementation of Evaluator protocol.
+            parameters: Dict defining the variables bounds, choices, and types.
+            objectives: Dict defining the targeted metrics and their directions.
+            constraints: Dict defining boundaries mapped out of OpenMDAO runs.
+            fidelity_parameter: Name of variable designating multi-fidelity.
+            use_bonsai: Toggle for experimental algorithmic execution.
+        """
         self.evaluator = evaluator
         self.parameters = parameters
         self.objectives = objectives
@@ -209,6 +230,7 @@ class BayesianOptimizer:
                     "best_parameters": best_params,
                     "best_objectives": best_objs,
                     "history": history,
+                    "serialized_client": client.to_json_snapshot(),
                 }
             else:
                 best_parameters, metrics = client.get_best_parameters()
@@ -217,6 +239,7 @@ class BayesianOptimizer:
                     "best_parameters": best_parameters,
                     "best_objectives": best_obj,
                     "history": history,
+                    "serialized_client": client.to_json_snapshot(),
                 }
         except Exception as e:
             logger.warning(f"Could not retrieve best parameters: {e}")
@@ -224,4 +247,5 @@ class BayesianOptimizer:
                 "best_parameters": None,
                 "best_objectives": None,
                 "history": history,
+                "serialized_client": client.to_json_snapshot(),
             }

@@ -111,6 +111,7 @@ async def optimize(req: OptimizeRequest):
                 }
                 for trial in result.get("history", [])
             ],
+            "serialized_client": result.get("serialized_client"),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Optimization failed: {e}")

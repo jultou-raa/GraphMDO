@@ -8,7 +8,9 @@ def paraboloid_func(x, y):
     """
     f(x, y) = (x-3)**2 + xy + (y+4)**2 - 3
     """
-    return (x - 3.0) ** 2 + x * y + (y + 4.0) ** 2 - 3.0
+    f_xy = (x - 3.0) ** 2 + x * y + (y + 4.0) ** 2 - 3.0
+    c_xy = x - y
+    return {"f_xy": f_xy, "c_xy": c_xy}
 
 
 # --- Tool Registry ---
@@ -32,6 +34,7 @@ def main():
     gm.add_variable("x", value=0.0, lower=-10.0, upper=10.0)
     gm.add_variable("y", value=0.0, lower=-10.0, upper=10.0)
     gm.add_variable("f_xy", value=0.0)
+    gm.add_variable("c_xy", value=0.0)
 
     # Tool
     gm.add_tool("Paraboloid")
@@ -43,6 +46,7 @@ def main():
 
     # Tool -> Output
     gm.connect_tool_to_output("Paraboloid", "f_xy")
+    gm.connect_tool_to_output("Paraboloid", "c_xy")
 
     # Verify Topology
     inputs = gm.get_tool_inputs("Paraboloid")
