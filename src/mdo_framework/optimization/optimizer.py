@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List, Protocol, Optional
+from typing import Any, Protocol
 
 import httpx
 import openmdao.api as om
@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 class Evaluator(Protocol):
     def evaluate(
-        self, parameters: Dict[str, Any], objectives: List[str]
-    ) -> Dict[str, float]: ...
+        self, parameters: dict[str, Any], objectives: list[str]
+    ) -> dict[str, float]: ...
 
 
 class LocalEvaluator:
@@ -27,8 +27,8 @@ class LocalEvaluator:
         self.problem = problem
 
     def evaluate(
-        self, parameters: Dict[str, Any], objectives: List[str]
-    ) -> Dict[str, float]:
+        self, parameters: dict[str, Any], objectives: list[str]
+    ) -> dict[str, float]:
         for name, val in parameters.items():
             self.problem.set_val(name, val)
         self.problem.run_model()
@@ -48,8 +48,8 @@ class RemoteEvaluator:
         self.service_url = service_url
 
     def evaluate(
-        self, parameters: Dict[str, Any], objectives: List[str]
-    ) -> Dict[str, float]:
+        self, parameters: dict[str, Any], objectives: list[str]
+    ) -> dict[str, float]:
 
         # Need to loop or post all objectives
         # The current endpoint expects one objective per call, or we can handle it
@@ -78,10 +78,10 @@ class BayesianOptimizer:
     def __init__(
         self,
         evaluator: Evaluator,
-        parameters: List[Dict[str, Any]],
-        objectives: List[Dict[str, Any]],
-        constraints: Optional[List[Dict[str, Any]]] = None,
-        fidelity_parameter: Optional[str] = None,
+        parameters: list[dict[str, Any]],
+        objectives: list[dict[str, Any]],
+        constraints: list[dict[str, Any]] | None = None,
+        fidelity_parameter: str | None = None,
         use_bonsai: bool = False,
     ) -> None:
         self.evaluator = evaluator
@@ -91,7 +91,7 @@ class BayesianOptimizer:
         self.fidelity_parameter = fidelity_parameter
         self.use_bonsai = use_bonsai
 
-    def optimize(self, n_steps: int = 5, n_init: int = 5) -> Dict[str, Any]:
+    def optimize(self, n_steps: int = 5, n_init: int = 5) -> dict[str, Any]:
         """Runs the optimization loop using AxClient."""
 
         # Determine client setup

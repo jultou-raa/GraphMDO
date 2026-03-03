@@ -75,7 +75,7 @@ Once the graph is populated, you can run the optimization workflow. You need to 
 ```python
 from mdo_framework.core.translator import GraphProblemBuilder
 from mdo_framework.optimization.optimizer import BayesianOptimizer, LocalEvaluator
-import torch
+from mdo_framework.core.topology import TopologicalAnalyzer
 
 # Define tool implementation
 def my_tool_func(x, y):
@@ -91,14 +91,16 @@ schema = gm.get_graph_schema()
 builder = GraphProblemBuilder(schema)
 prob = builder.build_problem(tool_registry)
 
+# Resolve Topology mapping design_vars automatically from KADMOS graph
+analyzer = TopologicalAnalyzer(schema)
+design_vars, _ = analyzer.resolve_dependencies(["z"])
+parameters = analyzer.extract_parameters(design_vars)
+
 # Run Optimization
 evaluator = LocalEvaluator(prob)
 optimizer = BayesianOptimizer(
     evaluator=evaluator,
-    parameters=[
-        {"name": "x", "type": "range", "bounds": [0.0, 10.0]},
-        {"name": "y", "type": "range", "bounds": [0.0, 10.0]}
-    ],
+    parameters=parameters,
     objectives=[{"name": "z", "minimize": True}],
 )
 

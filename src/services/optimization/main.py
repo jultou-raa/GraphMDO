@@ -1,5 +1,4 @@
 import os
-from typing import List, Optional, Union
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -9,20 +8,13 @@ from mdo_framework.optimization.optimizer import BayesianOptimizer, RemoteEvalua
 app = FastAPI(title="Optimization Service")
 
 EXECUTION_SERVICE_URL = os.getenv("EXECUTION_SERVICE_URL", "http://localhost:8002")
-
-
-class ParameterConfig(BaseModel):
-    name: str
-    type: str  # "range" or "choice"
-    value_type: str = "float"  # "float", "int", "str"
-    bounds: Optional[List[float]] = None
-    values: Optional[List[Union[float, int, str]]] = None
+GRAPH_SERVICE_URL = os.getenv("GRAPH_SERVICE_URL", "http://localhost:8001")
 
 
 class ObjectiveConfig(BaseModel):
     name: str
     minimize: bool = True
-    fidelity: Optional[str] = (
+    fidelity: str | None = (
         None  # indicates this objective depends on a fidelity parameter
     )
 
@@ -34,12 +26,9 @@ class ConstraintConfig(BaseModel):
 
 
 class OptimizeRequest(BaseModel):
-    parameters: List[ParameterConfig]
-    objectives: List[ObjectiveConfig]
-    constraints: Optional[List[ConstraintConfig]] = None
-    fidelity_parameter: Optional[str] = (
-        None  # Name of the parameter determining fidelity
-    )
+    objectives: list[ObjectiveConfig]
+    constraints: list[ConstraintConfig] | None = None
+    fidelity_parameter: str | None = None  # Name of the parameter determining fidelity
     n_steps: int = 5
     n_init: int = 5
     use_bonsai: bool = False
@@ -47,10 +36,52 @@ class OptimizeRequest(BaseModel):
 
 @app.post("/optimize")
 async def optimize(req: OptimizeRequest):
-    # 1. Setup Evaluator
+    import httpx
+
+    # 1. Fetch schema from Graph Service
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{GRAPH_SERVICE_URL}/schema")
+            resp.raise_for_status()
+            schema = resp.json()
+    except Exception as e:
+        raise HTTPException(
+            status_code=502, detail=f"Failed to fetch graph schema: {e}"
+        )
+
+    from mdo_framework.core.topology import TopologicalAnalyzer
+
+    # 2. Identify Design Variables recursively from requested objectives and constraints
+    analyzer = TopologicalAnalyzer(schema)
+
+    target_outputs = [obj.name for obj in req.objectives]
+    if req.constraints:
+        target_outputs.extend([c.name for c in req.constraints])
+
+    try:
+        design_vars, _ = analyzer.resolve_dependencies(target_outputs)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not design_vars:
+        raise HTTPException(
+            status_code=400,
+            detail="No independent design variables found in the graph for the requested targets.",
+        )
+
+    # 3. Extract parameter definitions
+    parameters = analyzer.extract_parameters(design_vars)
+
+    if not parameters:
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to extract parameter definitions from schema.",
+        )
+
+    # 4. Setup Evaluator
     evaluator = RemoteEvaluator(EXECUTION_SERVICE_URL)
 
-    # 2. Setup Optimizer
+    # 5. Setup Optimizer
     try:
         constraints = (
             [c.model_dump() for c in req.constraints] if req.constraints else None
@@ -58,14 +89,14 @@ async def optimize(req: OptimizeRequest):
 
         optimizer = BayesianOptimizer(
             evaluator=evaluator,
-            parameters=[p.model_dump() for p in req.parameters],
+            parameters=parameters,
             objectives=[o.model_dump() for o in req.objectives],
             constraints=constraints,
             fidelity_parameter=req.fidelity_parameter,
             use_bonsai=req.use_bonsai,
         )
 
-        # 3. Run Optimization
+        # 6. Run Optimization
         result = optimizer.optimize(n_steps=req.n_steps, n_init=req.n_init)
 
         # Convert tensor/numpy to lists for JSON

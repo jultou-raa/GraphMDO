@@ -1,4 +1,4 @@
-from typing import Any, Callable, Dict
+from typing import Any, Callable
 
 import openmdao.api as om
 
@@ -10,7 +10,7 @@ class GraphProblemBuilder:
     Builds an OpenMDAO Problem from a graph schema dictionary.
     """
 
-    def __init__(self, schema: Dict[str, Any]):
+    def __init__(self, schema: dict[str, Any]):
         """
         Args:
             schema: A dictionary containing 'tools' and 'variables' definitions.
@@ -18,7 +18,7 @@ class GraphProblemBuilder:
         """
         self.schema = schema
 
-    def build_problem(self, tool_registry: Dict[str, Callable]) -> om.Problem:
+    def build_problem(self, tool_registry: dict[str, Callable]) -> om.Problem:
         """
         Constructs and sets up the OpenMDAO problem.
 

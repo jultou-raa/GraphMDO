@@ -60,18 +60,20 @@ def main():
 
     # 4. Optimization
     print("Starting Optimization...")
-    import torch
+
+    from mdo_framework.core.topology import TopologicalAnalyzer
+
+    schema = gm.get_graph_schema()
+
+    analyzer = TopologicalAnalyzer(schema)
+    design_vars, _ = analyzer.resolve_dependencies(["f_xy"])
+    parameters = analyzer.extract_parameters(design_vars)
 
     evaluator = LocalEvaluator(prob)
-    torch.tensor([[-10.0, -10.0], [10.0, 10.0]], dtype=torch.double)
 
-    # We want to minimize f_xy with respect to x, y
     optimizer = BayesianOptimizer(
         evaluator=evaluator,
-        parameters=[
-            {"name": "x", "type": "range", "bounds": [-10.0, 10.0]},
-            {"name": "y", "type": "range", "bounds": [-10.0, 10.0]},
-        ],
+        parameters=parameters,
         objectives=[{"name": "f_xy", "minimize": True}],
     )
 

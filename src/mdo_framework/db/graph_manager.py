@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any
 
 from mdo_framework.db.client import FalkorDBClient
 
@@ -14,14 +14,27 @@ class GraphManager:
         self.graph.query(query)
 
     def add_variable(
-        self, name: str, value: Any = None, lower: float = None, upper: float = None
+        self,
+        name: str,
+        value: Any = None,
+        lower: float = None,
+        upper: float = None,
+        param_type: str = "continuous",
+        choices: list = None,
+        value_type: str = "float",
     ):
         """Adds a variable node to the graph."""
+        import json
+
+        choices_str = json.dumps(choices) if choices is not None else "null"
         query = f"""
         MERGE (v:Variable {{name: '{name}'}})
         SET v.value = {value if value is not None else "null"},
             v.lower = {lower if lower is not None else "null"},
-            v.upper = {upper if upper is not None else "null"}
+            v.upper = {upper if upper is not None else "null"},
+            v.param_type = '{param_type}',
+            v.choices = '{choices_str}',
+            v.value_type = '{value_type}'
         """
         self.graph.query(query)
 
@@ -46,22 +59,43 @@ class GraphManager:
         """
         self.graph.query(query)
 
-    def get_tools(self) -> List[Dict[str, Any]]:
+    def get_tools(self) -> list[dict[str, Any]]:
         """Retrieves all tools."""
         query = "MATCH (t:Tool) RETURN t.name, t.fidelity"
         result = self.graph.query(query)
         return [{"name": r[0], "fidelity": r[1]} for r in result.result_set]
 
-    def get_variables(self) -> List[Dict[str, Any]]:
+    def get_variables(self) -> list[dict[str, Any]]:
         """Retrieves all variables."""
-        query = "MATCH (v:Variable) RETURN v.name, v.value, v.lower, v.upper"
-        result = self.graph.query(query)
-        return [
-            {"name": r[0], "value": r[1], "lower": r[2], "upper": r[3]}
-            for r in result.result_set
-        ]
+        import json
 
-    def get_tool_inputs(self, tool_name: str) -> List[str]:
+        query = "MATCH (v:Variable) RETURN v.name, v.value, v.lower, v.upper, v.param_type, v.choices, v.value_type"
+        result = self.graph.query(query)
+        vars_list = []
+        for r in result.result_set:
+            choices_val = r[5]
+            if choices_val and choices_val != "null" and isinstance(choices_val, str):
+                try:
+                    choices_val = json.loads(choices_val)
+                except Exception:
+                    pass
+            elif choices_val == "null":
+                choices_val = None
+
+            vars_list.append(
+                {
+                    "name": r[0],
+                    "value": r[1],
+                    "lower": r[2],
+                    "upper": r[3],
+                    "param_type": r[4] if r[4] else "continuous",
+                    "choices": choices_val,
+                    "value_type": r[6] if len(r) > 6 and r[6] else "float",
+                }
+            )
+        return vars_list
+
+    def get_tool_inputs(self, tool_name: str) -> list[str]:
         """Retrieves input variables for a specific tool."""
         query = f"""
         MATCH (v:Variable)-[:INPUTS_TO]->(t:Tool {{name: '{tool_name}'}})
@@ -70,7 +104,7 @@ class GraphManager:
         result = self.graph.query(query)
         return [r[0] for r in result.result_set]
 
-    def get_tool_outputs(self, tool_name: str) -> List[str]:
+    def get_tool_outputs(self, tool_name: str) -> list[str]:
         """Retrieves output variables for a specific tool."""
         query = f"""
         MATCH (t:Tool {{name: '{tool_name}'}})-[:OUTPUTS]->(v:Variable)
@@ -79,7 +113,7 @@ class GraphManager:
         result = self.graph.query(query)
         return [r[0] for r in result.result_set]
 
-    def get_graph_schema(self) -> Dict[str, Any]:
+    def get_graph_schema(self) -> dict[str, Any]:
         """
         Returns a serializable dictionary representing the entire graph structure.
         """
