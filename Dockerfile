@@ -15,8 +15,7 @@ COPY src/ src/
 # Pass a dummy version to setuptools-scm during the docker build to prevent failures
 # since the .git directory is explicitly not copied (bloat, layer caching, security).
 # This image is primarily used for Security Scanning in the CI.
-ARG SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MDO_FRAMEWORK="0.0.0"
-ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MDO_FRAMEWORK=${SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MDO_FRAMEWORK}
+ENV SETUPTOOLS_SCM_PRETEND_VERSION="0.0.0"
 
 # Install dependencies
 RUN uv sync --frozen
