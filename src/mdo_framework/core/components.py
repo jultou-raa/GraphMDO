@@ -37,6 +37,22 @@ class ToolComponent(om.ExplicitComponent):
             self.declare_partials("*", "*", method="fd")
 
     def compute(self, inputs, outputs):
+        """Computes outputs given inputs.
+
+        Expects the wrapped function to return a dictionary mapping output names
+        to their computed values. As a legacy fallback, it also supports positional
+        tuples.
+
+        Args:
+            inputs: OpenMDAO inputs dictionary.
+            outputs: OpenMDAO outputs dictionary to be populated.
+
+        Example:
+            ```python
+            # If func is: def my_func(x): return {"y": x * 2}
+            # This compute block sets outputs["y"] = inputs["x"] * 2
+            ```
+        """
         func = self.options["func"]
         # Prepare inputs as a dictionary
         input_vals = {name: inputs[name] for name in self.options["inputs"]}

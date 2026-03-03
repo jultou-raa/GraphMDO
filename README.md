@@ -6,21 +6,21 @@
 [![Deploy Documentation](https://github.com/jultou-raa/GraphMDO/actions/workflows/docs.yml/badge.svg)](https://github.com/jultou-raa/GraphMDO/actions/workflows/docs.yml)
 [![codecov](https://codecov.io/gh/jultou-raa/GraphMDO/graph/badge.svg?token=f2150ayDNv)](https://codecov.io/gh/jultou-raa/GraphMDO)
 
-GraphMDO is an advanced Multidisciplinary Design Optimization (MDO) framework that integrates graph databases with state-of-the-art optimization and surrogate modeling tools.
+GraphMDO bridges data engineering and MDO. It extracts topological data (solvers, variables, fidelity levels) to form an oriented graph, specifically utilizing KADMOS for semantic formulation and exporting to CMDOWS. The execution is handled by OpenMDAO and the Surrogate Modeling Toolbox (SMT), driven by constrained Bayesian optimization (ax-platform) or evolutionary algorithms (pymoo). The primary operational goal is to isolate and maximize a single target performance metric while strictly holding all other performance metrics constant.
 
 ## Key Features
 
 *   **Native Graph Formulation**: Uses [FalkorDB](https://falkordb.com/) to store problem definitions (variables, tools, dependencies) as a property graph.
 *   **Dynamic Problem Construction**: Automatically translates the graph topology into an executable [OpenMDAO](https://openmdao.org/) problem.
 *   **Multi-Fidelity Surrogates**: Integrates [SMT](https://smt.readthedocs.io/en/latest/) for Co-Kriging and other surrogate models.
-*   **Bayesian Optimization**: Leverages [BoTorch](https://botorch.org/) for efficient, constrained optimization.
+*   **Constrained Bayesian Optimization**: Leverages [Ax Platform](https://ax.dev/) for robust optimization, easily managing KADMOS multi-objective targets, fidelity, and discrete/continuous parameters.
 
 ## Project Architecture
 
 1.  **FalkorDB**: Stores the "Fundamental Problem Graph" (FPG).
 2.  **Graph Manager**: Python API to manipulate the graph structure.
 3.  **Translator**: Converts the graph into an OpenMDAO System.
-4.  **Optimizer**: Drivers (BoTorch, Pymoo) that execute the OpenMDAO problem.
+4.  **Optimizer**: Drivers (Ax, Pymoo) that execute the OpenMDAO problem holding constraints constant.
 
 ## Installation
 
@@ -75,7 +75,7 @@ Once the graph is populated, you can run the optimization workflow. You need to 
 ```python
 from mdo_framework.core.translator import GraphProblemBuilder
 from mdo_framework.optimization.optimizer import BayesianOptimizer, LocalEvaluator
-import torch
+from mdo_framework.core.topology import TopologicalAnalyzer
 
 # Define tool implementation
 def my_tool_func(x, y):
@@ -91,17 +91,21 @@ schema = gm.get_graph_schema()
 builder = GraphProblemBuilder(schema)
 prob = builder.build_problem(tool_registry)
 
+# Resolve Topology mapping design_vars automatically from KADMOS graph
+analyzer = TopologicalAnalyzer(schema)
+design_vars, _ = analyzer.resolve_dependencies(["z"])
+parameters = analyzer.extract_parameters(design_vars)
+
 # Run Optimization
 evaluator = LocalEvaluator(prob)
 optimizer = BayesianOptimizer(
     evaluator=evaluator,
-    design_vars=["x", "y"],
-    objective="z",
-    bounds=torch.tensor([[0.0, 0.0], [10.0, 10.0]], dtype=torch.double)
+    parameters=parameters,
+    objectives=[{"name": "z", "minimize": True}],
 )
 
 result = optimizer.optimize(n_steps=10)
-print(f"Best Result: {result['best_y']} at {result['best_x']}")
+print(f"Best Result: {result['best_objectives']} at {result['best_parameters']}")
 ```
 
 ### 3. Running Tests

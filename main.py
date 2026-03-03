@@ -8,7 +8,9 @@ def paraboloid_func(x, y):
     """
     f(x, y) = (x-3)**2 + xy + (y+4)**2 - 3
     """
-    return (x - 3.0) ** 2 + x * y + (y + 4.0) ** 2 - 3.0
+    f_xy = (x - 3.0) ** 2 + x * y + (y + 4.0) ** 2 - 3.0
+    c_xy = x - y
+    return {"f_xy": f_xy, "c_xy": c_xy}
 
 
 # --- Tool Registry ---
@@ -32,6 +34,7 @@ def main():
     gm.add_variable("x", value=0.0, lower=-10.0, upper=10.0)
     gm.add_variable("y", value=0.0, lower=-10.0, upper=10.0)
     gm.add_variable("f_xy", value=0.0)
+    gm.add_variable("c_xy", value=0.0)
 
     # Tool
     gm.add_tool("Paraboloid")
@@ -43,6 +46,7 @@ def main():
 
     # Tool -> Output
     gm.connect_tool_to_output("Paraboloid", "f_xy")
+    gm.connect_tool_to_output("Paraboloid", "c_xy")
 
     # Verify Topology
     inputs = gm.get_tool_inputs("Paraboloid")
@@ -60,18 +64,21 @@ def main():
 
     # 4. Optimization
     print("Starting Optimization...")
-    import torch
+
+    from mdo_framework.core.topology import TopologicalAnalyzer
+
+    schema = gm.get_graph_schema()
+
+    analyzer = TopologicalAnalyzer(schema)
+    design_vars, _ = analyzer.resolve_dependencies(["f_xy"])
+    parameters = analyzer.extract_parameters(design_vars)
 
     evaluator = LocalEvaluator(prob)
-    bounds = torch.tensor([[-10.0, -10.0], [10.0, 10.0]], dtype=torch.double)
 
-    # We want to minimize f_xy with respect to x, y
     optimizer = BayesianOptimizer(
         evaluator=evaluator,
-        design_vars=["x", "y"],
-        objective="f_xy",
-        bounds=bounds,
-        maximize=False,
+        parameters=parameters,
+        objectives=[{"name": "f_xy", "minimize": True}],
     )
 
     try:

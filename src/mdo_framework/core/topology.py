@@ -1,0 +1,102 @@
+from typing import Any
+
+
+class TopologicalAnalyzer:
+    """
+    Analyzes a KADMOS/CMDOWS-style graph schema recursively to extract
+    the independent design variables and sub-graph components required
+    to evaluate a specific target output.
+    """
+
+    def __init__(self, schema: dict[str, Any]):
+        """
+        Initializes the analyzer with the provided graph schema.
+
+        Args:
+            schema: Dictionary representing the full graph tools and variables.
+        """
+        self.schema = schema
+        self.tools = {t["name"]: t for t in schema.get("tools", [])}
+        self.variables = {v["name"]: v for v in schema.get("variables", [])}
+
+        # Build reverse lookup: variable name -> list of tools that output it
+        self.var_sources = {}
+        for tool_name, tool_data in self.tools.items():
+            for out_var in tool_data.get("outputs", []):
+                if out_var not in self.var_sources:
+                    self.var_sources[out_var] = []
+                self.var_sources[out_var].append(tool_name)
+
+    def resolve_dependencies(
+        self, target_outputs: list[str]
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        """
+        Recursively resolve all dependencies needed to compute target_outputs.
+        Returns a tuple containing:
+            1. A list of independent design variables (inputs without any tool source).
+            2. A list of tool configurations required for execution.
+        """
+        visited_tools: set[str] = set()
+        required_inputs: set[str] = set()
+
+        def _traverse(var_name: str):
+            sources = self.var_sources.get(var_name, [])
+
+            # If there are no sources, this is an independent input (design variable)
+            if not sources:
+                required_inputs.add(var_name)
+                return
+
+            # Traverse upstream through tools producing this variable
+            for source_tool in sources:
+                if source_tool not in visited_tools:
+                    visited_tools.add(source_tool)
+                    tool_data = self.tools[source_tool]
+                    for input_var in tool_data.get("inputs", []):
+                        _traverse(input_var)
+
+        for out in target_outputs:
+            if out not in self.variables:
+                raise ValueError(f"Target output '{out}' is not defined in the graph.")
+            _traverse(out)
+
+        # Map variable names back to definitions to maintain schema structure format
+        design_vars = list(required_inputs)
+        req_tools = [self.tools[t] for t in visited_tools]
+
+        return design_vars, req_tools
+
+    def extract_parameters(self, design_vars: list[str]) -> list[dict[str, Any]]:
+        """
+        Formats design variables into Ax-Platform ready parameter structures.
+        """
+        parameters = []
+        for var_name in design_vars:
+            var_data = self.variables.get(var_name)
+            if not var_data:
+                continue
+
+            param_type = var_data.get("param_type", "continuous")
+            if param_type == "choice":
+                parameters.append(
+                    {
+                        "name": var_name,
+                        "type": "choice",
+                        "values": var_data.get("choices", []),
+                        "value_type": var_data.get("value_type", "float"),
+                    }
+                )
+            else:
+                parameters.append(
+                    {
+                        "name": var_name,
+                        "type": "range",
+                        "bounds": [
+                            var_data.get("lower", 0.0),
+                            var_data.get("upper", 1.0),
+                        ],
+                        "value_type": var_data.get("value_type", "float"),
+                    }
+                )
+
+        return parameters

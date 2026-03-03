@@ -1,5 +1,3 @@
-from typing import Optional
-
 from fastapi import FastAPI
 from pydantic import BaseModel
 
@@ -14,9 +12,9 @@ gm = GraphManager()
 
 class VariableCreate(BaseModel):
     name: str
-    value: Optional[float] = None
-    lower: Optional[float] = None
-    upper: Optional[float] = None
+    value: float | None = None
+    lower: float | None = None
+    upper: float | None = None
 
 
 class ToolCreate(BaseModel):

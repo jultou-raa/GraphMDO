@@ -96,7 +96,7 @@ class TestGraphManager(unittest.TestCase):
 
         mock_result = MagicMock()
         # v.name, v.value, v.lower, v.upper
-        mock_result.result_set = [["VarX", 1.0, 0.0, 10.0]]
+        mock_result.result_set = [["VarX", 1.0, 0.0, 10.0, "range", "null", "float"]]
         mock_graph.query.return_value = mock_result
 
         gm = GraphManager()
@@ -155,7 +155,7 @@ class TestGraphManager(unittest.TestCase):
         res1.result_set = [["ToolA", "high"]]
 
         res2 = MagicMock()
-        res2.result_set = [["VarX", 1.0, 0.0, 10.0]]
+        res2.result_set = [["VarX", 1.0, 0.0, 10.0, "range", "null", "float"]]
 
         res3 = MagicMock()
         res3.result_set = [["VarX"]]

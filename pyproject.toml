@@ -9,6 +9,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "ax-platform>=1.2.3",
     "botorch>=0.17.0",
     "falkordb>=1.6.0",
     "fastapi>=0.133.1",
