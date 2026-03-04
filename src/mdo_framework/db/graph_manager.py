@@ -43,17 +43,13 @@ class GraphManager:
             gm.add_variable("material", value="aluminum", choices=["aluminum", "composite"], param_type="choice", value_type="str")
             ```
         """
-        import json
-
-        choices_str = json.dumps(choices) if choices is not None else None
-
         props = {
             "name": name,
             "value": value,
             "lower": lower,
             "upper": upper,
             "param_type": param_type,
-            "choices": choices_str,
+            "choices": choices,
             "value_type": value_type,
         }
 
@@ -106,11 +102,13 @@ class GraphManager:
             gm.connect_tool_to_output("CFD_Solver", "drag_coefficient")
             ```
         """
-        query = f"""
-        MATCH (t:Tool {{name: '{tool_name}'}}), (v:Variable {{name: '{variable_name}'}})
+        query = """
+        MATCH (t:Tool {name: $tool_name}), (v:Variable {name: $variable_name})
         MERGE (t)-[:OUTPUTS]->(v)
         """
-        self.graph.query(query)
+        self.graph.query(
+            query, params={"tool_name": tool_name, "variable_name": variable_name}
+        )
 
     def connect_input_to_tool(self, variable_name: str, tool_name: str):
         """Connects an input variable to a tool (Variable -> Tool).
@@ -124,11 +122,13 @@ class GraphManager:
             gm.connect_input_to_tool("wing_span", "CFD_Solver")
             ```
         """
-        query = f"""
-        MATCH (v:Variable {{name: '{variable_name}'}}), (t:Tool {{name: '{tool_name}'}})
+        query = """
+        MATCH (v:Variable {name: $variable_name}), (t:Tool {name: $tool_name})
         MERGE (v)-[:INPUTS_TO]->(t)
         """
-        self.graph.query(query)
+        self.graph.query(
+            query, params={"variable_name": variable_name, "tool_name": tool_name}
+        )
 
     def get_tools(self) -> list[dict[str, Any]]:
         """Retrieves all tools."""
@@ -142,8 +142,6 @@ class GraphManager:
 
     def get_variables(self) -> list[dict[str, Any]]:
         """Retrieves all variables."""
-        import json
-
         query = "MATCH (v:Variable) RETURN v"
         result = self.graph.query(query)
         vars_list = []
@@ -157,35 +155,25 @@ class GraphManager:
             if "value_type" not in props:
                 props["value_type"] = "float"
 
-            # Handle choices JSON string deserialization
-            choices_val = props.get("choices")
-            if choices_val and isinstance(choices_val, str) and choices_val != "null":
-                try:
-                    props["choices"] = json.loads(choices_val)
-                except Exception:
-                    pass
-            elif choices_val == "null":
-                props["choices"] = None
-
             vars_list.append(props)
         return vars_list
 
     def get_tool_inputs(self, tool_name: str) -> list[str]:
         """Retrieves input variables for a specific tool."""
-        query = f"""
-        MATCH (v:Variable)-[:INPUTS_TO]->(t:Tool {{name: '{tool_name}'}})
+        query = """
+        MATCH (v:Variable)-[:INPUTS_TO]->(t:Tool {name: $tool_name})
         RETURN v.name
         """
-        result = self.graph.query(query)
+        result = self.graph.query(query, params={"tool_name": tool_name})
         return [r[0] for r in result.result_set]
 
     def get_tool_outputs(self, tool_name: str) -> list[str]:
         """Retrieves output variables for a specific tool."""
-        query = f"""
-        MATCH (t:Tool {{name: '{tool_name}'}})-[:OUTPUTS]->(v:Variable)
+        query = """
+        MATCH (t:Tool {name: $tool_name})-[:OUTPUTS]->(v:Variable)
         RETURN v.name
         """
-        result = self.graph.query(query)
+        result = self.graph.query(query, params={"tool_name": tool_name})
         return [r[0] for r in result.result_set]
 
     def get_graph_schema(self) -> dict[str, Any]:
@@ -201,21 +189,32 @@ class GraphManager:
             print(schema["tools"][0]["name"])
             ```
         """
-        tools = self.get_tools()
         variables = self.get_variables()
-        schema = {"tools": [], "variables": variables}
 
-        for tool in tools:
-            name = tool["name"]
-            inputs = self.get_tool_inputs(name)
-            outputs = self.get_tool_outputs(name)
-            schema["tools"].append(
+        # Single query to get all tools with their inputs and outputs
+        query = """
+        MATCH (t:Tool)
+        OPTIONAL MATCH (v_in:Variable)-[:INPUTS_TO]->(t)
+        OPTIONAL MATCH (t)-[:OUTPUTS]->(v_out:Variable)
+        RETURN t,
+               collect(DISTINCT v_in.name) AS inputs,
+               collect(DISTINCT v_out.name) AS outputs
+        """
+        result = self.graph.query(query)
+
+        tools = []
+        for r in result.result_set:
+            tool_node = r[0]
+            inputs = [name for name in r[1] if name is not None]
+            outputs = [name for name in r[2] if name is not None]
+
+            tools.append(
                 {
-                    "name": name,
-                    "fidelity": tool["fidelity"],
+                    "name": tool_node.properties["name"],
+                    "fidelity": tool_node.properties.get("fidelity", "high"),
                     "inputs": inputs,
                     "outputs": outputs,
                 }
             )
 
-        return schema
+        return {"tools": tools, "variables": variables}
