@@ -1,4 +1,5 @@
 import unittest
+
 from mdo_framework.core.topology import TopologicalAnalyzer
 
 

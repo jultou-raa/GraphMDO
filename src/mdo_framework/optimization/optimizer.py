@@ -1,19 +1,16 @@
 import json
-import warnings
 import logging
+import warnings
 from typing import Any, Protocol
 
 import httpx
-import openmdao.api as om
-
-
-from ax.api.client import Client
-from ax.api.configs import RangeParameterConfig, ChoiceParameterConfig
-from ax.generation_strategy.generation_strategy import (
-    GenerationStrategy,
-    GenerationStep,
-)
 from ax.adapter.registry import Generators as Models
+from ax.api.client import Client
+from ax.api.configs import ChoiceParameterConfig, RangeParameterConfig
+from ax.generation_strategy.generation_strategy import (
+    GenerationStep,
+    GenerationStrategy,
+)
 from botorch.acquisition.logei import qLogNoisyExpectedImprovement
 
 logger = logging.getLogger(__name__)

@@ -46,6 +46,7 @@ class TestExecutionService(unittest.TestCase):
 
     def test_config_validation_invalid_types(self):
         import importlib
+
         import services.execution.main
 
         try:
@@ -58,6 +59,7 @@ class TestExecutionService(unittest.TestCase):
 
     def test_config_validation_invalid_values(self):
         import importlib
+
         import services.execution.main
 
         try:
@@ -264,6 +266,7 @@ class TestExecutionService(unittest.TestCase):
 
     def test_schema_provider_httpx_errors(self):
         import httpx
+
         from services.execution.main import SchemaProvider
 
         mock_client = AsyncMock()
@@ -371,6 +374,7 @@ class TestProblemPool(unittest.TestCase):
 
     def test_problem_pool_replenish_and_discard(self):
         import asyncio
+
         from services.execution.main import SchemaEnvelope
 
         envelope = SchemaEnvelope(
@@ -407,8 +411,10 @@ class TestProblemPool(unittest.TestCase):
 
     def test_problem_pool_build_failures(self):
         import asyncio
-        from services.execution.main import SchemaEnvelope
+
         from fastapi import HTTPException
+
+        from services.execution.main import SchemaEnvelope
 
         envelope = SchemaEnvelope(
             {
@@ -428,7 +434,9 @@ class TestProblemPool(unittest.TestCase):
 
     def test_problem_pool_checkout_timeout(self):
         import asyncio
+
         from fastapi import HTTPException
+
         from services.execution.main import SchemaEnvelope
 
         envelope = SchemaEnvelope(
@@ -486,8 +494,9 @@ class TestOptimizationService(unittest.TestCase):
     @patch("httpx.AsyncClient")
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
     def test_optimize(self, mock_resolve, mock_get, mock_optimize):
-        import numpy as np
         from unittest.mock import AsyncMock
+
+        import numpy as np
 
         mock_resp = MagicMock()
         mock_resp.json.return_value = {

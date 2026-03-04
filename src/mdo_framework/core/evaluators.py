@@ -1,5 +1,6 @@
-import openmdao.api as om
 from typing import Any
+
+import openmdao.api as om
 
 
 class LocalEvaluator:
