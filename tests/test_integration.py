@@ -1,8 +1,8 @@
 import unittest
 
-
+from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.core.translator import GraphProblemBuilder
-from mdo_framework.optimization.optimizer import BayesianOptimizer, LocalEvaluator
+from mdo_framework.optimization.optimizer import BayesianOptimizer
 
 
 class TestIntegration(unittest.TestCase):

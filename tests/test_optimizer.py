@@ -2,13 +2,9 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import openmdao.api as om
-import torch
 
-from mdo_framework.optimization.optimizer import (
-    BayesianOptimizer,
-    LocalEvaluator,
-    RemoteEvaluator,
-)
+from mdo_framework.core.evaluators import LocalEvaluator
+from mdo_framework.optimization.optimizer import BayesianOptimizer, RemoteEvaluator
 
 
 class TestOptimizer(unittest.TestCase):
@@ -17,15 +13,13 @@ class TestOptimizer(unittest.TestCase):
         self.mock_prob = MagicMock(spec=om.Problem)
         self.mock_prob.get_val.return_value = 1.0
 
-        self.design_vars = ["x", "y"]
+        self.evaluator = LocalEvaluator(self.mock_prob)
+
         self.parameters = [
             {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
             {"name": "y", "type": "range", "bounds": [0.0, 1.0]},
         ]
-        self.objective = "f_xy"
-        self.objectives = [{"name": "f_xy"}]
-        self.evaluator = LocalEvaluator(self.mock_prob)
-        self.bounds = torch.tensor([[0.0, 1.0], [0.0, 1.0]], dtype=torch.double)
+        self.objectives = [{"name": "f_xy", "minimize": True}]
 
     def test_local_evaluator_scalar(self):
         """Tests LocalEvaluator when Problem.get_val returns a scalar."""
@@ -51,19 +45,18 @@ class TestOptimizer(unittest.TestCase):
 
     @patch("mdo_framework.optimization.optimizer.httpx.post")
     def test_remote_evaluator(self, mock_post):
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"results": {"f_xy": 42.0}}
-        mock_post.return_value = mock_response
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"results": {"f_xy": 2.0}}
+        mock_post.return_value = mock_resp
 
-        evaluator = RemoteEvaluator("http://mock-service")
-
-        result = evaluator.evaluate({"x": 1.0, "y": 2.0}, ["f_xy"])
+        evaluator = RemoteEvaluator("http://fake-url")
+        res = evaluator.evaluate({"x": 0.5}, ["f_xy"])
 
         mock_post.assert_called_once()
-        self.assertEqual(result["f_xy"], 42.0)
+        self.assertEqual(res["f_xy"], 2.0)
 
     @patch("mdo_framework.optimization.optimizer.Client")
-    def test_optimize_loop(self, mock_client_cls):
+    def test_optimize_basic(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5}}
@@ -77,7 +70,6 @@ class TestOptimizer(unittest.TestCase):
         )
 
         opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
-
         result = opt.optimize(n_steps=1, n_init=2)
 
         self.assertIn("best_parameters", result)
@@ -106,7 +98,6 @@ class TestOptimizer(unittest.TestCase):
         objs = [{"name": "f_xy", "minimize": True}, {"name": "g_xy", "minimize": False}]
 
         opt = BayesianOptimizer(self.evaluator, params, objs, use_bonsai=True)
-
         result = opt.optimize(n_steps=1, n_init=2)
 
         self.assertIn("best_parameters", result)
@@ -120,33 +111,34 @@ class TestOptimizer(unittest.TestCase):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5}}
+        mock_client._to_json_snapshot.return_value = {}
+        mock_client.to_json_snapshot.return_value = "{}"
 
         # Test pareto frontier empty handling
         mock_client.get_pareto_frontier.return_value = None
 
-        params = [
-            {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
-            {"name": "y", "type": "range", "bounds": [0.0, 1.0]},
-        ]
         objs = [{"name": "f_xy", "minimize": True}, {"name": "g_xy", "minimize": False}]
 
-        opt = BayesianOptimizer(self.evaluator, params, objs)
-
+        opt = BayesianOptimizer(self.evaluator, self.parameters, objs)
         result = opt.optimize(n_steps=1, n_init=2)
 
         self.assertIsNone(result["best_parameters"])
+        self.assertIsNone(result["best_objectives"])
 
     @patch("mdo_framework.optimization.optimizer.Client")
     def test_optimize_exception(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5}}
+        mock_client._to_json_snapshot.return_value = {}
+        mock_client.to_json_snapshot.return_value = "{}"
 
-        # Test exception
-        mock_client.get_best_parameterization.side_effect = Exception("Failed")
+        # Force exception on result retrieval
+        mock_client.get_best_parameterization.side_effect = Exception(
+            "Optimization failed"
+        )
 
         opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
-
         result = opt.optimize(n_steps=1, n_init=2)
 
         self.assertIsNone(result["best_parameters"])
@@ -156,6 +148,8 @@ class TestOptimizer(unittest.TestCase):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5}}
+        mock_client._to_json_snapshot.return_value = {}
+        mock_client.to_json_snapshot.return_value = "{}"
         mock_client.get_best_parameterization.return_value = (
             {"x": 0.5, "y": 0.5},
             {"f_xy": 42.0},
@@ -168,7 +162,6 @@ class TestOptimizer(unittest.TestCase):
         opt = BayesianOptimizer(
             self.evaluator, self.parameters, self.objectives, constraints=constraints
         )
-
         result = opt.optimize(n_steps=1, n_init=2)
 
         self.assertIn("best_parameters", result)

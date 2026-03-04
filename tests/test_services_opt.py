@@ -1,4 +1,5 @@
 import unittest
+
 from fastapi.testclient import TestClient
 
 from services.optimization.main import app as optimization_app

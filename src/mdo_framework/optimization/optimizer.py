@@ -1,19 +1,16 @@
 import json
-import warnings
 import logging
+import warnings
 from typing import Any, Protocol
 
 import httpx
-import openmdao.api as om
-
-
-from ax.api.client import Client
-from ax.api.configs import RangeParameterConfig, ChoiceParameterConfig
-from ax.generation_strategy.generation_strategy import (
-    GenerationStrategy,
-    GenerationStep,
-)
 from ax.adapter.registry import Generators as Models
+from ax.api.client import Client
+from ax.api.configs import ChoiceParameterConfig, RangeParameterConfig
+from ax.generation_strategy.generation_strategy import (
+    GenerationStep,
+    GenerationStrategy,
+)
 from botorch.acquisition.logei import qLogNoisyExpectedImprovement
 
 logger = logging.getLogger(__name__)
@@ -27,34 +24,6 @@ class Evaluator(Protocol):
         Evaluates the requested objectives given the design parameters.
         """
         ...
-
-
-class LocalEvaluator:
-    """
-    Evaluates the design parameters locally using an OpenMDAO Problem instance.
-
-    Args:
-        problem: An instantiated OpenMDAO Problem object.
-    """
-
-    def __init__(self, problem: om.Problem):
-        self.problem = problem
-
-    def evaluate(
-        self, parameters: dict[str, Any], objectives: list[str]
-    ) -> dict[str, float]:
-        for name, val in parameters.items():
-            self.problem.set_val(name, val)
-        self.problem.run_model()
-
-        results = {}
-        for obj in objectives:
-            results[obj] = (
-                float(self.problem.get_val(obj)[0])
-                if hasattr(self.problem.get_val(obj), "__iter__")
-                else float(self.problem.get_val(obj))
-            )
-        return results
 
 
 class RemoteEvaluator:
