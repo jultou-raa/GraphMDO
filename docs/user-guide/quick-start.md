@@ -43,7 +43,8 @@ Once the graph is populated, you can run the optimization.
 
 ```python
 from mdo_framework.core.translator import GraphProblemBuilder
-from mdo_framework.optimization.optimizer import BayesianOptimizer, LocalEvaluator
+from mdo_framework.optimization.optimizer import BayesianOptimizer
+from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.core.topology import TopologicalAnalyzer
 
 # 1. Define Tool Implementation
