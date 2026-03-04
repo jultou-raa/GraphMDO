@@ -40,3 +40,6 @@ dev = [
     "pytest-cov>=7.0.0",
     "ruff>=0.15.2",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mdo_framework", "src/services"]
