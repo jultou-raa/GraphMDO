@@ -174,6 +174,39 @@ class TestOptimizer(unittest.TestCase):
         self.assertIn("best_parameters", result)
         self.assertEqual(len(result["history"]), 3)
 
+    @patch("mdo_framework.optimization.optimizer.Client")
+    def test_fidelity_parameter_emits_warning(self, mock_client_cls):
+        """fidelity_parameter is not supported by the new Ax Client API;
+        a UserWarning must be raised and optimization still completes normally."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5}}
+        mock_client._to_json_snapshot.return_value = {}
+        mock_client.to_json_snapshot.return_value = "{}"
+        mock_client.get_best_parameterization.return_value = (
+            {"x": 0.5, "y": 0.5},
+            {"f_xy": 42.0},
+            0,
+            "0_0",
+        )
+
+        opt = BayesianOptimizer(
+            self.evaluator,
+            self.parameters,
+            self.objectives,
+            fidelity_parameter="x",
+        )
+
+        with self.assertWarns(UserWarning) as ctx:
+            result = opt.optimize(n_steps=1, n_init=2)
+
+        warning_message = str(ctx.warning)
+        self.assertIn("fidelity_parameter", warning_message)
+        self.assertIn("'x'", warning_message)
+        self.assertIn("not supported", warning_message)
+        # Optimization must still complete despite the warning
+        self.assertIn("best_parameters", result)
+
 
 if __name__ == "__main__":
     unittest.main()
