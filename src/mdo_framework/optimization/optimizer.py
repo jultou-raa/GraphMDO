@@ -71,12 +71,6 @@ class RemoteEvaluator:
 
         # Need to loop or post all objectives
         # The current endpoint expects one objective per call, or we can handle it
-        # Assuming the execution service evaluates everything required in one pass
-        # and we can pick out multiple objectives if we update it, or call per objective.
-        # But wait, execution service takes single 'objective'. We will need to adapt it.
-        # For simplicity in this step, if multiple objectives, we'll evaluate the first and mock others or call multiple times.
-        # Ideally, execution service should take a list of objectives.
-        # Let's adjust execution service payload if we need to. For now, let's call it per objective or assume the endpoint is updated to take multiple objectives.
 
         payload = {
             "inputs": parameters,

@@ -36,8 +36,6 @@ class TestSMTSurrogate(unittest.TestCase):
 
         # NOTE: SMT KPLS default n_comp is 1.
         # My implementation initializes theta0 based on xt.shape[1].
-        # If n_comp < n_dims, theta0 size might mismatch if logic isn't careful.
-        # Let's check mdo_framework/core/surrogates.py
 
         surrogate.train(xt, yt)
 
@@ -53,7 +51,6 @@ class TestSMTSurrogate(unittest.TestCase):
     def test_multi_fidelity_mock(self):
         # MFK is complex to set up with limited points, so we'll just test the branch logic
         # if possible, or use a very simple case.
-        # Let's try to cover the code path.
         xt = np.array([[0.0], [1.0]])
         yt = np.array([[0.0], [1.0]])
         x_lf = np.array([[0.0], [0.5], [1.0]])
