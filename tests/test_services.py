@@ -155,8 +155,6 @@ class TestExecutionService(unittest.TestCase):
                 json={"inputs": {"unknown_var": 1.0}, "objectives": ["f_xy"]},
             )
             self.assertEqual(response.status_code, 422)
-            # This triggers on unknown inputs before objective since it's hardcoded to f_xy logic inside
-            # but our endpoint currently errors unknown objective first. So let's mock the objective known
 
     def test_evaluate_payload_limits(self):
         # inputs > 100
