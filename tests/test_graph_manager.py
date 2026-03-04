@@ -16,8 +16,10 @@ class TestGraphManager(unittest.TestCase):
 
         mock_graph.query.assert_called_once()
         args, _ = mock_graph.query.call_args
-        self.assertIn("MERGE (v:Variable {name: 'x'})", args[0])
-        self.assertIn("SET v.value = 1.0", args[0])
+        self.assertIn("MERGE (v:Variable {name: $name})", args[0])
+        self.assertIn("SET v += $props", args[0])
+        params = mock_graph.query.call_args[1].get("params")
+        self.assertEqual(params["props"]["value"], 1.0)
 
     @patch("mdo_framework.db.graph_manager.FalkorDBClient")
     def test_add_tool(self, mock_client_cls):
@@ -30,7 +32,7 @@ class TestGraphManager(unittest.TestCase):
 
         mock_graph.query.assert_called_once()
         args, _ = mock_graph.query.call_args
-        self.assertIn("MERGE (t:Tool {name: 'ToolA', fidelity: 'high'})", args[0])
+        self.assertIn("MERGE (t:Tool {name: $name})", args[0])
 
     @patch("mdo_framework.db.graph_manager.FalkorDBClient")
     def test_get_tools(self, mock_client_cls):
@@ -39,7 +41,11 @@ class TestGraphManager(unittest.TestCase):
         mock_client_instance.get_graph.return_value = mock_graph
 
         mock_result = MagicMock()
-        mock_result.result_set = [["ToolA", "high"], ["ToolB", "low"]]
+        node_a = MagicMock()
+        node_a.properties = {"name": "ToolA", "fidelity": "high"}
+        node_b = MagicMock()
+        node_b.properties = {"name": "ToolB", "fidelity": "low"}
+        mock_result.result_set = [[node_a], [node_b]]
         mock_graph.query.return_value = mock_result
 
         gm = GraphManager()
@@ -95,8 +101,17 @@ class TestGraphManager(unittest.TestCase):
         mock_client_instance.get_graph.return_value = mock_graph
 
         mock_result = MagicMock()
-        # v.name, v.value, v.lower, v.upper
-        mock_result.result_set = [["VarX", 1.0, 0.0, 10.0, "range", "null", "float"]]
+        node_x = MagicMock()
+        node_x.properties = {
+            "name": "VarX",
+            "value": 1.0,
+            "lower": 0.0,
+            "upper": 10.0,
+            "param_type": "range",
+            "choices": "null",
+            "value_type": "float"
+        }
+        mock_result.result_set = [[node_x]]
         mock_graph.query.return_value = mock_result
 
         gm = GraphManager()
@@ -144,18 +159,23 @@ class TestGraphManager(unittest.TestCase):
         mock_graph = MagicMock()
         mock_client_instance.get_graph.return_value = mock_graph
 
-        # We need to mock return values for sequential calls:
-        # 1. get_tools -> ["ToolA", "high"]
-        # 2. get_variables -> ["VarX", 1.0, 0, 10]
-        # 3. get_tool_inputs("ToolA") -> ["VarX"]
-        # 4. get_tool_outputs("ToolA") -> ["VarY"]
-
-        # mock_graph.query called 4 times.
         res1 = MagicMock()
-        res1.result_set = [["ToolA", "high"]]
+        node_a = MagicMock()
+        node_a.properties = {"name": "ToolA", "fidelity": "high"}
+        res1.result_set = [[node_a]]
 
         res2 = MagicMock()
-        res2.result_set = [["VarX", 1.0, 0.0, 10.0, "range", "null", "float"]]
+        node_x = MagicMock()
+        node_x.properties = {
+            "name": "VarX",
+            "value": 1.0,
+            "lower": 0.0,
+            "upper": 10.0,
+            "param_type": "range",
+            "choices": "null",
+            "value_type": "float"
+        }
+        res2.result_set = [[node_x]]
 
         res3 = MagicMock()
         res3.result_set = [["VarX"]]
@@ -163,14 +183,13 @@ class TestGraphManager(unittest.TestCase):
         res4 = MagicMock()
         res4.result_set = [["VarY"]]
 
-        # Side effect for query return values
-        # Note: Implementation calls get_tools(), then get_variables(), then loop tools -> inputs, outputs
-        # Order matters: tools, variables, inputs(ToolA), outputs(ToolA)
         mock_graph.query.side_effect = [res1, res2, res3, res4]
 
         gm = GraphManager()
         schema = gm.get_graph_schema()
 
+        self.assertIn("tools", schema)
+        self.assertIn("variables", schema)
         self.assertEqual(len(schema["tools"]), 1)
         self.assertEqual(schema["tools"][0]["name"], "ToolA")
         self.assertEqual(schema["tools"][0]["inputs"], ["VarX"])

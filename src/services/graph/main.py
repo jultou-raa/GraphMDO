@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from mdo_framework.db.graph_manager import GraphManager
 
@@ -10,7 +10,10 @@ app = FastAPI(title="Graph Service")
 gm = GraphManager()
 
 
+
 class VariableCreate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     name: str
     value: float | None = None
     lower: float | None = None
@@ -18,6 +21,8 @@ class VariableCreate(BaseModel):
 
 
 class ToolCreate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     name: str
     fidelity: str = "high"
 
@@ -35,13 +40,15 @@ def clear_graph():
 
 @app.post("/variables")
 def create_variable(var: VariableCreate):
-    gm.add_variable(var.name, var.value, var.lower, var.upper)
+    gm.add_variable(
+        var.name, var.value, var.lower, var.upper, **(var.model_extra or {})
+    )
     return {"status": "created", "variable": var.name}
 
 
 @app.post("/tools")
 def create_tool(tool: ToolCreate):
-    gm.add_tool(tool.name, tool.fidelity)
+    gm.add_tool(tool.name, tool.fidelity, **(tool.model_extra or {}))
     return {"status": "created", "tool": tool.name}
 
 
