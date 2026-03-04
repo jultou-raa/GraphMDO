@@ -43,3 +43,13 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mdo_framework", "src/services"]
+
+[tool.coverage.run]
+source = ["."]
+
+[tool.coverage.report]
+omit = [
+    "test/*",
+    "tests/*",
+    "**/__init__.py"
+]

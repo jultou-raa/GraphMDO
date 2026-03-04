@@ -84,7 +84,8 @@ def main():
     try:
         result = optimizer.optimize(n_steps=10, n_init=5)
         print("Optimization Complete.")
-        print("Best Result:", result)
+        print("Best Result:", result["best_parameters"])
+        print("Best Objectives:", result["best_objectives"])
     except Exception as e:
         print(f"Optimization failed: {e}")
 
