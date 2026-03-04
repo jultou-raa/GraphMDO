@@ -1,7 +1,7 @@
 [project]
 name = "mdo-framework"
 dynamic = ["version"]
-description = "Add your description here"
+description = "A dynamic, graph-driven Multidisciplinary Design Optimization (MDO) framework integrating FalkorDB, OpenMDAO, and multi-fidelity surrogate models."
 readme = "README.md"
 authors = [
     { name = "jultou-raa", email = "64092886+jultou-raa@users.noreply.github.com" },
