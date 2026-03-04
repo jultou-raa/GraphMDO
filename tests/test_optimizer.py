@@ -27,15 +27,27 @@ class TestOptimizer(unittest.TestCase):
         self.evaluator = LocalEvaluator(self.mock_prob)
         self.bounds = torch.tensor([[0.0, 1.0], [0.0, 1.0]], dtype=torch.double)
 
-    def test_local_evaluator(self):
-        evaluator = LocalEvaluator(self.mock_prob)
+    def test_local_evaluator_scalar(self):
+        """Tests LocalEvaluator when Problem.get_val returns a scalar."""
+        self.mock_prob.get_val.return_value = 1.23
 
-        result = evaluator.evaluate({"x": 1.0, "y": 2.0}, ["f_xy"])
+        result = self.evaluator.evaluate({"x": 1.0, "y": 2.0}, ["f_xy"])
 
         self.mock_prob.set_val.assert_any_call("x", 1.0)
         self.mock_prob.set_val.assert_any_call("y", 2.0)
         self.mock_prob.run_model.assert_called_once()
-        self.assertEqual(result["f_xy"], 1.0)
+        self.assertEqual(result["f_xy"], 1.23)
+
+    def test_local_evaluator_iterable(self):
+        """Tests LocalEvaluator when Problem.get_val returns an iterable (e.g. numpy array)."""
+        self.mock_prob.get_val.return_value = [4.56]
+
+        result = self.evaluator.evaluate({"x": 1.0, "y": 2.0}, ["f_xy"])
+
+        self.mock_prob.set_val.assert_any_call("x", 1.0)
+        self.mock_prob.set_val.assert_any_call("y", 2.0)
+        self.mock_prob.run_model.assert_called_once()
+        self.assertEqual(result["f_xy"], 4.56)
 
     @patch("mdo_framework.optimization.optimizer.httpx.post")
     def test_remote_evaluator(self, mock_post):
