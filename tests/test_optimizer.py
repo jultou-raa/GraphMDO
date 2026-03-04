@@ -62,14 +62,14 @@ class TestOptimizer(unittest.TestCase):
         mock_post.assert_called_once()
         self.assertEqual(result["f_xy"], 42.0)
 
-    @patch("mdo_framework.optimization.optimizer.AxClient")
+    @patch("mdo_framework.optimization.optimizer.Client")
     def test_optimize_loop(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
-        mock_client.get_next_trial.return_value = ({"x": 0.5, "y": 0.5}, 0)
-        mock_client.get_best_parameters.return_value = (
+        mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5}}
+        mock_client.get_best_parameterization.return_value = (
             {"x": 0.5, "y": 0.5},
-            ({"f_xy": 42.0}, None),
+            ({"f_xy": 42.0}, {}),
         )
 
         opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
@@ -81,19 +81,16 @@ class TestOptimizer(unittest.TestCase):
         self.assertEqual(len(result["history"]), 3)  # 2 init + 1 step
         self.assertEqual(result["best_parameters"], {"x": 0.5, "y": 0.5})
 
-    @patch("mdo_framework.optimization.optimizer.AxClient")
+    @patch("mdo_framework.optimization.optimizer.Client")
     def test_optimize_bonsai_and_multi_objective(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
-        mock_client.get_next_trial.return_value = ({"x": 0.5, "y": 0.5, "c": "A"}, 0)
+        mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5, "c": "A"}}
 
         # Test pareto frontier handling
-        mock_client.get_pareto_optimal_parameters.return_value = {
-            0: (
-                {"x": 0.5, "y": 0.5, "c": "A"},
-                {"f_xy": (42.0, None), "g_xy": (10.0, None)},
-            )
-        }
+        mock_client.get_pareto_frontier.return_value = [
+            ({"x": 0.5, "y": 0.5, "c": "A"}, {"f_xy": 42.0, "g_xy": 10.0}, 0, "0_0")
+        ]
 
         params = [
             {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
@@ -112,14 +109,14 @@ class TestOptimizer(unittest.TestCase):
         self.assertEqual(result["best_objectives"][0]["f_xy"], 42.0)
         self.assertEqual(result["best_objectives"][0]["g_xy"], 10.0)
 
-    @patch("mdo_framework.optimization.optimizer.AxClient")
+    @patch("mdo_framework.optimization.optimizer.Client")
     def test_optimize_pareto_none(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
-        mock_client.get_next_trial.return_value = ({"x": 0.5, "y": 0.5}, 0)
+        mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5}}
 
         # Test pareto frontier empty handling
-        mock_client.get_pareto_optimal_parameters.return_value = None
+        mock_client.get_pareto_frontier.return_value = None
 
         params = [
             {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
@@ -133,14 +130,14 @@ class TestOptimizer(unittest.TestCase):
 
         self.assertIsNone(result["best_parameters"])
 
-    @patch("mdo_framework.optimization.optimizer.AxClient")
+    @patch("mdo_framework.optimization.optimizer.Client")
     def test_optimize_exception(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
-        mock_client.get_next_trial.return_value = ({"x": 0.5, "y": 0.5}, 0)
+        mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5}}
 
         # Test exception
-        mock_client.get_best_parameters.side_effect = Exception("Failed")
+        mock_client.get_best_parameterization.side_effect = Exception("Failed")
 
         opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
 
@@ -149,17 +146,14 @@ class TestOptimizer(unittest.TestCase):
         self.assertIsNone(result["best_parameters"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-    @patch("mdo_framework.optimization.optimizer.AxClient")
+    @patch("mdo_framework.optimization.optimizer.Client")
     def test_optimize_with_constraints(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
-        mock_client.get_next_trial.return_value = ({"x": 0.5, "y": 0.5}, 0)
-        mock_client.get_best_parameters.return_value = (
+        mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5}}
+        mock_client.get_best_parameterization.return_value = (
             {"x": 0.5, "y": 0.5},
-            ({"f_xy": (42.0, None)}, None),
+            ({"f_xy": 42.0}, {}),
         )
 
         constraints = [{"name": "g_xy", "op": "<=", "bound": 0.0}]
@@ -172,3 +166,7 @@ if __name__ == "__main__":
 
         self.assertIn("best_parameters", result)
         self.assertEqual(len(result["history"]), 3)
+
+
+if __name__ == "__main__":
+    unittest.main()
