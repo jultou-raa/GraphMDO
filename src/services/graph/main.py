@@ -1,23 +1,32 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
+from typing import Any
+
+from fastapi import Depends, FastAPI
+from pydantic import BaseModel, ConfigDict
 
 from mdo_framework.db.graph_manager import GraphManager
 
 app = FastAPI(title="Graph Service")
 
-# Initialize GraphManager
-# In a real app, this might be a dependency injection
-gm = GraphManager()
+
+def get_graph_manager() -> GraphManager:
+    return GraphManager()
 
 
 class VariableCreate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     name: str
     value: float | None = None
     lower: float | None = None
     upper: float | None = None
+    param_type: str = "continuous"
+    choices: list | None = None
+    value_type: str = "float"
 
 
 class ToolCreate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     name: str
     fidelity: str = "high"
 
@@ -27,38 +36,72 @@ class ConnectionCreate(BaseModel):
     target: str
 
 
-@app.post("/clear")
-def clear_graph():
+class StatusResponse(BaseModel):
+    status: str
+
+
+class VariableResponse(StatusResponse):
+    variable: str
+
+
+class ToolResponse(StatusResponse):
+    tool: str
+
+
+class ConnectionResponse(StatusResponse):
+    type: str
+
+
+class SchemaResponse(BaseModel):
+    tools: list[dict[str, Any]]
+    variables: list[dict[str, Any]]
+
+
+@app.post("/clear", response_model=StatusResponse)
+def clear_graph(gm: GraphManager = Depends(get_graph_manager)):
     gm.clear_graph()
-    return {"status": "cleared"}
+    return StatusResponse(status="cleared")
 
 
-@app.post("/variables")
-def create_variable(var: VariableCreate):
-    gm.add_variable(var.name, var.value, var.lower, var.upper)
-    return {"status": "created", "variable": var.name}
+@app.post("/variables", response_model=VariableResponse)
+def create_variable(var: VariableCreate, gm: GraphManager = Depends(get_graph_manager)):
+    gm.add_variable(
+        var.name,
+        var.value,
+        var.lower,
+        var.upper,
+        var.param_type,
+        var.choices,
+        var.value_type,
+        **(var.model_extra or {}),
+    )
+    return VariableResponse(status="created", variable=var.name)
 
 
-@app.post("/tools")
-def create_tool(tool: ToolCreate):
-    gm.add_tool(tool.name, tool.fidelity)
-    return {"status": "created", "tool": tool.name}
+@app.post("/tools", response_model=ToolResponse)
+def create_tool(tool: ToolCreate, gm: GraphManager = Depends(get_graph_manager)):
+    gm.add_tool(tool.name, tool.fidelity, **(tool.model_extra or {}))
+    return ToolResponse(status="created", tool=tool.name)
 
 
-@app.post("/connections/input")
-def connect_input(conn: ConnectionCreate):
+@app.post("/connections/input", response_model=ConnectionResponse)
+def connect_input(
+    conn: ConnectionCreate, gm: GraphManager = Depends(get_graph_manager)
+):
     # Variable -> Tool
     gm.connect_input_to_tool(conn.source, conn.target)
-    return {"status": "connected", "type": "input"}
+    return ConnectionResponse(status="connected", type="input")
 
 
-@app.post("/connections/output")
-def connect_output(conn: ConnectionCreate):
+@app.post("/connections/output", response_model=ConnectionResponse)
+def connect_output(
+    conn: ConnectionCreate, gm: GraphManager = Depends(get_graph_manager)
+):
     # Tool -> Variable
     gm.connect_tool_to_output(conn.source, conn.target)
-    return {"status": "connected", "type": "output"}
+    return ConnectionResponse(status="connected", type="output")
 
 
-@app.get("/schema")
-def get_schema():
+@app.get("/schema", response_model=SchemaResponse)
+def get_schema(gm: GraphManager = Depends(get_graph_manager)):
     return gm.get_graph_schema()

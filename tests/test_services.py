@@ -25,13 +25,15 @@ class TestGraphService(unittest.TestCase):
         # The endpoint calls gm.add_variable
         response = self.client.post("/variables", json={"name": "x", "value": 1.0})
         self.assertEqual(response.status_code, 200)
-        self.mock_gm.add_variable.assert_called_with("x", 1.0, None, None)
+        self.mock_gm.add_variable.assert_called_with(
+            "x", 1.0, None, None, "continuous", None, "float"
+        )
 
     def test_get_schema(self):
-        self.mock_gm.get_graph_schema.return_value = {"tools": []}
+        self.mock_gm.get_graph_schema.return_value = {"tools": [], "variables": []}
         response = self.client.get("/schema")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"tools": []})
+        self.assertEqual(response.json(), {"tools": [], "variables": []})
 
 
 class TestExecutionService(unittest.TestCase):

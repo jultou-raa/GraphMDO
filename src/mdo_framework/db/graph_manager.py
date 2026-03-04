@@ -22,6 +22,7 @@ class GraphManager:
         param_type: str = "continuous",
         choices: list = None,
         value_type: str = "float",
+        **kwargs: Any,
     ):
         """Adds a variable node to the graph.
 
@@ -33,43 +34,61 @@ class GraphManager:
             param_type: The type of parameter ("continuous", "range", "choice", or "fixed").
             choices: A list of valid options if the param_type is "choice".
             value_type: The underlying data type ("float", "int", "str").
+            **kwargs: Additional metadata properties to store on the node.
 
         Example:
             ```python
             gm = GraphManager()
-            gm.add_variable("wing_span", value=10.0, lower=5.0, upper=15.0, param_type="range")
+            gm.add_variable("wing_span", value=10.0, lower=5.0, upper=15.0, param_type="range", description="Wing span variable")
             gm.add_variable("material", value="aluminum", choices=["aluminum", "composite"], param_type="choice", value_type="str")
             ```
         """
-        import json
+        props = {
+            "name": name,
+            "value": value,
+            "lower": lower,
+            "upper": upper,
+            "param_type": param_type,
+            "choices": choices,
+            "value_type": value_type,
+        }
 
-        choices_str = json.dumps(choices) if choices is not None else "null"
-        query = f"""
-        MERGE (v:Variable {{name: '{name}'}})
-        SET v.value = {value if value is not None else "null"},
-            v.lower = {lower if lower is not None else "null"},
-            v.upper = {upper if upper is not None else "null"},
-            v.param_type = '{param_type}',
-            v.choices = '{choices_str}',
-            v.value_type = '{value_type}'
+        # Merge extra kwargs
+        props.update(kwargs)
+
+        # Remove None values so we don't store them if we don't want to
+        props = {k: v for k, v in props.items() if v is not None}
+
+        query = """
+        MERGE (v:Variable {name: $name})
+        SET v += $props
         """
-        self.graph.query(query)
+        self.graph.query(query, params={"name": name, "props": props})
 
-    def add_tool(self, name: str, fidelity: str = "high"):
+    def add_tool(self, name: str, fidelity: str = "high", **kwargs: Any):
         """Adds a tool node to the graph.
 
         Args:
             name: The unique name of the engineering tool or solver.
             fidelity: The fidelity level of the tool ("high", "low", etc.). Default is "high".
+            **kwargs: Additional metadata properties to store on the node.
 
         Example:
             ```python
-            gm.add_tool("CFD_Solver", fidelity="high")
+            gm.add_tool("CFD_Solver", fidelity="high", version="1.2.0")
             gm.add_tool("Vortex_Lattice", fidelity="low")
             ```
         """
-        query = f"MERGE (t:Tool {{name: '{name}', fidelity: '{fidelity}'}})"
-        self.graph.query(query)
+        props = {"name": name, "fidelity": fidelity}
+        props.update(kwargs)
+
+        props = {k: v for k, v in props.items() if v is not None}
+
+        query = """
+        MERGE (t:Tool {name: $name})
+        SET t += $props
+        """
+        self.graph.query(query, params={"name": name, "props": props})
 
     def connect_tool_to_output(self, tool_name: str, variable_name: str):
         """Connects a tool to an output variable (Tool -> Variable).
@@ -83,11 +102,13 @@ class GraphManager:
             gm.connect_tool_to_output("CFD_Solver", "drag_coefficient")
             ```
         """
-        query = f"""
-        MATCH (t:Tool {{name: '{tool_name}'}}), (v:Variable {{name: '{variable_name}'}})
+        query = """
+        MATCH (t:Tool {name: $tool_name}), (v:Variable {name: $variable_name})
         MERGE (t)-[:OUTPUTS]->(v)
         """
-        self.graph.query(query)
+        self.graph.query(
+            query, params={"tool_name": tool_name, "variable_name": variable_name}
+        )
 
     def connect_input_to_tool(self, variable_name: str, tool_name: str):
         """Connects an input variable to a tool (Variable -> Tool).
@@ -101,64 +122,58 @@ class GraphManager:
             gm.connect_input_to_tool("wing_span", "CFD_Solver")
             ```
         """
-        query = f"""
-        MATCH (v:Variable {{name: '{variable_name}'}}), (t:Tool {{name: '{tool_name}'}})
+        query = """
+        MATCH (v:Variable {name: $variable_name}), (t:Tool {name: $tool_name})
         MERGE (v)-[:INPUTS_TO]->(t)
         """
-        self.graph.query(query)
+        self.graph.query(
+            query, params={"variable_name": variable_name, "tool_name": tool_name}
+        )
 
     def get_tools(self) -> list[dict[str, Any]]:
         """Retrieves all tools."""
-        query = "MATCH (t:Tool) RETURN t.name, t.fidelity"
+        query = "MATCH (t:Tool) RETURN t"
         result = self.graph.query(query)
-        return [{"name": r[0], "fidelity": r[1]} for r in result.result_set]
+        tools = []
+        for r in result.result_set:
+            node = r[0]
+            tools.append(node.properties)
+        return tools
 
     def get_variables(self) -> list[dict[str, Any]]:
         """Retrieves all variables."""
-        import json
-
-        query = "MATCH (v:Variable) RETURN v.name, v.value, v.lower, v.upper, v.param_type, v.choices, v.value_type"
+        query = "MATCH (v:Variable) RETURN v"
         result = self.graph.query(query)
         vars_list = []
         for r in result.result_set:
-            choices_val = r[5]
-            if choices_val and choices_val != "null" and isinstance(choices_val, str):
-                try:
-                    choices_val = json.loads(choices_val)
-                except Exception:
-                    pass
-            elif choices_val == "null":
-                choices_val = None
+            node = r[0]
+            props = node.properties
 
-            vars_list.append(
-                {
-                    "name": r[0],
-                    "value": r[1],
-                    "lower": r[2],
-                    "upper": r[3],
-                    "param_type": r[4] if r[4] else "continuous",
-                    "choices": choices_val,
-                    "value_type": r[6] if len(r) > 6 and r[6] else "float",
-                }
-            )
+            # Ensure defaults for required fields if they are missing
+            if "param_type" not in props:
+                props["param_type"] = "continuous"
+            if "value_type" not in props:
+                props["value_type"] = "float"
+
+            vars_list.append(props)
         return vars_list
 
     def get_tool_inputs(self, tool_name: str) -> list[str]:
         """Retrieves input variables for a specific tool."""
-        query = f"""
-        MATCH (v:Variable)-[:INPUTS_TO]->(t:Tool {{name: '{tool_name}'}})
+        query = """
+        MATCH (v:Variable)-[:INPUTS_TO]->(t:Tool {name: $tool_name})
         RETURN v.name
         """
-        result = self.graph.query(query)
+        result = self.graph.query(query, params={"tool_name": tool_name})
         return [r[0] for r in result.result_set]
 
     def get_tool_outputs(self, tool_name: str) -> list[str]:
         """Retrieves output variables for a specific tool."""
-        query = f"""
-        MATCH (t:Tool {{name: '{tool_name}'}})-[:OUTPUTS]->(v:Variable)
+        query = """
+        MATCH (t:Tool {name: $tool_name})-[:OUTPUTS]->(v:Variable)
         RETURN v.name
         """
-        result = self.graph.query(query)
+        result = self.graph.query(query, params={"tool_name": tool_name})
         return [r[0] for r in result.result_set]
 
     def get_graph_schema(self) -> dict[str, Any]:
@@ -174,21 +189,32 @@ class GraphManager:
             print(schema["tools"][0]["name"])
             ```
         """
-        tools = self.get_tools()
         variables = self.get_variables()
-        schema = {"tools": [], "variables": variables}
 
-        for tool in tools:
-            name = tool["name"]
-            inputs = self.get_tool_inputs(name)
-            outputs = self.get_tool_outputs(name)
-            schema["tools"].append(
+        # Single query to get all tools with their inputs and outputs
+        query = """
+        MATCH (t:Tool)
+        OPTIONAL MATCH (v_in:Variable)-[:INPUTS_TO]->(t)
+        OPTIONAL MATCH (t)-[:OUTPUTS]->(v_out:Variable)
+        RETURN t,
+               collect(DISTINCT v_in.name) AS inputs,
+               collect(DISTINCT v_out.name) AS outputs
+        """
+        result = self.graph.query(query)
+
+        tools = []
+        for r in result.result_set:
+            tool_node = r[0]
+            inputs = [name for name in r[1] if name is not None]
+            outputs = [name for name in r[2] if name is not None]
+
+            tools.append(
                 {
-                    "name": name,
-                    "fidelity": tool["fidelity"],
+                    "name": tool_node.properties["name"],
+                    "fidelity": tool_node.properties.get("fidelity", "high"),
                     "inputs": inputs,
                     "outputs": outputs,
                 }
             )
 
-        return schema
+        return {"tools": tools, "variables": variables}
