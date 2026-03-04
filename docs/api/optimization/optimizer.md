@@ -8,7 +8,7 @@
 
 # LocalEvaluator
 
-::: mdo_framework.optimization.optimizer.LocalEvaluator
+::: mdo_framework.core.evaluators.LocalEvaluator
 
 # RemoteEvaluator
 
