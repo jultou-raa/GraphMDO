@@ -1,4 +1,5 @@
 import json
+import warnings
 import logging
 from typing import Any, Protocol
 
@@ -13,7 +14,7 @@ from ax.generation_strategy.generation_strategy import (
     GenerationStep,
 )
 from ax.adapter.registry import Generators as Models
-from botorch.acquisition.log_expected_improvement import qLogNoisyExpectedImprovement
+from botorch.acquisition.logei import qLogNoisyExpectedImprovement
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,23 @@ class BayesianOptimizer:
             ```
         """
 
+        # Fidelity parameters are not yet supported in the modern Ax `Client` API.
+        # `ax.api.configs.RangeParameterConfig` does not expose `is_fidelity` or
+        # `target_value`. The legacy `AxClient` workaround is not viable either,
+        # as it is deprecated and scheduled for removal in Ax 1.4.0.
+        # See: https://ax.dev for updates on the new API roadmap.
+        if self.fidelity_parameter is not None:
+            warnings.warn(
+                f"The `fidelity_parameter` argument ('{self.fidelity_parameter}') is "
+                "currently not supported by the modern Ax `Client` API. "
+                "`RangeParameterConfig` does not yet expose `is_fidelity` or "
+                "`target_value`. The parameter will be treated as a regular range "
+                "parameter until this is addressed upstream in Ax. "
+                "Track: https://github.com/facebook/ax",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # Determine client setup
 
         if self.use_bonsai:
@@ -146,8 +164,13 @@ class BayesianOptimizer:
                         generator=Models.SOBOL,
                         num_trials=n_init,
                         min_trials_observed=n_init,
+                        generator_name="SOBOL",
                     ),
-                    GenerationStep(generator=Models.BOTORCH_MODULAR, num_trials=-1),
+                    GenerationStep(
+                        generator=Models.BOTORCH_MODULAR,
+                        num_trials=-1,
+                        generator_name="BONSAI",
+                    ),
                 ],
             )
 
@@ -159,6 +182,7 @@ class BayesianOptimizer:
                         generator=Models.SOBOL,
                         num_trials=n_init,
                         min_trials_observed=n_init,
+                        generator_name="SOBOL",
                     ),
                     GenerationStep(
                         generator=Models.BOTORCH_MODULAR,
@@ -166,13 +190,13 @@ class BayesianOptimizer:
                         generator_kwargs={
                             "botorch_acqf_class": qLogNoisyExpectedImprovement,
                         },
+                        generator_name="qLogNEI",
                     ),
                 ],
             )
 
         # Configure parameter space
         client = Client()
-        client.set_generation_strategy(gs)
 
         ax_params = []
         for p in self.parameters:
@@ -182,7 +206,6 @@ class BayesianOptimizer:
                         name=p["name"],
                         parameter_type=p.get("value_type", "float"),
                         bounds=p["bounds"],
-                        is_fidelity=p["name"] == self.fidelity_parameter,
                     )
                 )
             elif p["type"] == "choice":
@@ -191,7 +214,6 @@ class BayesianOptimizer:
                         name=p["name"],
                         parameter_type=p.get("value_type", "float"),
                         values=p["values"],
-                        is_fidelity=p["name"] == self.fidelity_parameter,
                     )
                 )
 
@@ -213,6 +235,8 @@ class BayesianOptimizer:
                 f"{c['name']} {c['op']} {c['bound']}" for c in self.constraints
             ],
         )
+
+        client.set_generation_strategy(gs)
 
         history = []
 
@@ -261,9 +285,9 @@ class BayesianOptimizer:
                     "serialized_client": json.dumps(client._to_json_snapshot()),
                 }
             else:
-                best_parameters, prediction = client.get_best_parameterization()
-                # Prediction is a tuple of (mean_dict, cov_dict)
-                best_obj = prediction[0]
+                best_parameters, best_obj, trial_idx, arm_name = (
+                    client.get_best_parameterization()
+                )
                 return {
                     "best_parameters": best_parameters,
                     "best_objectives": best_obj,

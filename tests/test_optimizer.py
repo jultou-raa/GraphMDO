@@ -67,9 +67,13 @@ class TestOptimizer(unittest.TestCase):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5}}
+        mock_client._to_json_snapshot.return_value = {}
+        mock_client.to_json_snapshot.return_value = "{}"
         mock_client.get_best_parameterization.return_value = (
             {"x": 0.5, "y": 0.5},
-            ({"f_xy": 42.0}, {}),
+            {"f_xy": 42.0},
+            0,
+            "0_0",
         )
 
         opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
@@ -86,6 +90,8 @@ class TestOptimizer(unittest.TestCase):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5, "c": "A"}}
+        mock_client._to_json_snapshot.return_value = {}
+        mock_client.to_json_snapshot.return_value = "{}"
 
         # Test pareto frontier handling
         mock_client.get_pareto_frontier.return_value = [
@@ -145,7 +151,6 @@ class TestOptimizer(unittest.TestCase):
 
         self.assertIsNone(result["best_parameters"])
 
-
     @patch("mdo_framework.optimization.optimizer.Client")
     def test_optimize_with_constraints(self, mock_client_cls):
         mock_client = MagicMock()
@@ -153,7 +158,9 @@ class TestOptimizer(unittest.TestCase):
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5}}
         mock_client.get_best_parameterization.return_value = (
             {"x": 0.5, "y": 0.5},
-            ({"f_xy": 42.0}, {}),
+            {"f_xy": 42.0},
+            0,
+            "0_0",
         )
 
         constraints = [{"name": "g_xy", "op": "<=", "bound": 0.0}]
