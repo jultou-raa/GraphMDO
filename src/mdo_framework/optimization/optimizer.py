@@ -69,9 +69,6 @@ class RemoteEvaluator:
         self, parameters: dict[str, Any], objectives: list[str]
     ) -> dict[str, float]:
 
-        # Need to loop or post all objectives
-        # The current endpoint expects one objective per call, or we can handle it
-
         payload = {
             "inputs": parameters,
             "objectives": objectives,

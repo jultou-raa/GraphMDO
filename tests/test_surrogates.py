@@ -34,9 +34,6 @@ class TestSMTSurrogate(unittest.TestCase):
         # Ensure dimensions match.
         surrogate = SMTSurrogate(model_type="KPLS", multi_fidelity=False)
 
-        # NOTE: SMT KPLS default n_comp is 1.
-        # My implementation initializes theta0 based on xt.shape[1].
-
         surrogate.train(xt, yt)
 
         x_test = np.array([[0.5, 0.5]])
