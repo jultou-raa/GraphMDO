@@ -684,6 +684,62 @@ wheels = [
 ]
 
 [[package]]
+name = "graphmdo"
+source = { editable = "." }
+dependencies = [
+    { name = "ax-platform" },
+    { name = "botorch" },
+    { name = "falkordb" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "networkx" },
+    { name = "numpy" },
+    { name = "openmdao" },
+    { name = "pymoo" },
+    { name = "scipy" },
+    { name = "smt" },
+    { name = "uvicorn" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "mkdocs" },
+    { name = "mkdocs-material" },
+    { name = "mkdocstrings", extra = ["python"] },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ax-platform", specifier = ">=1.2.3" },
+    { name = "botorch", specifier = ">=0.17.0" },
+    { name = "falkordb", specifier = ">=1.6.0" },
+    { name = "fastapi", specifier = ">=0.133.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "networkx", specifier = ">=3.6.1" },
+    { name = "numpy", specifier = ">=2.4.2" },
+    { name = "openmdao", specifier = ">=3.42.0" },
+    { name = "pymoo", specifier = ">=0.6.1.6" },
+    { name = "scipy", specifier = ">=1.17.1" },
+    { name = "smt", specifier = ">=2.11.1" },
+    { name = "uvicorn", specifier = ">=0.41.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mkdocs", specifier = ">=1.6.1" },
+    { name = "mkdocs-material", specifier = ">=9.7.3" },
+    { name = "mkdocstrings", extras = ["python"], specifier = ">=1.0.3" },
+    { name = "pre-commit", specifier = ">=4.5.1" },
+    { name = "pytest", specifier = ">=9.0.2" },
+    { name = "pytest-cov", specifier = ">=7.0.0" },
+    { name = "ruff", specifier = ">=0.15.2" },
+]
+
+[[package]]
 name = "graphviz"
 version = "0.21"
 source = { registry = "https://pypi.org/simple" }
@@ -1142,62 +1198,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c7/74/97e72a36efd4ae2bccb3463284300f8953f199b5ffbc04cbbb0ec78f74b1/matplotlib_inline-0.2.1.tar.gz", hash = "sha256:e1ee949c340d771fc39e241ea75683deb94762c8fa5f2927ec57c83c4dffa9fe", size = 8110, upload-time = "2025-10-23T09:00:22.126Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/af/33/ee4519fa02ed11a94aef9559552f3b17bb863f2ecfe1a35dc7f548cde231/matplotlib_inline-0.2.1-py3-none-any.whl", hash = "sha256:d56ce5156ba6085e00a9d54fead6ed29a9c47e215cd1bba2e976ef39f5710a76", size = 9516, upload-time = "2025-10-23T09:00:20.675Z" },
-]
-
-[[package]]
-name = "mdo-framework"
-source = { editable = "." }
-dependencies = [
-    { name = "ax-platform" },
-    { name = "botorch" },
-    { name = "falkordb" },
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "networkx" },
-    { name = "numpy" },
-    { name = "openmdao" },
-    { name = "pymoo" },
-    { name = "scipy" },
-    { name = "smt" },
-    { name = "uvicorn" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "mkdocs" },
-    { name = "mkdocs-material" },
-    { name = "mkdocstrings", extra = ["python"] },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "ax-platform", specifier = ">=1.2.3" },
-    { name = "botorch", specifier = ">=0.17.0" },
-    { name = "falkordb", specifier = ">=1.6.0" },
-    { name = "fastapi", specifier = ">=0.133.1" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "networkx", specifier = ">=3.6.1" },
-    { name = "numpy", specifier = ">=2.4.2" },
-    { name = "openmdao", specifier = ">=3.42.0" },
-    { name = "pymoo", specifier = ">=0.6.1.6" },
-    { name = "scipy", specifier = ">=1.17.1" },
-    { name = "smt", specifier = ">=2.11.1" },
-    { name = "uvicorn", specifier = ">=0.41.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "mkdocs", specifier = ">=1.6.1" },
-    { name = "mkdocs-material", specifier = ">=9.7.3" },
-    { name = "mkdocstrings", extras = ["python"], specifier = ">=1.0.3" },
-    { name = "pre-commit", specifier = ">=4.5.1" },
-    { name = "pytest", specifier = ">=9.0.2" },
-    { name = "pytest-cov", specifier = ">=7.0.0" },
-    { name = "ruff", specifier = ">=0.15.2" },
 ]
 
 [[package]]
