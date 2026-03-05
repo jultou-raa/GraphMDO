@@ -1,12 +1,33 @@
 import asyncio
 import os
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx
+import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from mdo_framework.optimization.optimizer import BayesianOptimizer, RemoteEvaluator
+
+
+def to_jsonable(obj: Any) -> Any:
+    """Recursively converts objects to JSON-serializable types (handling NumPy and Tensors)."""
+    if isinstance(obj, dict):
+        return {k: to_jsonable(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple, set)):
+        return [to_jsonable(v) for v in obj]
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, np.generic):
+        return obj.item()
+    elif hasattr(obj, "tolist") and callable(getattr(obj, "tolist")):
+        # Handle PyTorch tensors and other objects with .tolist()
+        return obj.tolist()
+    elif hasattr(obj, "item") and callable(getattr(obj, "item")):
+        # Handle scalars from Tensors/NumPy
+        return obj.item()
+    return obj
 
 
 @asynccontextmanager
@@ -112,19 +133,20 @@ async def optimize(req: OptimizeRequest, request: Request):
         )
 
         # Convert tensor/numpy to lists for JSON
-
-        return {
-            "best_parameters": result.get("best_parameters"),
-            "best_objectives": result.get("best_objectives"),
-            "history": [
-                {
-                    "parameters": trial["parameters"],
-                    "objectives": trial["objectives"],
-                }
-                for trial in result.get("history", [])
-            ],
-            "serialized_client": result.get("serialized_client"),
-        }
+        return to_jsonable(
+            {
+                "best_parameters": result.get("best_parameters"),
+                "best_objectives": result.get("best_objectives"),
+                "history": [
+                    {
+                        "parameters": trial["parameters"],
+                        "objectives": trial["objectives"],
+                    }
+                    for trial in result.get("history", [])
+                ],
+                "serialized_client": result.get("serialized_client"),
+            }
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Optimization failed: {e}")
 
