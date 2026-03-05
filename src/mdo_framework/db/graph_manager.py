@@ -13,6 +13,31 @@ class GraphManager:
         query = "MATCH (n) DETACH DELETE n"
         self.graph.query(query)
 
+    def add_node(self, kind: str, name: str, **kwargs: Any):
+        """Adds a generic node to the graph.
+
+        Args:
+            kind: The type of node (e.g., 'Tool' or 'Variable').
+            name: The unique name of the node.
+            **kwargs: Additional metadata properties to store on the node.
+        """
+        props = {"name": name}
+        props.update(kwargs)
+
+        # Remove None values so we don't store them if we don't want to
+        props = {k: v for k, v in props.items() if v is not None}
+
+        # Dynamically build the query with the specific label.
+        # Ensure 'kind' is alphanumeric to prevent Cypher injection issues.
+        if not kind.isalnum():
+            raise ValueError(f"Invalid node kind: {kind}")
+
+        query = f"""
+        MERGE (n:{kind} {{name: $name}})
+        SET n += $props
+        """
+        self.graph.query(query, params={"name": name, "props": props})
+
     def add_variable(
         self,
         name: str,
@@ -44,27 +69,17 @@ class GraphManager:
             ```
 
         """
-        props = {
-            "name": name,
-            "value": value,
-            "lower": lower,
-            "upper": upper,
-            "param_type": param_type,
-            "choices": choices,
-            "value_type": value_type,
-        }
-
-        # Merge extra kwargs
-        props.update(kwargs)
-
-        # Remove None values so we don't store them if we don't want to
-        props = {k: v for k, v in props.items() if v is not None}
-
-        query = """
-        MERGE (v:Variable {name: $name})
-        SET v += $props
-        """
-        self.graph.query(query, params={"name": name, "props": props})
+        self.add_node(
+            kind="Variable",
+            name=name,
+            value=value,
+            lower=lower,
+            upper=upper,
+            param_type=param_type,
+            choices=choices,
+            value_type=value_type,
+            **kwargs,
+        )
 
     def add_tool(self, name: str, fidelity: str = "high", **kwargs: Any):
         """Adds a tool node to the graph.
@@ -81,16 +96,7 @@ class GraphManager:
             ```
 
         """
-        props = {"name": name, "fidelity": fidelity}
-        props.update(kwargs)
-
-        props = {k: v for k, v in props.items() if v is not None}
-
-        query = """
-        MERGE (t:Tool {name: $name})
-        SET t += $props
-        """
-        self.graph.query(query, params={"name": name, "props": props})
+        self.add_node(kind="Tool", name=name, fidelity=fidelity, **kwargs)
 
     def connect_tool_to_output(self, tool_name: str, variable_name: str):
         """Connects a tool to an output variable (Tool -> Variable).
