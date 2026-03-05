@@ -488,14 +488,19 @@ class TestProblemPool(unittest.TestCase):
 
 class TestOptimizationService(unittest.TestCase):
     def setUp(self):
+        self.mock_client = AsyncMock()
+        optimization_app.state.client = self.mock_client
+
+        # Default mock response for schema fetch
+        self.mock_resp = MagicMock()
+        self.mock_resp.json.return_value = {"tools": [], "variables": []}
+        self.mock_client.get.return_value = self.mock_resp
+
         self.client = TestClient(optimization_app)
 
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
-    @patch("httpx.AsyncClient")
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
-    def test_optimize(self, mock_resolve, mock_get, mock_optimize):
-        from unittest.mock import AsyncMock
-
+    def test_optimize(self, mock_resolve, mock_optimize):
         import numpy as np
 
         mock_resp = MagicMock()
@@ -519,11 +524,7 @@ class TestOptimizationService(unittest.TestCase):
             "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
         }
 
-        # the context manager __aenter__ returns an object that has a .get() awaitable method
-        mock_client_instance = AsyncMock()
-        mock_client_instance.get.return_value = mock_resp
-
-        mock_get.return_value.__aenter__.return_value = mock_client_instance
+        self.mock_client.get.return_value = mock_resp
         mock_resolve.return_value = (
             ["x", "y"],
             [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
@@ -547,14 +548,9 @@ class TestOptimizationService(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("best_parameters", response.json())
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
-    @patch("httpx.AsyncClient")
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
-    def test_optimize_tensor_conversion(self, mock_resolve, mock_get, mock_optimize):
+    def test_optimize_tensor_conversion(self, mock_resolve, mock_optimize):
         import torch
 
         # Mock result of optimization
@@ -579,11 +575,8 @@ if __name__ == "__main__":
         self.assertEqual(response.status_code, 200)
 
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
-    @patch("httpx.AsyncClient")
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
-    def test_optimize_exception(self, mock_resolve, mock_get, mock_optimize):
-        from unittest.mock import AsyncMock
-
+    def test_optimize_exception(self, mock_resolve, mock_optimize):
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
             "variables": [
@@ -605,11 +598,7 @@ if __name__ == "__main__":
             "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
         }
 
-        # the context manager __aenter__ returns an object that has a .get() awaitable method
-        mock_client_instance = AsyncMock()
-        mock_client_instance.get.return_value = mock_resp
-
-        mock_get.return_value.__aenter__.return_value = mock_client_instance
+        optimization_app.state.client.get.return_value = mock_resp
         mock_resolve.return_value = (
             ["x", "y"],
             [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
@@ -667,11 +656,8 @@ if __name__ == "__main__":
         pass
 
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.__init__")
-    @patch("httpx.AsyncClient")
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
-    def test_optimize_exception2(self, mock_resolve, mock_get, mock_init):
-        from unittest.mock import AsyncMock
-
+    def test_optimize_exception2(self, mock_resolve, mock_init):
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
             "variables": [
@@ -693,11 +679,7 @@ if __name__ == "__main__":
             "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
         }
 
-        # the context manager __aenter__ returns an object that has a .get() awaitable method
-        mock_client_instance = AsyncMock()
-        mock_client_instance.get.return_value = mock_resp
-
-        mock_get.return_value.__aenter__.return_value = mock_client_instance
+        optimization_app.state.client.get.return_value = mock_resp
         mock_resolve.return_value = (
             ["x", "y"],
             [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
@@ -716,12 +698,8 @@ if __name__ == "__main__":
         self.assertEqual(response.status_code, 500)
 
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
-    @patch("httpx.AsyncClient")
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
-    def test_optimize_with_constraints_service(
-        self, mock_resolve, mock_get, mock_optimize
-    ):
-
+    def test_optimize_with_constraints_service(self, mock_resolve, mock_optimize):
         mock_optimize.return_value = {
             "best_parameters": {"x": 0.5, "y": 0.5},
             "best_objectives": {"f_xy": 0.0},
@@ -741,3 +719,7 @@ if __name__ == "__main__":
 
         response = self.client.post("/optimize", json=payload)
         self.assertEqual(response.status_code, 200)
+
+
+if __name__ == "__main__":
+    unittest.main()
