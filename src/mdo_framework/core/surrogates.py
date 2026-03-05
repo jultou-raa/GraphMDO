@@ -4,9 +4,7 @@ from smt.surrogate_models import KPLS, KRG
 
 
 class SMTSurrogate:
-    """
-    Wrapper for SMT surrogate models, supporting single and multi-fidelity.
-    """
+    """Wrapper for SMT surrogate models, supporting single and multi-fidelity."""
 
     def __init__(self, model_type="KRG", multi_fidelity=False):
         self.model_type = model_type
@@ -20,14 +18,14 @@ class SMTSurrogate:
         x_lf: np.ndarray = None,
         y_lf: np.ndarray = None,
     ):
-        """
-        Trains the surrogate model.
+        """Trains the surrogate model.
 
         Args:
             xt: High-fidelity training inputs.
             yt: High-fidelity training outputs.
             x_lf: Low-fidelity training inputs (for multi-fidelity).
             y_lf: Low-fidelity training outputs (for multi-fidelity).
+
         """
         n_dims = xt.shape[1]
 
@@ -48,7 +46,9 @@ class SMTSurrogate:
                 # Default n_comp=1 in SMT KPLS.
                 n_comp = 1
                 self.model = KPLS(
-                    theta0=[1e-2] * n_comp, n_comp=n_comp, print_global=False
+                    theta0=[1e-2] * n_comp,
+                    n_comp=n_comp,
+                    print_global=False,
                 )
             else:
                 raise ValueError(f"Unknown model type: {self.model_type}")

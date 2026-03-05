@@ -4,8 +4,9 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
-from typing import Any, Callable, TypeAlias
+from typing import Any, TypeAlias
 
 import httpx
 import numpy as np
@@ -32,7 +33,7 @@ try:
 except ValueError as e:
     logger.error("Failed to parse configuration.", exc_info=True)
     raise ValueError(
-        "CACHE_TTL, CACHE_BACKOFF, PROBLEM_POOL_SIZE, and POOL_ACQUIRE_TIMEOUT must be numeric."
+        "CACHE_TTL, CACHE_BACKOFF, PROBLEM_POOL_SIZE, and POOL_ACQUIRE_TIMEOUT must be numeric.",
     ) from e
 
 if POOL_SIZE <= 0:
@@ -48,14 +49,17 @@ def paraboloid_func(x: float, y: float) -> float:
 
 
 def build_and_init(
-    schema: dict[str, Any], registry: dict[str, Callable[..., Any]]
+    schema: dict[str, Any],
+    registry: dict[str, Callable[..., Any]],
 ) -> Any:
     """Instantiates builder and creates problem in a worker thread."""
     return GraphProblemBuilder(schema).build_problem(registry)
 
 
 def execute_problem(
-    prob: Any, inputs: dict[str, float], objectives: list[str]
+    prob: Any,
+    inputs: dict[str, float],
+    objectives: list[str],
 ) -> dict[str, Any]:
     """Sets values and executes the model in a worker thread."""
     for name, val in inputs.items():
@@ -155,7 +159,8 @@ class SchemaProvider:
                 else:
                     logger.error("Graph Service unavailable.", exc_info=True)
                     raise HTTPException(
-                        status_code=503, detail="Graph Service unavailable."
+                        status_code=503,
+                        detail="Graph Service unavailable.",
                     )
             except ValueError:
                 # Malformed schema data
@@ -163,7 +168,7 @@ class SchemaProvider:
                 if self.envelope is not None:
                     self.expiry = current_time + CACHE_BACKOFF
                     logger.warning(
-                        "Serving stale cache due to malformed schema response."
+                        "Serving stale cache due to malformed schema response.",
                     )
                 else:
                     raise HTTPException(
@@ -188,8 +193,7 @@ class ProblemPool:
         self._background_tasks: set[asyncio.Task] = set()
 
     async def teardown(self):
-        """
-        Drain and clean up all pool instances.
+        """Drain and clean up all pool instances.
         Note: This method is not independently thread-safe and is intended to be called
         either under self.lock (e.g., in get_instance) or after all requests have completed (e.g., in lifespan).
         """
@@ -269,7 +273,8 @@ class ProblemPool:
                 inst = await self.pool.get()
         except TimeoutError:
             raise HTTPException(
-                status_code=503, detail="No execution instances available."
+                status_code=503,
+                detail="No execution instances available.",
             )
 
         return inst, envelope.hash
@@ -308,7 +313,7 @@ class EvaluateRequest(BaseModel):
             if len(key) > 50:
                 preview = key[:20]
                 raise ValueError(
-                    f"Input key '{preview}...' exceeds maximum length of 50."
+                    f"Input key '{preview}...' exceeds maximum length of 50.",
                 )
         return v
 
@@ -338,9 +343,7 @@ async def evaluate(
     schema_p: SchemaProvider = Depends(get_schema_provider),
     problem_pool: ProblemPool = Depends(get_problem_pool),
 ):
-    """
-    Evaluate an objective function using the graph-defined problem structure.
-    """
+    """Evaluate an objective function using the graph-defined problem structure."""
     envelope = await schema_p.get_schema()
 
     # 1. Validation against Schema
@@ -359,7 +362,10 @@ async def evaluate(
         try:
             # Offload synchronous math to thread
             raw_results = await asyncio.to_thread(
-                execute_problem, instance, req.inputs, req.objectives
+                execute_problem,
+                instance,
+                req.inputs,
+                req.objectives,
             )
             execution_succeeded = True
 
@@ -370,7 +376,8 @@ async def evaluate(
             except (IndexError, TypeError, ValueError) as e:
                 logger.error("Result transformation failed.", exc_info=True)
                 raise HTTPException(
-                    status_code=500, detail="Invalid result shape."
+                    status_code=500,
+                    detail="Invalid result shape.",
                 ) from e
 
         except HTTPException:
@@ -383,7 +390,8 @@ async def evaluate(
             # General execution failures
             logger.error("Execution failed.", exc_info=True)
             raise HTTPException(
-                status_code=500, detail="An internal execution error occurred."
+                status_code=500,
+                detail="An internal execution error occurred.",
             )
     finally:
         if execution_succeeded:
@@ -397,7 +405,7 @@ async def health(request: Request):
     """Check connectivity to Graph Service."""
     try:
         resp = await request.app.state.schema_provider.client.get(
-            f"{GRAPH_SERVICE_URL}/health"
+            f"{GRAPH_SERVICE_URL}/health",
         )
         resp.raise_for_status()
         return {"status": "ok", "graph_service": "ok"}

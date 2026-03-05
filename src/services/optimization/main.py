@@ -1,11 +1,44 @@
+import asyncio
 import os
+from contextlib import asynccontextmanager
+from typing import Any
 
-from fastapi import FastAPI, HTTPException
+import httpx
+import numpy as np
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from mdo_framework.optimization.optimizer import BayesianOptimizer, RemoteEvaluator
 
-app = FastAPI(title="Optimization Service")
+
+def to_jsonable(obj: Any) -> Any:
+    """Recursively converts objects to JSON-serializable types (handling NumPy and Tensors)."""
+    if isinstance(obj, dict):
+        return {k: to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [to_jsonable(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if hasattr(obj, "tolist") and callable(obj.tolist):
+        # Handle PyTorch tensors and other objects with .tolist()
+        return obj.tolist()
+    if hasattr(obj, "item") and callable(obj.item):
+        # Handle scalars from Tensors/NumPy
+        return obj.item()
+    return obj
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize the shared HTTP client
+    async with httpx.AsyncClient() as client:
+        app.state.client = client
+        yield
+
+
+app = FastAPI(title="Optimization Service", lifespan=lifespan)
 
 EXECUTION_SERVICE_URL = os.getenv("EXECUTION_SERVICE_URL", "http://localhost:8002")
 GRAPH_SERVICE_URL = os.getenv("GRAPH_SERVICE_URL", "http://localhost:8001")
@@ -35,18 +68,17 @@ class OptimizeRequest(BaseModel):
 
 
 @app.post("/optimize")
-async def optimize(req: OptimizeRequest):
-    import httpx
-
+async def optimize(req: OptimizeRequest, request: Request):
     # 1. Fetch schema from Graph Service
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{GRAPH_SERVICE_URL}/schema")
-            resp.raise_for_status()
-            schema = resp.json()
+        client: httpx.AsyncClient = request.app.state.client
+        resp = await client.get(f"{GRAPH_SERVICE_URL}/schema")
+        resp.raise_for_status()
+        schema = resp.json()
     except Exception as e:
         raise HTTPException(
-            status_code=502, detail=f"Failed to fetch graph schema: {e}"
+            status_code=502,
+            detail=f"Failed to fetch graph schema: {e}",
         )
 
     from mdo_framework.core.topology import TopologicalAnalyzer
@@ -96,23 +128,28 @@ async def optimize(req: OptimizeRequest):
             use_bonsai=req.use_bonsai,
         )
 
-        # 6. Run Optimization
-        result = optimizer.optimize(n_steps=req.n_steps, n_init=req.n_init)
+        # 6. Run Optimization (offload to thread to avoid blocking the event loop)
+        result = await asyncio.to_thread(
+            optimizer.optimize,
+            n_steps=req.n_steps,
+            n_init=req.n_init,
+        )
 
         # Convert tensor/numpy to lists for JSON
-
-        return {
-            "best_parameters": result.get("best_parameters"),
-            "best_objectives": result.get("best_objectives"),
-            "history": [
-                {
-                    "parameters": trial["parameters"],
-                    "objectives": trial["objectives"],
-                }
-                for trial in result.get("history", [])
-            ],
-            "serialized_client": result.get("serialized_client"),
-        }
+        return to_jsonable(
+            {
+                "best_parameters": result.get("best_parameters"),
+                "best_objectives": result.get("best_objectives"),
+                "history": [
+                    {
+                        "parameters": trial["parameters"],
+                        "objectives": trial["objectives"],
+                    }
+                    for trial in result.get("history", [])
+                ],
+                "serialized_client": result.get("serialized_client"),
+            },
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Optimization failed: {e}")
 

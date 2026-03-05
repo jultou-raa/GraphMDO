@@ -1,4 +1,5 @@
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import openmdao.api as om
 
@@ -6,16 +7,14 @@ from mdo_framework.core.components import ToolComponent
 
 
 class GraphProblemBuilder:
-    """
-    Builds an OpenMDAO Problem from a graph schema dictionary.
-    """
+    """Builds an OpenMDAO Problem from a graph schema dictionary."""
 
     def __init__(self, schema: dict[str, Any]):
-        """
-        Initializes the builder with the given graph schema.
+        """Initializes the builder with the given graph schema.
 
         Args:
             schema: Dictionary representing tools, inputs, and outputs.
+
         """
         """
         Args:
@@ -25,14 +24,14 @@ class GraphProblemBuilder:
         self.schema = schema
 
     def build_problem(self, tool_registry: dict[str, Callable]) -> om.Problem:
-        """
-        Constructs an OpenMDAO problem from the parsed schema.
+        """Constructs an OpenMDAO problem from the parsed schema.
 
         Args:
             tool_registry: Mapping of tool names to Python callables.
 
         Returns:
             An instantiated OpenMDAO Problem object.
+
         """
         """
         Constructs and sets up the OpenMDAO problem.

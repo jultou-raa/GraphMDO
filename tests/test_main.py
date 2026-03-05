@@ -31,7 +31,7 @@ class TestMainIntegration(unittest.TestCase):
                     "fidelity": "high",
                     "inputs": ["x", "y"],
                     "outputs": ["f_xy"],
-                }
+                },
             ],
             "variables": [
                 {"name": "x", "value": 0.0},

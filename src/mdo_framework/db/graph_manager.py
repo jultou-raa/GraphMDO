@@ -42,6 +42,7 @@ class GraphManager:
             gm.add_variable("wing_span", value=10.0, lower=5.0, upper=15.0, param_type="range", description="Wing span variable")
             gm.add_variable("material", value="aluminum", choices=["aluminum", "composite"], param_type="choice", value_type="str")
             ```
+
         """
         props = {
             "name": name,
@@ -78,6 +79,7 @@ class GraphManager:
             gm.add_tool("CFD_Solver", fidelity="high", version="1.2.0")
             gm.add_tool("Vortex_Lattice", fidelity="low")
             ```
+
         """
         props = {"name": name, "fidelity": fidelity}
         props.update(kwargs)
@@ -101,13 +103,15 @@ class GraphManager:
             ```python
             gm.connect_tool_to_output("CFD_Solver", "drag_coefficient")
             ```
+
         """
         query = """
         MATCH (t:Tool {name: $tool_name}), (v:Variable {name: $variable_name})
         MERGE (t)-[:OUTPUTS]->(v)
         """
         self.graph.query(
-            query, params={"tool_name": tool_name, "variable_name": variable_name}
+            query,
+            params={"tool_name": tool_name, "variable_name": variable_name},
         )
 
     def connect_input_to_tool(self, variable_name: str, tool_name: str):
@@ -121,13 +125,15 @@ class GraphManager:
             ```python
             gm.connect_input_to_tool("wing_span", "CFD_Solver")
             ```
+
         """
         query = """
         MATCH (v:Variable {name: $variable_name}), (t:Tool {name: $tool_name})
         MERGE (v)-[:INPUTS_TO]->(t)
         """
         self.graph.query(
-            query, params={"variable_name": variable_name, "tool_name": tool_name}
+            query,
+            params={"variable_name": variable_name, "tool_name": tool_name},
         )
 
     def get_tools(self) -> list[dict[str, Any]]:
@@ -177,8 +183,7 @@ class GraphManager:
         return [r[0] for r in result.result_set]
 
     def get_graph_schema(self) -> dict[str, Any]:
-        """
-        Returns a serializable dictionary representing the entire graph structure.
+        """Returns a serializable dictionary representing the entire graph structure.
 
         Returns:
             A dictionary containing 'tools' and 'variables' lists defining the topology.
@@ -188,6 +193,7 @@ class GraphManager:
             schema = gm.get_graph_schema()
             print(schema["tools"][0]["name"])
             ```
+
         """
         variables = self.get_variables()
 
@@ -214,7 +220,7 @@ class GraphManager:
                     "fidelity": tool_node.properties.get("fidelity", "high"),
                     "inputs": inputs,
                     "outputs": outputs,
-                }
+                },
             )
 
         return {"tools": tools, "variables": variables}

@@ -23,7 +23,8 @@ class TestFalkorDBClient(unittest.TestCase):
         FalkorDBClient._instance = None
 
         with patch.dict(
-            os.environ, {"FALKORDB_HOST": "1.2.3.4", "FALKORDB_PORT": "1234"}
+            os.environ,
+            {"FALKORDB_HOST": "1.2.3.4", "FALKORDB_PORT": "1234"},
         ):
             client = FalkorDBClient()
             mock_falkordb.assert_called_with(host="1.2.3.4", port=1234)

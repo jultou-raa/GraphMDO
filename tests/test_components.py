@@ -14,7 +14,10 @@ class TestToolComponent(unittest.TestCase):
         prob = om.Problem()
 
         comp = ToolComponent(
-            name="add", func=simple_func, inputs=["x", "y"], outputs=["z"]
+            name="add",
+            func=simple_func,
+            inputs=["x", "y"],
+            outputs=["z"],
         )
 
         prob.model.add_subsystem("comp", comp, promotes=["*"])
@@ -35,7 +38,10 @@ class TestToolComponent(unittest.TestCase):
         prob = om.Problem()
 
         comp = ToolComponent(
-            name="dict_comp", func=dict_func, inputs=["a"], outputs=["b", "c"]
+            name="dict_comp",
+            func=dict_func,
+            inputs=["a"],
+            outputs=["b", "c"],
         )
 
         prob.model.add_subsystem("comp", comp, promotes=["*"])
@@ -56,7 +62,10 @@ class TestToolComponent(unittest.TestCase):
         prob = om.Problem()
 
         comp = ToolComponent(
-            name="tuple_comp", func=tuple_func, inputs=["a"], outputs=["b", "c"]
+            name="tuple_comp",
+            func=tuple_func,
+            inputs=["a"],
+            outputs=["b", "c"],
         )
 
         prob.model.add_subsystem("comp", comp, promotes=["*"])

@@ -2,18 +2,17 @@ from typing import Any
 
 
 class TopologicalAnalyzer:
-    """
-    Analyzes a KADMOS/CMDOWS-style graph schema recursively to extract
+    """Analyzes a KADMOS/CMDOWS-style graph schema recursively to extract
     the independent design variables and sub-graph components required
     to evaluate a specific target output.
     """
 
     def __init__(self, schema: dict[str, Any]):
-        """
-        Initializes the analyzer with the provided graph schema.
+        """Initializes the analyzer with the provided graph schema.
 
         Args:
             schema: Dictionary representing the full graph tools and variables.
+
         """
         self.schema = schema
         self.tools = {t["name"]: t for t in schema.get("tools", [])}
@@ -28,10 +27,10 @@ class TopologicalAnalyzer:
                 self.var_sources[out_var].append(tool_name)
 
     def resolve_dependencies(
-        self, target_outputs: list[str]
+        self,
+        target_outputs: list[str],
     ) -> tuple[list[str], list[dict[str, Any]]]:
-        """
-        Recursively resolve all dependencies needed to compute target_outputs.
+        """Recursively resolve all dependencies needed to compute target_outputs.
         Returns a tuple containing:
             1. A list of independent design variables (inputs without any tool source).
             2. A list of tool configurations required for execution.
@@ -67,9 +66,7 @@ class TopologicalAnalyzer:
         return design_vars, req_tools
 
     def extract_parameters(self, design_vars: list[str]) -> list[dict[str, Any]]:
-        """
-        Formats design variables into Ax-Platform ready parameter structures.
-        """
+        """Formats design variables into Ax-Platform ready parameter structures."""
         parameters = []
         for var_name in design_vars:
             var_data = self.variables.get(var_name)
@@ -84,7 +81,7 @@ class TopologicalAnalyzer:
                         "type": "choice",
                         "values": var_data.get("choices", []),
                         "value_type": var_data.get("value_type", "float"),
-                    }
+                    },
                 )
             else:
                 parameters.append(
@@ -96,7 +93,7 @@ class TopologicalAnalyzer:
                             var_data.get("upper", 1.0),
                         ],
                         "value_type": var_data.get("value_type", "float"),
-                    }
+                    },
                 )
 
         return parameters

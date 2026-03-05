@@ -2,7 +2,14 @@
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import numpy as np
 from fastapi.testclient import TestClient
+
+try:
+    import torch
+except ImportError:
+    torch = None
 
 # Pre-patch GraphManager to avoid DB connection during import of services.graph.main
 gm_patcher = patch("mdo_framework.db.graph_manager.GraphManager")
@@ -26,7 +33,13 @@ class TestGraphService(unittest.TestCase):
         response = self.client.post("/variables", json={"name": "x", "value": 1.0})
         self.assertEqual(response.status_code, 200)
         self.mock_gm.add_variable.assert_called_with(
-            "x", 1.0, None, None, "continuous", None, "float"
+            "x",
+            1.0,
+            None,
+            None,
+            "continuous",
+            None,
+            "float",
         )
 
     def test_get_schema(self):
@@ -34,6 +47,42 @@ class TestGraphService(unittest.TestCase):
         response = self.client.get("/schema")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"tools": [], "variables": []})
+
+    def test_clear_graph(self):
+        response = self.client.post("/clear")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "cleared")
+        self.mock_gm.clear_graph.assert_called()
+
+    def test_create_tool(self):
+        response = self.client.post(
+            "/tools",
+            json={"name": "ToolA", "fidelity": "high"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "created")
+        self.assertEqual(response.json()["tool"], "ToolA")
+        self.mock_gm.add_tool.assert_called_with("ToolA", "high")
+
+    def test_connect_input(self):
+        response = self.client.post(
+            "/connections/input",
+            json={"source": "varX", "target": "ToolA"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "connected")
+        self.assertEqual(response.json()["type"], "input")
+        self.mock_gm.connect_input_to_tool.assert_called_with("varX", "ToolA")
+
+    def test_connect_output(self):
+        response = self.client.post(
+            "/connections/output",
+            json={"source": "ToolA", "target": "varY"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "connected")
+        self.assertEqual(response.json()["type"], "output")
+        self.mock_gm.connect_tool_to_output.assert_called_with("ToolA", "varY")
 
 
 class TestExecutionService(unittest.TestCase):
@@ -94,7 +143,7 @@ class TestExecutionService(unittest.TestCase):
             mock_resp.status_code = 200
             mock_resp.json.return_value = {
                 "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]}
+                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
                 ],
                 "variables": [{"name": "x"}, {"name": "y"}],
             }
@@ -146,7 +195,8 @@ class TestExecutionService(unittest.TestCase):
 
             # Unknown objective
             response = self.client.post(
-                "/evaluate", json={"inputs": {"x": 1.0}, "objectives": ["unknown_obj"]}
+                "/evaluate",
+                json={"inputs": {"x": 1.0}, "objectives": ["unknown_obj"]},
             )
             self.assertEqual(response.status_code, 422)
             self.assertIn("Unknown objective", response.json()["detail"])
@@ -162,20 +212,23 @@ class TestExecutionService(unittest.TestCase):
         # inputs > 100
         large_inputs = {f"var_{i}": 1.0 for i in range(101)}
         response = self.client.post(
-            "/evaluate", json={"inputs": large_inputs, "objectives": ["f_xy"]}
+            "/evaluate",
+            json={"inputs": large_inputs, "objectives": ["f_xy"]},
         )
         self.assertEqual(response.status_code, 422)
 
         # input key > 50 chars
         large_key = "a" * 51
         response = self.client.post(
-            "/evaluate", json={"inputs": {large_key: 1.0}, "objectives": ["f_xy"]}
+            "/evaluate",
+            json={"inputs": {large_key: 1.0}, "objectives": ["f_xy"]},
         )
         self.assertEqual(response.status_code, 422)
 
         # empty inputs
         response = self.client.post(
-            "/evaluate", json={"inputs": {}, "objectives": ["f_xy"]}
+            "/evaluate",
+            json={"inputs": {}, "objectives": ["f_xy"]},
         )
         self.assertEqual(response.status_code, 422)
 
@@ -192,7 +245,7 @@ class TestExecutionService(unittest.TestCase):
             mock_resp.status_code = 200
             mock_resp.json.return_value = {
                 "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]}
+                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
                 ],
                 "variables": [{"name": "x"}, {"name": "y"}],
             }
@@ -224,7 +277,7 @@ class TestExecutionService(unittest.TestCase):
             mock_resp.status_code = 200
             mock_resp.json.return_value = {
                 "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]}
+                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
                 ],
                 "variables": [{"name": "x"}, {"name": "y"}],
             }
@@ -337,7 +390,7 @@ class TestExecutionService(unittest.TestCase):
                 {
                     "variables": [{"name": "x"}],
                     "tools": [{"name": "tool", "outputs": None}],
-                }
+                },
             )
 
 
@@ -380,10 +433,10 @@ class TestProblemPool(unittest.TestCase):
         envelope = SchemaEnvelope(
             {
                 "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]}
+                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
                 ],
                 "variables": [{"name": "x"}, {"name": "y"}],
-            }
+            },
         )
         self.pool.current_hash = envelope.hash
 
@@ -420,7 +473,7 @@ class TestProblemPool(unittest.TestCase):
             {
                 "tools": [{"name": "MissingTool", "inputs": ["x"], "outputs": ["y"]}],
                 "variables": [{"name": "x"}],
-            }
+            },
         )
 
         async def run_test():
@@ -442,10 +495,10 @@ class TestProblemPool(unittest.TestCase):
         envelope = SchemaEnvelope(
             {
                 "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]}
+                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
                 ],
                 "variables": [{"name": "x"}, {"name": "y"}],
-            }
+            },
         )
 
         async def run_test():
@@ -488,16 +541,19 @@ class TestProblemPool(unittest.TestCase):
 
 class TestOptimizationService(unittest.TestCase):
     def setUp(self):
+        self.mock_client = AsyncMock()
+        optimization_app.state.client = self.mock_client
+
+        # Default mock response for schema fetch
+        self.mock_resp = MagicMock()
+        self.mock_resp.json.return_value = {"tools": [], "variables": []}
+        self.mock_client.get.return_value = self.mock_resp
+
         self.client = TestClient(optimization_app)
 
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
-    @patch("httpx.AsyncClient")
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
-    def test_optimize(self, mock_resolve, mock_get, mock_optimize):
-        from unittest.mock import AsyncMock
-
-        import numpy as np
-
+    def test_optimize(self, mock_resolve, mock_optimize):
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
             "variables": [
@@ -519,11 +575,7 @@ class TestOptimizationService(unittest.TestCase):
             "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
         }
 
-        # the context manager __aenter__ returns an object that has a .get() awaitable method
-        mock_client_instance = AsyncMock()
-        mock_client_instance.get.return_value = mock_resp
-
-        mock_get.return_value.__aenter__.return_value = mock_client_instance
+        self.mock_client.get.return_value = mock_resp
         mock_resolve.return_value = (
             ["x", "y"],
             [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
@@ -531,31 +583,54 @@ class TestOptimizationService(unittest.TestCase):
 
         # Mock result of optimization
         mock_optimize.return_value = {
-            "best_x": np.array([0.5, 0.5]),
-            "best_y": np.array(0.0),
-            "history_x": np.array([[0.0, 0.0]]),
-            "history_y": np.array([[0.0]]),
+            "best_parameters": {"x": 0.5, "y": 0.5},
+            "best_objectives": {"f_xy": 0.0},
+            "history": [
+                {
+                    "parameters": {"x": 0.5, "y": 0.5},
+                    "objectives": {"f_xy": np.array([0.0])},
+                },
+            ],
+            "serialized_client": "{}",
         }
 
         payload = {
             "objectives": [{"name": "f_xy"}],
             "n_steps": 1,
             "n_init": 1,
+            "use_bonsai": True,
+            "fidelity_parameter": "f1",
         }
 
         response = self.client.post("/optimize", json=payload)
         self.assertEqual(response.status_code, 200)
         self.assertIn("best_parameters", response.json())
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
-    @patch("httpx.AsyncClient")
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
-    def test_optimize_tensor_conversion(self, mock_resolve, mock_get, mock_optimize):
+    def test_optimize_tensor_conversion(self, mock_resolve, mock_optimize):
         import torch
+
+        self.mock_resp.json.return_value = {
+            "variables": [
+                {
+                    "name": "x",
+                    "param_type": "range",
+                    "lower": 0.0,
+                    "upper": 1.0,
+                    "value_type": "float",
+                },
+                {
+                    "name": "y",
+                    "param_type": "range",
+                    "lower": 0.0,
+                    "upper": 1.0,
+                    "value_type": "float",
+                },
+            ],
+            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
+        }
+        mock_resolve.return_value = (["x", "y"], [])
 
         # Mock result of optimization
         mock_optimize.return_value = {
@@ -565,7 +640,7 @@ if __name__ == "__main__":
                 {
                     "parameters": {"x": 0.5, "y": 0.5},
                     "objectives": {"f_xy": torch.tensor(0.0)},
-                }
+                },
             ],
         }
 
@@ -579,11 +654,8 @@ if __name__ == "__main__":
         self.assertEqual(response.status_code, 200)
 
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
-    @patch("httpx.AsyncClient")
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
-    def test_optimize_exception(self, mock_resolve, mock_get, mock_optimize):
-        from unittest.mock import AsyncMock
-
+    def test_optimize_exception(self, mock_resolve, mock_optimize):
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
             "variables": [
@@ -605,11 +677,7 @@ if __name__ == "__main__":
             "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
         }
 
-        # the context manager __aenter__ returns an object that has a .get() awaitable method
-        mock_client_instance = AsyncMock()
-        mock_client_instance.get.return_value = mock_resp
-
-        mock_get.return_value.__aenter__.return_value = mock_client_instance
+        optimization_app.state.client.get.return_value = mock_resp
         mock_resolve.return_value = (
             ["x", "y"],
             [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
@@ -628,8 +696,30 @@ if __name__ == "__main__":
         self.assertEqual(response.status_code, 500)
 
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
-    def test_optimize_tensor_conversion_nested(self, mock_optimize):
+    @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
+    def test_optimize_tensor_conversion_nested(self, mock_resolve, mock_optimize):
         import numpy as np
+
+        self.mock_resp.json.return_value = {
+            "variables": [
+                {
+                    "name": "x",
+                    "param_type": "range",
+                    "lower": 0.0,
+                    "upper": 1.0,
+                    "value_type": "float",
+                },
+                {
+                    "name": "y",
+                    "param_type": "range",
+                    "lower": 0.0,
+                    "upper": 1.0,
+                    "value_type": "float",
+                },
+            ],
+            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
+        }
+        mock_resolve.return_value = (["x", "y"], [])
 
         # Mock result of optimization
         mock_optimize.return_value = {
@@ -639,7 +729,7 @@ if __name__ == "__main__":
                 {
                     "parameters": {"x": 0.5, "y": 0.5},
                     "objectives": {"f_xy": np.array([0.0])},
-                }
+                },
             ],
         }
 
@@ -659,7 +749,7 @@ if __name__ == "__main__":
             "n_init": 1,
         }
         response = self.client.post("/optimize", json=payload)
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 400)
 
     def test_optimize_tensor_lists(self):
         # A simple check for the internal to_list method inside optimize route
@@ -667,11 +757,8 @@ if __name__ == "__main__":
         pass
 
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.__init__")
-    @patch("httpx.AsyncClient")
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
-    def test_optimize_exception2(self, mock_resolve, mock_get, mock_init):
-        from unittest.mock import AsyncMock
-
+    def test_optimize_exception2(self, mock_resolve, mock_init):
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
             "variables": [
@@ -693,11 +780,7 @@ if __name__ == "__main__":
             "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
         }
 
-        # the context manager __aenter__ returns an object that has a .get() awaitable method
-        mock_client_instance = AsyncMock()
-        mock_client_instance.get.return_value = mock_resp
-
-        mock_get.return_value.__aenter__.return_value = mock_client_instance
+        optimization_app.state.client.get.return_value = mock_resp
         mock_resolve.return_value = (
             ["x", "y"],
             [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
@@ -716,11 +799,28 @@ if __name__ == "__main__":
         self.assertEqual(response.status_code, 500)
 
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
-    @patch("httpx.AsyncClient")
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
-    def test_optimize_with_constraints_service(
-        self, mock_resolve, mock_get, mock_optimize
-    ):
+    def test_optimize_with_constraints_service(self, mock_resolve, mock_optimize):
+        self.mock_resp.json.return_value = {
+            "variables": [
+                {
+                    "name": "x",
+                    "param_type": "range",
+                    "lower": 0.0,
+                    "upper": 1.0,
+                    "value_type": "float",
+                },
+                {
+                    "name": "y",
+                    "param_type": "range",
+                    "lower": 0.0,
+                    "upper": 1.0,
+                    "value_type": "float",
+                },
+            ],
+            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
+        }
+        mock_resolve.return_value = (["x", "y"], [])
 
         mock_optimize.return_value = {
             "best_parameters": {"x": 0.5, "y": 0.5},
@@ -741,3 +841,129 @@ if __name__ == "__main__":
 
         response = self.client.post("/optimize", json=payload)
         self.assertEqual(response.status_code, 200)
+
+
+class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
+    async def test_to_jsonable_all_branches(self):
+        from services.optimization.main import to_jsonable
+
+        # 1. Dict branch
+        self.assertEqual(to_jsonable({"a": 1}), {"a": 1})
+        # 2. List/Tuple/Set branch
+        self.assertEqual(to_jsonable([1, 2]), [1, 2])
+        self.assertEqual(to_jsonable((1, 2)), [1, 2])
+        self.assertEqual(to_jsonable({1, 2}), [1, 2])
+        # 3. NumPy ndarray
+        self.assertEqual(to_jsonable(np.array([1, 2])), [1, 2])
+        # 4. NumPy generic (scalar)
+        self.assertEqual(to_jsonable(np.float64(1.0)), 1.0)
+
+        # 5. Object with .tolist() (e.g. Mocking a Tensor)
+        mock_tensor = MagicMock()
+        mock_tensor.tolist.return_value = [3, 4]
+        self.assertEqual(to_jsonable(mock_tensor), [3, 4])
+
+        # 6. Object with .item() (e.g. Mocking a Tensor scalar)
+        mock_scalar = MagicMock()
+        mock_scalar.item.return_value = 5
+        # Ensure it doesn't have tolist to hit this branch
+        if hasattr(mock_scalar, "tolist"):
+            del mock_scalar.tolist
+        self.assertEqual(to_jsonable(mock_scalar), 5)
+
+        # 7. Default branch
+        self.assertEqual(to_jsonable("string"), "string")
+        self.assertEqual(to_jsonable(None), None)
+
+        # 8. Nested structures (Recursive branches)
+        nested = {
+            "list": [np.array([1]), {np.float64(2.0)}],
+            "tuple": (MagicMock(tolist=lambda: [3]),),
+        }
+        expected = {"list": [[1], [2.0]], "tuple": [[3]]}
+        self.assertEqual(to_jsonable(nested), expected)
+
+    async def test_lifespan_coverage(self):
+        from services.optimization.main import lifespan
+
+        mock_app = MagicMock()
+        mock_app.state = MagicMock()
+
+        async with lifespan(mock_app):
+            self.assertIsNotNone(mock_app.state.client)
+            self.assertIsInstance(mock_app.state.client, httpx.AsyncClient)
+
+        # Client should be closed (we can't easily check internal state of closed,
+        # but we verified the context manager exits)
+
+    @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
+    async def test_optimize_error_paths(self, mock_resolve):
+        mock_client = AsyncMock()
+        optimization_app.state.client = mock_client
+        client = TestClient(optimization_app)
+
+        payload = {
+            "objectives": [{"name": "obj1"}],
+            "n_steps": 1,
+            "n_init": 1,
+        }
+
+        # 1. Fetch schema failure (502)
+        mock_client.get.side_effect = Exception("Network down")
+        response = client.post("/optimize", json=payload)
+        self.assertEqual(response.status_code, 502)
+        mock_client.get.side_effect = None
+
+        # 2. Dependency resolution failure (400)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"variables": [], "tools": []}
+        mock_client.get.return_value = mock_resp
+        mock_resolve.side_effect = ValueError("Unresolved dep")
+
+        response = client.post("/optimize", json=payload)
+        self.assertEqual(response.status_code, 400)
+        mock_resolve.side_effect = None
+
+        # 3. No design variables found (400)
+        mock_resolve.return_value = ([], [])
+        response = client.post("/optimize", json=payload)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("No independent design variables", response.json()["detail"])
+
+        # 4. Extract parameters failure (400)
+        mock_resolve.return_value = (["x"], [])
+        with patch(
+            "mdo_framework.core.topology.TopologicalAnalyzer.extract_parameters",
+            return_value=None,
+        ):
+            response = client.post("/optimize", json=payload)
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("Failed to extract parameter", response.json()["detail"])
+
+        # 5. Catch-all Internal Server Error (500)
+        # Hit via to_jsonable or return block by returning None from optimize
+        with (
+            patch(
+                "mdo_framework.core.topology.TopologicalAnalyzer.extract_parameters",
+                return_value=[
+                    {
+                        "name": "x",
+                        "param_type": "range",
+                        "lower": 0.0,
+                        "upper": 1.0,
+                        "value_type": "float",
+                    },
+                ],
+            ),
+            patch(
+                "mdo_framework.optimization.optimizer.BayesianOptimizer.optimize",
+                return_value=None,
+            ),
+        ):
+            response = client.post("/optimize", json=payload)
+            self.assertEqual(response.status_code, 500)
+            self.assertIn("Optimization failed", response.json()["detail"])
+
+
+if __name__ == "__main__":
+    unittest.main()

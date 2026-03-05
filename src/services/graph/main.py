@@ -86,7 +86,8 @@ def create_tool(tool: ToolCreate, gm: GraphManager = Depends(get_graph_manager))
 
 @app.post("/connections/input", response_model=ConnectionResponse)
 def connect_input(
-    conn: ConnectionCreate, gm: GraphManager = Depends(get_graph_manager)
+    conn: ConnectionCreate,
+    gm: GraphManager = Depends(get_graph_manager),
 ):
     # Variable -> Tool
     gm.connect_input_to_tool(conn.source, conn.target)
@@ -95,7 +96,8 @@ def connect_input(
 
 @app.post("/connections/output", response_model=ConnectionResponse)
 def connect_output(
-    conn: ConnectionCreate, gm: GraphManager = Depends(get_graph_manager)
+    conn: ConnectionCreate,
+    gm: GraphManager = Depends(get_graph_manager),
 ):
     # Tool -> Variable
     gm.connect_tool_to_output(conn.source, conn.target)
