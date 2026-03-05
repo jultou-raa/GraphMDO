@@ -28,8 +28,8 @@ class GraphManager:
         props = {k: v for k, v in props.items() if v is not None}
 
         # Dynamically build the query with the specific label.
-        # Ensure 'kind' is alphanumeric to prevent Cypher injection issues.
-        if not kind.isalnum():
+        # Ensure 'kind' only contains letters to prevent Cypher injection issues.
+        if not kind.isalpha():
             raise ValueError(f"Invalid node kind: {kind}")
 
         query = (
