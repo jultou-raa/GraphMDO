@@ -32,10 +32,12 @@ class GraphManager:
         if not kind.isalnum():
             raise ValueError(f"Invalid node kind: {kind}")
 
-        query = f"""
-        MERGE (n:{kind} {{name: $name}})
-        SET n += $props
-        """
+        query = (
+            "\n"
+            "        MERGE (n:" + kind + " {name: $name})\n"
+            "        SET n += $props\n"
+            "        "
+        )
         self.graph.query(query, params={"name": name, "props": props})
 
     def add_variable(
