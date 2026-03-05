@@ -1,12 +1,23 @@
 import asyncio
 import os
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+import httpx
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from mdo_framework.optimization.optimizer import BayesianOptimizer, RemoteEvaluator
 
-app = FastAPI(title="Optimization Service")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize the shared HTTP client
+    async with httpx.AsyncClient() as client:
+        app.state.client = client
+        yield
+
+
+app = FastAPI(title="Optimization Service", lifespan=lifespan)
 
 EXECUTION_SERVICE_URL = os.getenv("EXECUTION_SERVICE_URL", "http://localhost:8002")
 GRAPH_SERVICE_URL = os.getenv("GRAPH_SERVICE_URL", "http://localhost:8001")
@@ -36,15 +47,13 @@ class OptimizeRequest(BaseModel):
 
 
 @app.post("/optimize")
-async def optimize(req: OptimizeRequest):
-    import httpx
-
+async def optimize(req: OptimizeRequest, request: Request):
     # 1. Fetch schema from Graph Service
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{GRAPH_SERVICE_URL}/schema")
-            resp.raise_for_status()
-            schema = resp.json()
+        client: httpx.AsyncClient = request.app.state.client
+        resp = await client.get(f"{GRAPH_SERVICE_URL}/schema")
+        resp.raise_for_status()
+        schema = resp.json()
     except Exception as e:
         raise HTTPException(
             status_code=502, detail=f"Failed to fetch graph schema: {e}"
