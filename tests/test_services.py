@@ -785,5 +785,95 @@ class TestOptimizationService(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
 
+class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
+    async def test_to_jsonable_all_branches(self):
+        import numpy as np
+        from services.optimization.main import to_jsonable
+
+        # 1. Dict branch
+        self.assertEqual(to_jsonable({"a": 1}), {"a": 1})
+        # 2. List/Tuple/Set branch
+        self.assertEqual(to_jsonable([1, 2]), [1, 2])
+        self.assertEqual(to_jsonable((1, 2)), [1, 2])
+        self.assertEqual(to_jsonable({1, 2}), [1, 2])
+        # 3. NumPy ndarray
+        self.assertEqual(to_jsonable(np.array([1, 2])), [1, 2])
+        # 4. NumPy generic (scalar)
+        self.assertEqual(to_jsonable(np.float64(1.0)), 1.0)
+
+        # 5. Object with .tolist() (e.g. Mocking a Tensor)
+        mock_tensor = MagicMock()
+        mock_tensor.tolist.return_value = [3, 4]
+        # We need to make sure it's not caught by the ndarray check if it's a mock
+        self.assertEqual(to_jsonable(mock_tensor), [3, 4])
+
+        # 6. Object with .item() (e.g. Mocking a Tensor scalar)
+        mock_scalar = MagicMock()
+        mock_scalar.item.return_value = 5
+        # Ensure it doesn't have tolist to hit this branch
+        del mock_scalar.tolist
+        self.assertEqual(to_jsonable(mock_scalar), 5)
+
+        # 7. Default branch
+        self.assertEqual(to_jsonable("string"), "string")
+
+    async def test_lifespan_coverage(self):
+        from services.optimization.main import lifespan
+
+        mock_app = MagicMock()
+        mock_app.state = MagicMock()
+
+        async with lifespan(mock_app):
+            self.assertIsNotNone(mock_app.state.client)
+            self.assertIsInstance(mock_app.state.client, httpx.AsyncClient)
+
+        # Client should be closed (we can't easily check internal state of closed,
+        # but we verified the context manager exits)
+
+    @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
+    async def test_optimize_error_paths(self, mock_resolve):
+        mock_client = AsyncMock()
+        optimization_app.state.client = mock_client
+        client = TestClient(optimization_app)
+
+        payload = {
+            "objectives": [{"name": "obj1"}],
+            "n_steps": 1,
+            "n_init": 1,
+        }
+
+        # 1. Fetch schema failure (502)
+        mock_client.get.side_effect = Exception("Network down")
+        response = client.post("/optimize", json=payload)
+        self.assertEqual(response.status_code, 502)
+        mock_client.get.side_effect = None
+
+        # 2. Dependency resolution failure (400)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"variables": [], "tools": []}
+        mock_client.get.return_value = mock_resp
+        mock_resolve.side_effect = ValueError("Unresolved dep")
+
+        response = client.post("/optimize", json=payload)
+        self.assertEqual(response.status_code, 400)
+        mock_resolve.side_effect = None
+
+        # 3. No design variables found (400)
+        mock_resolve.return_value = ([], [])
+        response = client.post("/optimize", json=payload)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("No independent design variables", response.json()["detail"])
+
+        # 4. Extract parameters failure (400)
+        mock_resolve.return_value = (["x"], [])
+        with patch(
+            "mdo_framework.core.topology.TopologicalAnalyzer.extract_parameters",
+            return_value=None,
+        ):
+            response = client.post("/optimize", json=payload)
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("Failed to extract parameter", response.json()["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()
