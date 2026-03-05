@@ -2,16 +2,16 @@ import openmdao.api as om
 
 
 class ToolComponent(om.ExplicitComponent):
-    """
-    Generic OpenMDAO component that wraps a Python function.
-    """
+    """Generic OpenMDAO component that wraps a Python function."""
 
     def initialize(self):
         self.options.declare("name", types=str, desc="Name of the tool")
         self.options.declare("func", types=object, desc="The function to execute")
         self.options.declare("inputs", types=list, desc="List of input variable names")
         self.options.declare(
-            "outputs", types=list, desc="List of output variable names"
+            "outputs",
+            types=list,
+            desc="List of output variable names",
         )
         self.options.declare(
             "derivatives",
@@ -52,6 +52,7 @@ class ToolComponent(om.ExplicitComponent):
             # If func is: def my_func(x): return {"y": x * 2}
             # This compute block sets outputs["y"] = inputs["x"] * 2
             ```
+
         """
         func = self.options["func"]
         # Prepare inputs as a dictionary
@@ -69,14 +70,13 @@ class ToolComponent(om.ExplicitComponent):
         if len(self.options["outputs"]) == 1:
             output_name = self.options["outputs"][0]
             outputs[output_name] = result
+        elif isinstance(result, dict):
+            for name in self.options["outputs"]:
+                outputs[name] = result[name]
         else:
-            if isinstance(result, dict):
-                for name in self.options["outputs"]:
-                    outputs[name] = result[name]
-            else:
-                # If result is a tuple/list, assume order matches outputs
-                for i, name in enumerate(self.options["outputs"]):
-                    outputs[name] = result[i]
+            # If result is a tuple/list, assume order matches outputs
+            for i, name in enumerate(self.options["outputs"]):
+                outputs[name] = result[i]
 
     def compute_partials(self, inputs, partials):
         if self.options["derivatives"]:

@@ -87,7 +87,7 @@ class TestOptimizer(unittest.TestCase):
 
         # Test pareto frontier handling
         mock_client.get_pareto_frontier.return_value = [
-            ({"x": 0.5, "y": 0.5, "c": "A"}, {"f_xy": 42.0, "g_xy": 10.0}, 0, "0_0")
+            ({"x": 0.5, "y": 0.5, "c": "A"}, {"f_xy": 42.0, "g_xy": 10.0}, 0, "0_0"),
         ]
 
         params = [
@@ -135,7 +135,7 @@ class TestOptimizer(unittest.TestCase):
 
         # Force exception on result retrieval
         mock_client.get_best_parameterization.side_effect = Exception(
-            "Optimization failed"
+            "Optimization failed",
         )
 
         opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
@@ -160,7 +160,10 @@ class TestOptimizer(unittest.TestCase):
         constraints = [{"name": "g_xy", "op": "<=", "bound": 0.0}]
 
         opt = BayesianOptimizer(
-            self.evaluator, self.parameters, self.objectives, constraints=constraints
+            self.evaluator,
+            self.parameters,
+            self.objectives,
+            constraints=constraints,
         )
         result = opt.optimize(n_steps=1, n_init=2)
 
@@ -170,7 +173,8 @@ class TestOptimizer(unittest.TestCase):
     @patch("mdo_framework.optimization.optimizer.Client")
     def test_fidelity_parameter_emits_warning(self, mock_client_cls):
         """fidelity_parameter is not supported by the new Ax Client API;
-        a UserWarning must be raised and optimization still completes normally."""
+        a UserWarning must be raised and optimization still completes normally.
+        """
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5}}

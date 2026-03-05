@@ -18,27 +18,29 @@ logger = logging.getLogger(__name__)
 
 class Evaluator(Protocol):
     def evaluate(
-        self, parameters: dict[str, Any], objectives: list[str]
+        self,
+        parameters: dict[str, Any],
+        objectives: list[str],
     ) -> dict[str, float]:
-        """
-        Evaluates the requested objectives given the design parameters.
-        """
+        """Evaluates the requested objectives given the design parameters."""
         ...
 
 
 class RemoteEvaluator:
-    """
-    Evaluates the design parameters remotely by communicating with the Execution microservice.
+    """Evaluates the design parameters remotely by communicating with the Execution microservice.
 
     Args:
         service_url: The URL of the execution service.
+
     """
 
     def __init__(self, service_url: str):
         self.service_url = service_url
 
     def evaluate(
-        self, parameters: dict[str, Any], objectives: list[str]
+        self,
+        parameters: dict[str, Any],
+        objectives: list[str],
     ) -> dict[str, float]:
 
         payload = {
@@ -52,8 +54,7 @@ class RemoteEvaluator:
 
 
 class BayesianOptimizer:
-    """
-    Bayesian Optimizer using Ax Platform.
+    """Bayesian Optimizer using Ax Platform.
 
     Args:
         evaluator: Local or Remote implementation of Evaluator protocol.
@@ -62,6 +63,7 @@ class BayesianOptimizer:
         constraints: Dict defining boundaries mapped out of OpenMDAO runs.
         fidelity_parameter: Name of variable designating multi-fidelity.
         use_bonsai: Toggle for experimental algorithmic execution.
+
     """
 
     def __init__(
@@ -103,8 +105,8 @@ class BayesianOptimizer:
             result = optimizer.optimize(n_steps=10, n_init=10)
             print(result["best_parameters"])
             ```
-        """
 
+        """
         # Fidelity parameters are not yet supported in the modern Ax `Client` API.
         # `ax.api.configs.RangeParameterConfig` does not expose `is_fidelity` or
         # `target_value`. The legacy `AxClient` workaround is not viable either,
@@ -175,7 +177,7 @@ class BayesianOptimizer:
                         name=p["name"],
                         parameter_type=p.get("value_type", "float"),
                         bounds=p["bounds"],
-                    )
+                    ),
                 )
             elif p["type"] == "choice":
                 ax_params.append(
@@ -183,7 +185,7 @@ class BayesianOptimizer:
                         name=p["name"],
                         parameter_type=p.get("value_type", "float"),
                         values=p["values"],
-                    )
+                    ),
                 )
 
         client.configure_experiment(
@@ -195,7 +197,7 @@ class BayesianOptimizer:
             [
                 f"{'-' if obj.get('minimize', True) else ''}{obj['name']}"
                 for obj in self.objectives
-            ]
+            ],
         )
 
         client.configure_optimization(
@@ -241,7 +243,7 @@ class BayesianOptimizer:
                             {
                                 k: v[0] if isinstance(v, tuple) else v
                                 for k, v in metrics.items()
-                            }
+                            },
                         )
                 else:
                     best_params = None
@@ -253,16 +255,15 @@ class BayesianOptimizer:
                     "history": history,
                     "serialized_client": json.dumps(client._to_json_snapshot()),
                 }
-            else:
-                best_parameters, best_obj, trial_idx, arm_name = (
-                    client.get_best_parameterization()
-                )
-                return {
-                    "best_parameters": best_parameters,
-                    "best_objectives": best_obj,
-                    "history": history,
-                    "serialized_client": json.dumps(client._to_json_snapshot()),
-                }
+            best_parameters, best_obj, trial_idx, arm_name = (
+                client.get_best_parameterization()
+            )
+            return {
+                "best_parameters": best_parameters,
+                "best_objectives": best_obj,
+                "history": history,
+                "serialized_client": json.dumps(client._to_json_snapshot()),
+            }
         except Exception as e:
             logger.warning(f"Could not retrieve best parameters: {e}")
             return {

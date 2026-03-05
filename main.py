@@ -6,9 +6,7 @@ from mdo_framework.optimization.optimizer import BayesianOptimizer
 
 # --- Sellar Problem Functions ---
 def paraboloid_func(x, y):
-    """
-    f(x, y) = (x-3)**2 + xy + (y+4)**2 - 3
-    """
+    """f(x, y) = (x-3)**2 + xy + (y+4)**2 - 3"""
     f_xy = (x - 3.0) ** 2 + x * y + (y + 4.0) ** 2 - 3.0
     c_xy = x - y
     return {"f_xy": f_xy, "c_xy": c_xy}

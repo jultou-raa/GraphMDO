@@ -23,7 +23,12 @@ class TestTranslator(unittest.TestCase):
     def test_build_problem_success(self):
         schema = {
             "tools": [
-                {"name": "ToolA", "fidelity": "high", "inputs": ["x"], "outputs": ["y"]}
+                {
+                    "name": "ToolA",
+                    "fidelity": "high",
+                    "inputs": ["x"],
+                    "outputs": ["y"],
+                },
             ],
             "variables": [{"name": "x", "value": 1.0}, {"name": "y"}],
         }
@@ -48,7 +53,12 @@ class TestTranslator(unittest.TestCase):
         # Trigger the try-except block in set_val
         schema = {
             "tools": [
-                {"name": "ToolA", "fidelity": "high", "inputs": ["x"], "outputs": ["y"]}
+                {
+                    "name": "ToolA",
+                    "fidelity": "high",
+                    "inputs": ["x"],
+                    "outputs": ["y"],
+                },
             ],
             "variables": [{"name": "z", "value": 99.0}],  # z is not in the model
         }

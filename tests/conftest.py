@@ -17,8 +17,7 @@ def pytest_runtest_makereport(item, call):
 
 @pytest.fixture(autouse=True)
 def remove_created_directories_on_pass(request):
-    """
-    Remove directories created during the test if the test passes.
+    """Remove directories created during the test if the test passes.
     This is useful to clean up OpenMDAO output directories or other
     directories created during tests, while keeping them for debugging
     if the test fails.

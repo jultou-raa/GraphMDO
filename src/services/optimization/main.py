@@ -15,16 +15,16 @@ def to_jsonable(obj: Any) -> Any:
     """Recursively converts objects to JSON-serializable types (handling NumPy and Tensors)."""
     if isinstance(obj, dict):
         return {k: to_jsonable(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple, set)):
+    if isinstance(obj, (list, tuple, set)):
         return [to_jsonable(v) for v in obj]
-    elif isinstance(obj, np.ndarray):
+    if isinstance(obj, np.ndarray):
         return obj.tolist()
-    elif isinstance(obj, np.generic):
+    if isinstance(obj, np.generic):
         return obj.item()
-    elif hasattr(obj, "tolist") and callable(getattr(obj, "tolist")):
+    if hasattr(obj, "tolist") and callable(obj.tolist):
         # Handle PyTorch tensors and other objects with .tolist()
         return obj.tolist()
-    elif hasattr(obj, "item") and callable(getattr(obj, "item")):
+    if hasattr(obj, "item") and callable(obj.item):
         # Handle scalars from Tensors/NumPy
         return obj.item()
     return obj
@@ -77,7 +77,8 @@ async def optimize(req: OptimizeRequest, request: Request):
         schema = resp.json()
     except Exception as e:
         raise HTTPException(
-            status_code=502, detail=f"Failed to fetch graph schema: {e}"
+            status_code=502,
+            detail=f"Failed to fetch graph schema: {e}",
         )
 
     from mdo_framework.core.topology import TopologicalAnalyzer
@@ -129,7 +130,9 @@ async def optimize(req: OptimizeRequest, request: Request):
 
         # 6. Run Optimization (offload to thread to avoid blocking the event loop)
         result = await asyncio.to_thread(
-            optimizer.optimize, n_steps=req.n_steps, n_init=req.n_init
+            optimizer.optimize,
+            n_steps=req.n_steps,
+            n_init=req.n_init,
         )
 
         # Convert tensor/numpy to lists for JSON
@@ -145,7 +148,7 @@ async def optimize(req: OptimizeRequest, request: Request):
                     for trial in result.get("history", [])
                 ],
                 "serialized_client": result.get("serialized_client"),
-            }
+            },
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Optimization failed: {e}")

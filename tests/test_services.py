@@ -33,7 +33,13 @@ class TestGraphService(unittest.TestCase):
         response = self.client.post("/variables", json={"name": "x", "value": 1.0})
         self.assertEqual(response.status_code, 200)
         self.mock_gm.add_variable.assert_called_with(
-            "x", 1.0, None, None, "continuous", None, "float"
+            "x",
+            1.0,
+            None,
+            None,
+            "continuous",
+            None,
+            "float",
         )
 
     def test_get_schema(self):
@@ -41,6 +47,42 @@ class TestGraphService(unittest.TestCase):
         response = self.client.get("/schema")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"tools": [], "variables": []})
+
+    def test_clear_graph(self):
+        response = self.client.post("/clear")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "cleared")
+        self.mock_gm.clear_graph.assert_called()
+
+    def test_create_tool(self):
+        response = self.client.post(
+            "/tools",
+            json={"name": "ToolA", "fidelity": "high"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "created")
+        self.assertEqual(response.json()["tool"], "ToolA")
+        self.mock_gm.add_tool.assert_called_with("ToolA", "high")
+
+    def test_connect_input(self):
+        response = self.client.post(
+            "/connections/input",
+            json={"source": "varX", "target": "ToolA"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "connected")
+        self.assertEqual(response.json()["type"], "input")
+        self.mock_gm.connect_input_to_tool.assert_called_with("varX", "ToolA")
+
+    def test_connect_output(self):
+        response = self.client.post(
+            "/connections/output",
+            json={"source": "ToolA", "target": "varY"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "connected")
+        self.assertEqual(response.json()["type"], "output")
+        self.mock_gm.connect_tool_to_output.assert_called_with("ToolA", "varY")
 
 
 class TestExecutionService(unittest.TestCase):
@@ -101,7 +143,7 @@ class TestExecutionService(unittest.TestCase):
             mock_resp.status_code = 200
             mock_resp.json.return_value = {
                 "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]}
+                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
                 ],
                 "variables": [{"name": "x"}, {"name": "y"}],
             }
@@ -153,7 +195,8 @@ class TestExecutionService(unittest.TestCase):
 
             # Unknown objective
             response = self.client.post(
-                "/evaluate", json={"inputs": {"x": 1.0}, "objectives": ["unknown_obj"]}
+                "/evaluate",
+                json={"inputs": {"x": 1.0}, "objectives": ["unknown_obj"]},
             )
             self.assertEqual(response.status_code, 422)
             self.assertIn("Unknown objective", response.json()["detail"])
@@ -169,20 +212,23 @@ class TestExecutionService(unittest.TestCase):
         # inputs > 100
         large_inputs = {f"var_{i}": 1.0 for i in range(101)}
         response = self.client.post(
-            "/evaluate", json={"inputs": large_inputs, "objectives": ["f_xy"]}
+            "/evaluate",
+            json={"inputs": large_inputs, "objectives": ["f_xy"]},
         )
         self.assertEqual(response.status_code, 422)
 
         # input key > 50 chars
         large_key = "a" * 51
         response = self.client.post(
-            "/evaluate", json={"inputs": {large_key: 1.0}, "objectives": ["f_xy"]}
+            "/evaluate",
+            json={"inputs": {large_key: 1.0}, "objectives": ["f_xy"]},
         )
         self.assertEqual(response.status_code, 422)
 
         # empty inputs
         response = self.client.post(
-            "/evaluate", json={"inputs": {}, "objectives": ["f_xy"]}
+            "/evaluate",
+            json={"inputs": {}, "objectives": ["f_xy"]},
         )
         self.assertEqual(response.status_code, 422)
 
@@ -199,7 +245,7 @@ class TestExecutionService(unittest.TestCase):
             mock_resp.status_code = 200
             mock_resp.json.return_value = {
                 "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]}
+                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
                 ],
                 "variables": [{"name": "x"}, {"name": "y"}],
             }
@@ -231,7 +277,7 @@ class TestExecutionService(unittest.TestCase):
             mock_resp.status_code = 200
             mock_resp.json.return_value = {
                 "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]}
+                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
                 ],
                 "variables": [{"name": "x"}, {"name": "y"}],
             }
@@ -344,7 +390,7 @@ class TestExecutionService(unittest.TestCase):
                 {
                     "variables": [{"name": "x"}],
                     "tools": [{"name": "tool", "outputs": None}],
-                }
+                },
             )
 
 
@@ -387,10 +433,10 @@ class TestProblemPool(unittest.TestCase):
         envelope = SchemaEnvelope(
             {
                 "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]}
+                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
                 ],
                 "variables": [{"name": "x"}, {"name": "y"}],
-            }
+            },
         )
         self.pool.current_hash = envelope.hash
 
@@ -427,7 +473,7 @@ class TestProblemPool(unittest.TestCase):
             {
                 "tools": [{"name": "MissingTool", "inputs": ["x"], "outputs": ["y"]}],
                 "variables": [{"name": "x"}],
-            }
+            },
         )
 
         async def run_test():
@@ -449,10 +495,10 @@ class TestProblemPool(unittest.TestCase):
         envelope = SchemaEnvelope(
             {
                 "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]}
+                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
                 ],
                 "variables": [{"name": "x"}, {"name": "y"}],
-            }
+            },
         )
 
         async def run_test():
@@ -543,7 +589,7 @@ class TestOptimizationService(unittest.TestCase):
                 {
                     "parameters": {"x": 0.5, "y": 0.5},
                     "objectives": {"f_xy": np.array([0.0])},
-                }
+                },
             ],
             "serialized_client": "{}",
         }
@@ -594,7 +640,7 @@ class TestOptimizationService(unittest.TestCase):
                 {
                     "parameters": {"x": 0.5, "y": 0.5},
                     "objectives": {"f_xy": torch.tensor(0.0)},
-                }
+                },
             ],
         }
 
@@ -683,7 +729,7 @@ class TestOptimizationService(unittest.TestCase):
                 {
                     "parameters": {"x": 0.5, "y": 0.5},
                     "objectives": {"f_xy": np.array([0.0])},
-                }
+                },
             ],
         }
 
@@ -906,7 +952,7 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
                         "lower": 0.0,
                         "upper": 1.0,
                         "value_type": "float",
-                    }
+                    },
                 ],
             ),
             patch(
