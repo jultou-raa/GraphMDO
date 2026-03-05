@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 from fastapi import FastAPI, HTTPException
@@ -96,8 +97,10 @@ async def optimize(req: OptimizeRequest):
             use_bonsai=req.use_bonsai,
         )
 
-        # 6. Run Optimization
-        result = optimizer.optimize(n_steps=req.n_steps, n_init=req.n_init)
+        # 6. Run Optimization (offload to thread to avoid blocking the event loop)
+        result = await asyncio.to_thread(
+            optimizer.optimize, n_steps=req.n_steps, n_init=req.n_init
+        )
 
         # Convert tensor/numpy to lists for JSON
 
