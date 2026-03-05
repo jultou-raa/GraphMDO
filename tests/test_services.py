@@ -832,12 +832,9 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
         # 8. Nested structures (Recursive branches)
         nested = {
             "list": [np.array([1]), {np.float64(2.0)}],
-            "tuple": (MagicMock(tolist=lambda: [3]),)
+            "tuple": (MagicMock(tolist=lambda: [3]),),
         }
-        expected = {
-            "list": [[1], [2.0]],
-            "tuple": [[3]]
-        }
+        expected = {"list": [[1], [2.0]], "tuple": [[3]]}
         self.assertEqual(to_jsonable(nested), expected)
 
     async def test_lifespan_coverage(self):
@@ -899,9 +896,23 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
 
         # 5. Catch-all Internal Server Error (500)
         # Hit via to_jsonable or return block by returning None from optimize
-        with patch(
-            "mdo_framework.optimization.optimizer.BayesianOptimizer.optimize",
-            return_value=None,
+        with (
+            patch(
+                "mdo_framework.core.topology.TopologicalAnalyzer.extract_parameters",
+                return_value=[
+                    {
+                        "name": "x",
+                        "param_type": "range",
+                        "lower": 0.0,
+                        "upper": 1.0,
+                        "value_type": "float",
+                    }
+                ],
+            ),
+            patch(
+                "mdo_framework.optimization.optimizer.BayesianOptimizer.optimize",
+                return_value=None,
+            ),
         ):
             response = client.post("/optimize", json=payload)
             self.assertEqual(response.status_code, 500)
