@@ -553,6 +553,27 @@ class TestOptimizationService(unittest.TestCase):
     def test_optimize_tensor_conversion(self, mock_resolve, mock_optimize):
         import torch
 
+        self.mock_resp.json.return_value = {
+            "variables": [
+                {
+                    "name": "x",
+                    "param_type": "range",
+                    "lower": 0.0,
+                    "upper": 1.0,
+                    "value_type": "float",
+                },
+                {
+                    "name": "y",
+                    "param_type": "range",
+                    "lower": 0.0,
+                    "upper": 1.0,
+                    "value_type": "float",
+                },
+            ],
+            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
+        }
+        mock_resolve.return_value = (["x", "y"], [])
+
         # Mock result of optimization
         mock_optimize.return_value = {
             "best_parameters": {"x": 0.5, "y": 0.5},
@@ -617,8 +638,30 @@ class TestOptimizationService(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
 
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
-    def test_optimize_tensor_conversion_nested(self, mock_optimize):
+    @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
+    def test_optimize_tensor_conversion_nested(self, mock_resolve, mock_optimize):
         import numpy as np
+
+        self.mock_resp.json.return_value = {
+            "variables": [
+                {
+                    "name": "x",
+                    "param_type": "range",
+                    "lower": 0.0,
+                    "upper": 1.0,
+                    "value_type": "float",
+                },
+                {
+                    "name": "y",
+                    "param_type": "range",
+                    "lower": 0.0,
+                    "upper": 1.0,
+                    "value_type": "float",
+                },
+            ],
+            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
+        }
+        mock_resolve.return_value = (["x", "y"], [])
 
         # Mock result of optimization
         mock_optimize.return_value = {
@@ -648,7 +691,7 @@ class TestOptimizationService(unittest.TestCase):
             "n_init": 1,
         }
         response = self.client.post("/optimize", json=payload)
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 400)
 
     def test_optimize_tensor_lists(self):
         # A simple check for the internal to_list method inside optimize route
@@ -700,6 +743,27 @@ class TestOptimizationService(unittest.TestCase):
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
     def test_optimize_with_constraints_service(self, mock_resolve, mock_optimize):
+        self.mock_resp.json.return_value = {
+            "variables": [
+                {
+                    "name": "x",
+                    "param_type": "range",
+                    "lower": 0.0,
+                    "upper": 1.0,
+                    "value_type": "float",
+                },
+                {
+                    "name": "y",
+                    "param_type": "range",
+                    "lower": 0.0,
+                    "upper": 1.0,
+                    "value_type": "float",
+                },
+            ],
+            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
+        }
+        mock_resolve.return_value = (["x", "y"], [])
+
         mock_optimize.return_value = {
             "best_parameters": {"x": 0.5, "y": 0.5},
             "best_objectives": {"f_xy": 0.0},
