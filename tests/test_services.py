@@ -2,7 +2,14 @@
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import numpy as np
 from fastapi.testclient import TestClient
+
+try:
+    import torch
+except ImportError:
+    torch = None
 
 # Pre-patch GraphManager to avoid DB connection during import of services.graph.main
 gm_patcher = patch("mdo_framework.db.graph_manager.GraphManager")
@@ -501,8 +508,6 @@ class TestOptimizationService(unittest.TestCase):
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
     def test_optimize(self, mock_resolve, mock_optimize):
-        import numpy as np
-
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
             "variables": [
@@ -532,16 +537,23 @@ class TestOptimizationService(unittest.TestCase):
 
         # Mock result of optimization
         mock_optimize.return_value = {
-            "best_x": np.array([0.5, 0.5]),
-            "best_y": np.array(0.0),
-            "history_x": np.array([[0.0, 0.0]]),
-            "history_y": np.array([[0.0]]),
+            "best_parameters": {"x": 0.5, "y": 0.5},
+            "best_objectives": {"f_xy": 0.0},
+            "history": [
+                {
+                    "parameters": {"x": 0.5, "y": 0.5},
+                    "objectives": {"f_xy": np.array([0.0])},
+                }
+            ],
+            "serialized_client": "{}",
         }
 
         payload = {
             "objectives": [{"name": "f_xy"}],
             "n_steps": 1,
             "n_init": 1,
+            "use_bonsai": True,
+            "fidelity_parameter": "f1",
         }
 
         response = self.client.post("/optimize", json=payload)
@@ -787,7 +799,6 @@ class TestOptimizationService(unittest.TestCase):
 
 class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
     async def test_to_jsonable_all_branches(self):
-        import numpy as np
         from services.optimization.main import to_jsonable
 
         # 1. Dict branch
@@ -804,18 +815,30 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
         # 5. Object with .tolist() (e.g. Mocking a Tensor)
         mock_tensor = MagicMock()
         mock_tensor.tolist.return_value = [3, 4]
-        # We need to make sure it's not caught by the ndarray check if it's a mock
         self.assertEqual(to_jsonable(mock_tensor), [3, 4])
 
         # 6. Object with .item() (e.g. Mocking a Tensor scalar)
         mock_scalar = MagicMock()
         mock_scalar.item.return_value = 5
         # Ensure it doesn't have tolist to hit this branch
-        del mock_scalar.tolist
+        if hasattr(mock_scalar, "tolist"):
+            del mock_scalar.tolist
         self.assertEqual(to_jsonable(mock_scalar), 5)
 
         # 7. Default branch
         self.assertEqual(to_jsonable("string"), "string")
+        self.assertEqual(to_jsonable(None), None)
+
+        # 8. Nested structures (Recursive branches)
+        nested = {
+            "list": [np.array([1]), {np.float64(2.0)}],
+            "tuple": (MagicMock(tolist=lambda: [3]),)
+        }
+        expected = {
+            "list": [[1], [2.0]],
+            "tuple": [[3]]
+        }
+        self.assertEqual(to_jsonable(nested), expected)
 
     async def test_lifespan_coverage(self):
         from services.optimization.main import lifespan
@@ -873,6 +896,16 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
             response = client.post("/optimize", json=payload)
             self.assertEqual(response.status_code, 400)
             self.assertIn("Failed to extract parameter", response.json()["detail"])
+
+        # 5. Catch-all Internal Server Error (500)
+        # Hit via to_jsonable or return block by returning None from optimize
+        with patch(
+            "mdo_framework.optimization.optimizer.BayesianOptimizer.optimize",
+            return_value=None,
+        ):
+            response = client.post("/optimize", json=payload)
+            self.assertEqual(response.status_code, 500)
+            self.assertIn("Optimization failed", response.json()["detail"])
 
 
 if __name__ == "__main__":
