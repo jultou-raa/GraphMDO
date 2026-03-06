@@ -56,7 +56,9 @@ class RemoteEvaluator:
 
 
 class RemoteDiscipline(Discipline):
-    def __init__(self, evaluator: 'RemoteEvaluator', inputs: list[str], outputs: list[str]):
+    def __init__(
+        self, evaluator: "RemoteEvaluator", inputs: list[str], outputs: list[str]
+    ):
         super().__init__(name="RemoteExecution")
         self.evaluator = evaluator
         self.input_names = inputs
@@ -67,7 +69,10 @@ class RemoteDiscipline(Discipline):
             self.default_input_data[in_name] = np.array([0.0])
 
     def _run(self, input_data: dict[str, np.ndarray]) -> None:
-        params = {k: v.tolist()[0] if v.size == 1 else v.tolist() for k, v in input_data.items()}
+        params = {
+            k: v.tolist()[0] if v.size == 1 else v.tolist()
+            for k, v in input_data.items()
+        }
         results = self.evaluator.evaluate(params, self.output_names)
         for k, v in results.items():
             self.local_data[k] = np.atleast_1d(v)
@@ -80,7 +85,7 @@ class BayesianOptimizer:
         evaluator: Local or Remote implementation of Evaluator protocol.
         parameters: Dict defining the variables bounds, choices, and types.
         objectives: Dict defining the targeted metrics and their directions.
-        constraints: Dict defining boundaries mapped out of OpenMDAO runs.
+        constraints: Dict defining boundaries mapped out of GEMSEO evaluations.
         fidelity_parameter: Name of variable designating multi-fidelity.
         use_bonsai: Toggle for experimental algorithmic execution.
 
@@ -116,22 +121,32 @@ class BayesianOptimizer:
             discipline = self.evaluator.problem
         else:
             inputs = [p["name"] for p in self.parameters]
-            outputs = [o["name"] for o in self.objectives] + [c["name"] for c in self.constraints]
+            outputs = [o["name"] for o in self.objectives] + [
+                c["name"] for c in self.constraints
+            ]
             discipline = RemoteDiscipline(self.evaluator, inputs, outputs)
 
         design_space = DesignSpace()
         for p in self.parameters:
             if p["type"] == "range":
-                design_space.add_variable(p["name"], lower_bound=p["bounds"][0], upper_bound=p["bounds"][1])
+                design_space.add_variable(
+                    p["name"], lower_bound=p["bounds"][0], upper_bound=p["bounds"][1]
+                )
             elif p["type"] == "choice":
                 vals = p["values"]
                 if len(vals) == 1:
-                    design_space.add_variable(p["name"], value=0 if isinstance(vals[0], str) else vals[0])
+                    design_space.add_variable(
+                        p["name"], value=0 if isinstance(vals[0], str) else vals[0]
+                    )
                 else:
                     if isinstance(vals[0], str):
-                        design_space.add_variable(p["name"], lower_bound=0, upper_bound=len(vals)-1)
+                        design_space.add_variable(
+                            p["name"], lower_bound=0, upper_bound=len(vals) - 1
+                        )
                     else:
-                        design_space.add_variable(p["name"], lower_bound=min(vals), upper_bound=max(vals))
+                        design_space.add_variable(
+                            p["name"], lower_bound=min(vals), upper_bound=max(vals)
+                        )
 
         objective_name = self.objectives[0]["name"]
 
@@ -144,7 +159,7 @@ class BayesianOptimizer:
         )
 
         for c in self.constraints:
-            ctype = 'ineq' if c['op'] == '<=' else 'eq'
+            ctype = "ineq" if c["op"] == "<=" else "eq"
             scenario.add_constraint(c["name"], constraint_type=ctype, value=c["bound"])
 
         try:
@@ -157,9 +172,10 @@ class BayesianOptimizer:
             # Post-process
             try:
                 from gemseo.settings.post import ScatterPlotMatrix_Settings
+
                 scenario.post_process(
                     "ScatterPlotMatrix",
-                    settings_model=ScatterPlotMatrix_Settings(save=True, show=False)
+                    settings_model=ScatterPlotMatrix_Settings(save=True, show=False),
                 )
             except Exception as pp_err:
                 logger.warning(f"Failed to post-process DOE: {pp_err}")
@@ -181,23 +197,33 @@ class BayesianOptimizer:
             discipline = self.evaluator.problem
         else:
             inputs = [p["name"] for p in self.parameters]
-            outputs = [o["name"] for o in self.objectives] + [c["name"] for c in self.constraints]
+            outputs = [o["name"] for o in self.objectives] + [
+                c["name"] for c in self.constraints
+            ]
             discipline = RemoteDiscipline(self.evaluator, inputs, outputs)
 
         # Build DesignSpace
         design_space = DesignSpace()
         for p in self.parameters:
             if p["type"] == "range":
-                design_space.add_variable(p["name"], lower_bound=p["bounds"][0], upper_bound=p["bounds"][1])
+                design_space.add_variable(
+                    p["name"], lower_bound=p["bounds"][0], upper_bound=p["bounds"][1]
+                )
             elif p["type"] == "choice":
                 vals = p["values"]
                 if len(vals) == 1:
-                    design_space.add_variable(p["name"], value=0 if isinstance(vals[0], str) else vals[0])
+                    design_space.add_variable(
+                        p["name"], value=0 if isinstance(vals[0], str) else vals[0]
+                    )
                 else:
                     if isinstance(vals[0], str):
-                        design_space.add_variable(p["name"], lower_bound=0, upper_bound=len(vals)-1)
+                        design_space.add_variable(
+                            p["name"], lower_bound=0, upper_bound=len(vals) - 1
+                        )
                     else:
-                        design_space.add_variable(p["name"], lower_bound=min(vals), upper_bound=max(vals))
+                        design_space.add_variable(
+                            p["name"], lower_bound=min(vals), upper_bound=max(vals)
+                        )
 
         # Build Scenario
         objective_name = self.objectives[0]["name"]
@@ -209,11 +235,11 @@ class BayesianOptimizer:
             objective_name=objective_name,
             maximize_objective=not minimize,
             design_space=design_space,
-            name="MDOScenario_Ax"
+            name="MDOScenario_Ax",
         )
 
         for c in self.constraints:
-            ctype = 'ineq' if c['op'] == '<=' else 'eq'
+            ctype = "ineq" if c["op"] == "<=" else "eq"
             scenario.add_constraint(c["name"], constraint_type=ctype, value=c["bound"])
 
         try:
@@ -227,7 +253,7 @@ class BayesianOptimizer:
                 max_iter=n_steps,
                 n_init=n_init,
                 use_bonsai=self.use_bonsai,
-                ax_parameters=self.parameters
+                ax_parameters=self.parameters,
             )
 
             # Generate XDSM diagram
@@ -239,16 +265,20 @@ class BayesianOptimizer:
                 logger.warning(f"Failed to post-process: {pp_err}")
 
             # Return standardized format
-            best_x = problem.design_space.get_current_value() # The best x evaluated
+            best_x = problem.design_space.get_current_value()  # The best x evaluated
             best_obj_eval = problem.objective.evaluate(best_x)
-            best_obj = best_obj_eval[0] if isinstance(best_obj_eval, np.ndarray) else best_obj_eval
+            best_obj = (
+                best_obj_eval[0]
+                if isinstance(best_obj_eval, np.ndarray)
+                else best_obj_eval
+            )
 
             # Map x_opt back to dict
             best_params = {}
             offset = 0
             for v in design_space.variable_names:
                 s = design_space.variable_sizes[v]
-                val = best_x[offset:offset+s]
+                val = best_x[offset : offset + s]
                 best_params[v] = val[0] if s == 1 else val.tolist()
                 offset += s
 
@@ -256,14 +286,15 @@ class BayesianOptimizer:
                 "best_parameters": best_params,
                 "best_objectives": {objective_name: best_obj},
                 "history": [],
-                "serialized_client": "{}"
+                "serialized_client": "{}",
             }
         except Exception as e:
             import traceback
+
             logger.error(f"Optimization failed: {e}\n{traceback.format_exc()}")
             return {
                 "best_parameters": None,
                 "best_objectives": None,
                 "history": [],
-                "serialized_client": "{}"
+                "serialized_client": "{}",
             }

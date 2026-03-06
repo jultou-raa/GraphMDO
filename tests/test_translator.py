@@ -8,6 +8,7 @@ import unittest
 
 from mdo_framework.core.translator import GraphProblemBuilder
 
+
 class TestTranslator(unittest.TestCase):
     def test_build_problem_invalid_tool(self):
         schema = {

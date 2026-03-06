@@ -12,6 +12,7 @@ from gemseo.core.discipline import Discipline
 from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.optimization.optimizer import BayesianOptimizer, RemoteEvaluator
 
+
 class TestOptimizer(unittest.TestCase):
     def setUp(self):
         # Setup common mock data for GEMSEO discipline
@@ -20,10 +21,16 @@ class TestOptimizer(unittest.TestCase):
                 super().__init__(name="MockDisc")
                 self.input_grammar.update_from_names(["x", "y", "c"])
                 self.output_grammar.update_from_names(["f_xy", "g_xy"])
-                self.default_input_data = {"x": np.array([0.0]), "y": np.array([0.0]), "c": np.array([0.0])}
+                self.default_input_data = {
+                    "x": np.array([0.0]),
+                    "y": np.array([0.0]),
+                    "c": np.array([0.0]),
+                }
+
             def _run(self, input_data):
                 self.local_data["f_xy"] = np.array([1.0])
                 self.local_data["g_xy"] = np.array([0.0])
+
         self.mock_prob = MockDisc()
 
         self.evaluator = LocalEvaluator(self.mock_prob)
@@ -37,18 +44,22 @@ class TestOptimizer(unittest.TestCase):
 
     def test_local_evaluator_scalar(self):
         """Tests LocalEvaluator when GEMSEO returns an array containing a scalar."""
+
         def dummy_run(self, input_data):
             self.local_data["f_xy"] = np.array([1.23])
             self.local_data["g_xy"] = np.array([0.0])
+
         self.mock_prob._run = dummy_run.__get__(self.mock_prob, type(self.mock_prob))
         res = self.evaluator.evaluate({"x": 0.5, "y": 0.5, "c": 0.0}, ["f_xy"])
         self.assertEqual(res["f_xy"], 1.23)
 
     def test_local_evaluator_iterable(self):
         """Tests LocalEvaluator when GEMSEO returns a flat array."""
+
         def dummy_run2(self, input_data):
             self.local_data["f_xy"] = np.array([4.56, 1.0])
             self.local_data["g_xy"] = np.array([0.0])
+
         self.mock_prob._run = dummy_run2.__get__(self.mock_prob, type(self.mock_prob))
         res = self.evaluator.evaluate({"x": 0.5, "y": 0.5, "c": 0.0}, ["f_xy"])
         self.assertEqual(res["f_xy"], 4.56)
@@ -141,7 +152,9 @@ class TestOptimizer(unittest.TestCase):
         mock_client._to_json_snapshot.return_value = {}
         mock_client.to_json_snapshot.return_value = "{}"
 
-        mock_client.get_best_parameterization.side_effect = Exception("Optimization failed")
+        mock_client.get_best_parameterization.side_effect = Exception(
+            "Optimization failed"
+        )
 
         opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
         result = opt.optimize(n_steps=1, n_init=2)
@@ -201,17 +214,24 @@ class TestOptimizer(unittest.TestCase):
 
         self.assertIn("best_parameters", result)
 
-
     @patch("mdo_framework.optimization.optimizer.create_scenario")
     def test_explore_basic(self, mock_create_scenario):
         mock_scenario = MagicMock()
         mock_create_scenario.return_value = mock_scenario
 
         constraints = [{"name": "g_xy", "op": "<=", "bound": 0.0}]
-        opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives, use_bonsai=True, constraints=constraints)
+        opt = BayesianOptimizer(
+            self.evaluator,
+            self.parameters,
+            self.objectives,
+            use_bonsai=True,
+            constraints=constraints,
+        )
         res = opt.explore(n_samples=2, n_processes=1)
 
-        mock_scenario.execute.assert_called_once_with(algo_name="Sobol", n_samples=2, n_processes=1)
+        mock_scenario.execute.assert_called_once_with(
+            algo_name="Sobol", n_samples=2, n_processes=1
+        )
         mock_scenario.post_process.assert_called()
         self.assertIn("history", res)
 
@@ -227,6 +247,7 @@ class TestOptimizer(unittest.TestCase):
 
     def test_remote_discipline(self):
         from mdo_framework.optimization.optimizer import RemoteDiscipline
+
         mock_evaluator = MagicMock()
         mock_evaluator.evaluate.return_value = {"y": 42.0}
 
@@ -269,7 +290,9 @@ class TestOptimizer(unittest.TestCase):
     def test_optimize_remote_evaluator_and_choices(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
-        mock_client.get_next_trials.return_value = {0: {"x": 0.5, "c_str": 1.0, "c_single": 0.0, "c_num_single": 42.0}}
+        mock_client.get_next_trials.return_value = {
+            0: {"x": 0.5, "c_str": 1.0, "c_single": 0.0, "c_num_single": 42.0}
+        }
         mock_client._to_json_snapshot.return_value = {}
         mock_client.to_json_snapshot.return_value = "{}"
         mock_client.get_best_parameterization.return_value = (
@@ -294,7 +317,8 @@ class TestOptimizer(unittest.TestCase):
 
         self.assertEqual(res["best_parameters"]["x"], 0.5)
 
-    def test_ax_algo_lib_direct(self):
+    @patch("mdo_framework.optimization.ax_algo_lib.Client")
+    def test_ax_algo_lib_direct(self, mock_client_cls):
         from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
         from gemseo.algos.optimization_problem import OptimizationProblem
         from gemseo.algos.design_space import DesignSpace
@@ -306,11 +330,31 @@ class TestOptimizer(unittest.TestCase):
         ds.add_variable("z", lower_bound=42.0, upper_bound=42.0, type_="integer")
 
         prob = OptimizationProblem(ds)
+
         def obj(x):
-            return np.array([x[0]**2])
+            return np.array([x[0] ** 2])
 
         from gemseo.core.mdo_functions.mdo_function import MDOFunction
+
         prob.objective = MDOFunction(obj, "obj", expr="x**2")
+
+        # Add a constraint to test constraint evaluation
+        def constr(x):
+            return np.array([x[0] - 1.0])
+
+        prob.add_constraint(MDOFunction(constr, "g_1", f_type="ineq", expr="x-1"))
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.get_next_trials.return_value = {
+            0: {"x": 0.5, "c": 0.0, "y": 0.5, "z": 42.0}
+        }
+        mock_client.get_best_parameterization.return_value = (
+            {"x": 0.0, "c": 0.0, "y": 0.5, "z": 42.0},
+            {"obj": 0.0},
+            0,
+            "0_0",
+        )
 
         algo = AxOptimizationLibrary()
         algo.execute(prob, max_iter=1, n_init=1)

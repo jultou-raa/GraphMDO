@@ -64,7 +64,7 @@ class GraphProblemBuilder:
         for var in variables:
             val = var.get("value")
             if val is not None:
-                self.default_inputs[var["name"]] = __import__('numpy').atleast_1d(val)
+                self.default_inputs[var["name"]] = __import__("numpy").atleast_1d(val)
 
         mda.default_input_data.update(self.default_inputs)
         return mda

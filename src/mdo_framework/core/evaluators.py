@@ -36,7 +36,11 @@ class LocalEvaluator:
         for obj in objectives:
             val = output_data.get(obj)
             if val is not None:
-                results[obj] = float(val[0]) if isinstance(val, np.ndarray) and val.size > 0 else float(val)
+                results[obj] = (
+                    float(val[0])
+                    if isinstance(val, np.ndarray) and val.size > 0
+                    else float(val)
+                )
             else:
-                results[obj] = 0.0 # Or raise error depending on context
+                results[obj] = 0.0  # Or raise error depending on context
         return results

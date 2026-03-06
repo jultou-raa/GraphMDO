@@ -63,21 +63,6 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         """Constructor."""
         super().__init__(algo_name=algo_name)
 
-    def _get_options(
-        self,
-        max_iter: int = 10,
-        n_init: int = 5,
-        use_bonsai: bool = False,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        """Sets the algorithm options."""
-        return self._check_options(
-            max_iter=max_iter,
-            n_init=n_init,
-            use_bonsai=use_bonsai,
-            **kwargs,
-        )
-
     def _run(self, problem: OptimizationProblem) -> tuple[str, int]:
         """Executes the optimization algorithm."""
         max_iter = getattr(self._settings, "max_iter", 10)
@@ -148,14 +133,15 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                     )
         else:
             from gemseo.algos.design_space_utils import get_value_and_bounds
-            normalize = getattr(self._settings, 'normalize_design_space', True)
+
+            normalize = getattr(self._settings, "normalize_design_space", True)
             x_0, lb_full, ub_full = get_value_and_bounds(design_space, normalize)
 
             offset = 0
             for var_name in design_space.variable_names:
                 size = design_space.variable_sizes[var_name]
-                l_b = lb_full[offset:offset+size]
-                u_b = ub_full[offset:offset+size]
+                l_b = lb_full[offset : offset + size]
+                u_b = ub_full[offset : offset + size]
                 offset += size
                 for i in range(size):
                     param_name = f"{var_name}_{i}" if size > 1 else var_name
@@ -181,7 +167,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                                 parameter_type=p_type,
                                 bounds=(
                                     float(l_b[i]) if is_float else int(l_b[i]),
-                                    float(u_b[i]) if is_float else int(u_b[i])
+                                    float(u_b[i]) if is_float else int(u_b[i]),
                                 ),
                             )
                         )
@@ -198,7 +184,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         # Constraints mapping
         outcome_constraints = []
         for cstr in problem.constraints:
-            if cstr.f_type == 'ineq':
+            if cstr.f_type == "ineq":
                 cstr_name = cstr.name
                 outcome_constraints.append(f"{cstr_name} <= 0.0")
 
@@ -214,7 +200,6 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         for _ in range(total_trials):
             trials = client.get_next_trials(max_trials=1)
             for trial_index, parameters in trials.items():
-
                 # Reconstruct GEMSEO input array format
                 x = np.zeros(design_space.dimension)
                 offset = 0
@@ -227,17 +212,25 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
 
                 # Evaluate using the OptimizationProblem
                 try:
-                    problem.evaluate_functions(x)
+                    out_dict, _ = problem.evaluate_functions(x)
 
                     results = {}
                     # Ax expects objective and constraint outputs in the results dict
-                    obj_val = problem.objective.value
-                    results[obj_name] = float(obj_val[0]) if isinstance(obj_val, np.ndarray) else float(obj_val)
+                    obj_val = out_dict[obj_name]
+                    results[obj_name] = (
+                        float(obj_val[0])
+                        if isinstance(obj_val, np.ndarray)
+                        else float(obj_val)
+                    )
 
                     for cstr in problem.constraints:
-                        if cstr.f_type == 'ineq':
-                            val = cstr.value
-                            results[cstr.name] = float(np.max(val)) if isinstance(val, np.ndarray) else float(val)
+                        if cstr.f_type == "ineq":
+                            val = out_dict[cstr.name]
+                            results[cstr.name] = (
+                                float(np.max(val))
+                                if isinstance(val, np.ndarray)
+                                else float(val)
+                            )
 
                     client.complete_trial(trial_index=trial_index, raw_data=results)
                 except Exception as e:
@@ -245,7 +238,9 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                     client.mark_trial_abandoned(trial_index=trial_index)
 
         try:
-            best_parameters, best_obj, trial_idx, arm_name = client.get_best_parameterization()
+            best_parameters, best_obj, trial_idx, arm_name = (
+                client.get_best_parameterization()
+            )
 
             # Map best_parameters back to GEMSEO arrays and set as optimum
             x_opt = np.zeros(design_space.dimension)

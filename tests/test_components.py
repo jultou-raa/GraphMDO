@@ -9,8 +9,10 @@ import unittest
 import numpy as np
 from mdo_framework.core.components import ToolComponent
 
+
 def simple_func(x, y):
     return x + y
+
 
 class TestToolComponent(unittest.TestCase):
     def test_simple_execution(self):
@@ -85,6 +87,7 @@ class TestToolComponent(unittest.TestCase):
         input_data = {"x": np.array([1.0]), "y": np.array([2.0])}
         out = comp.execute(input_data)
         self.assertAlmostEqual(out["z"][0], 3.0)
+
 
 if __name__ == "__main__":
     unittest.main()

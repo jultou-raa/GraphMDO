@@ -68,6 +68,7 @@ def execute_problem(
     objectives: list[str],
 ) -> dict[str, Any]:
     import numpy as np
+
     input_data = {name: np.atleast_1d(val) for name, val in inputs.items()}
     out_data = prob.execute(input_data)
     results = {}
@@ -194,7 +195,7 @@ class SchemaProvider:
 
 
 class ProblemPool:
-    """Manages a pool of OpenMDAO Problem instances for a given schema."""
+    """Manages a pool of GEMSEO OptimizationProblem instances for a given schema."""
 
     def __init__(self, registry: ToolRegistry, size: int = POOL_SIZE):
         self.registry = registry

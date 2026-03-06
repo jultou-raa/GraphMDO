@@ -51,8 +51,8 @@ def main():
     inputs = gm.get_tool_inputs("Paraboloid")
     print(f"Paraboloid Inputs: {inputs}")
 
-    # 3. Translate to OpenMDAO
-    print("Translating Graph to OpenMDAO Problem...")
+    # 3. Translate to GEMSEO
+    print("Translating Graph to GEMSEO OptimizationProblem...")
     builder = GraphProblemBuilder(gm.get_graph_schema())
 
     try:

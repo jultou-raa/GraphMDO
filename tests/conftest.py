@@ -24,9 +24,12 @@ def pytest_runtest_makereport(item, call):
 @pytest.fixture(autouse=True)
 def remove_created_directories_on_pass(request):
     """Remove directories created during the test if the test passes.
-    This is useful to clean up OpenMDAO output directories or other
-    directories created during tests, while keeping them for debugging
-    if the test fails.
+
+    GEMSEO may write output directories to disk during real scenario runs,
+    e.g. XDSM diagrams (``xdsm_files/``), post-processing plots, or HDF
+    exports.  This fixture removes any such directories after a passing test
+    so the working directory stays clean, while keeping them for debugging
+    when a test fails.
     """
     cwd = Path.cwd()
     # Snapshot of directories before the test runs
