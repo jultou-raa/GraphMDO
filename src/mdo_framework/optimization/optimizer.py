@@ -4,20 +4,16 @@ License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
-import json
 import logging
 import warnings
 from typing import Any, Protocol
 
 import httpx
-from ax.adapter.registry import Generators as Models
-from ax.api.client import Client
-from ax.api.configs import ChoiceParameterConfig, RangeParameterConfig
-from ax.generation_strategy.generation_strategy import (
-    GenerationStep,
-    GenerationStrategy,
-)
-from botorch.acquisition.logei import qLogNoisyExpectedImprovement
+import numpy as np
+from gemseo import create_scenario
+from gemseo.algos.design_space import DesignSpace
+from gemseo.core.discipline import Discipline
+import mdo_framework.optimization.ax_algo_lib  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +55,22 @@ class RemoteEvaluator:
         return data["results"]
 
 
+class RemoteDiscipline(Discipline):
+    def __init__(self, evaluator: 'RemoteEvaluator', inputs: list[str], outputs: list[str]):
+        super().__init__(name="RemoteExecution")
+        self.evaluator = evaluator
+        self.input_names = inputs
+        self.output_names = outputs
+        self.input_grammar.update_from_names(self.input_names)
+        self.output_grammar.update_from_names(self.output_names)
+
+    def _run(self, input_data: dict[str, np.ndarray]) -> None:
+        params = {k: v.tolist()[0] if v.size == 1 else v.tolist() for k, v in input_data.items()}
+        results = self.evaluator.evaluate(params, self.output_names)
+        for k, v in results.items():
+            self.local_data[k] = np.atleast_1d(v)
+
+
 class BayesianOptimizer:
     """Bayesian Optimizer using Ax Platform.
 
@@ -88,181 +100,167 @@ class BayesianOptimizer:
         self.fidelity_parameter = fidelity_parameter
         self.use_bonsai = use_bonsai
 
-    def optimize(self, n_steps: int = 5, n_init: int = 5) -> dict[str, Any]:
-        """Runs the optimization loop using AxClient.
-
-        Iteratively generates candidate parameters, evaluates them using the
-        provided evaluator, and updates the underlying Gaussian Process model.
+    def explore(self, n_samples: int = 10, n_processes: int = 1) -> dict[str, Any]:
+        """Runs a Design of Experiments (DOE) exploration using GEMSEO DOEScenario.
 
         Args:
-            n_steps: Number of Bayesian optimization steps to perform. Default is 5.
-            n_init: Number of initial Sobol (quasi-random) exploration steps. Default is 5.
+            n_samples: Number of samples to evaluate.
+            n_processes: Number of concurrent processes.
 
         Returns:
-            A dictionary containing:
-            - 'best_parameters': The optimal parameters found (or None if unresolved).
-            - 'best_objectives': The metrics associated with the optimal parameters.
-            - 'history': List of dicts representing all evaluated trials.
-            - 'serialized_client': JSON string representation of the Ax client state.
-
-        Example:
-            ```python
-            optimizer = BayesianOptimizer(evaluator, parameters, objectives)
-            result = optimizer.optimize(n_steps=10, n_init=10)
-            print(result["best_parameters"])
-            ```
-
+            A dictionary containing the exploration history.
         """
-        if self.fidelity_parameter is not None:
-            warnings.warn(
-                f"The `fidelity_parameter` argument ('{self.fidelity_parameter}') is "
-                "currently not supported by the modern Ax `Client` API. "
-                "`RangeParameterConfig` does not yet expose `is_fidelity` or "
-                "`target_value`. The parameter will be treated as a regular range "
-                "parameter until this is addressed upstream in Ax. "
-                "Track: https://github.com/facebook/ax",
-                UserWarning,
-                stacklevel=2,
-            )
-
-        # Determine client setup
-        if self.use_bonsai:
-            logger.warning("Experimental feature BONSAI algorithm is activated.")
-            gs = GenerationStrategy(
-                name="bonsai",
-                nodes=[
-                    GenerationStep(
-                        generator=Models.SOBOL,
-                        num_trials=n_init,
-                        min_trials_observed=n_init,
-                    ),
-                    GenerationStep(
-                        generator=Models.BOTORCH_MODULAR,
-                        num_trials=-1,
-                    ),
-                ],
-            )
-
+        if hasattr(self.evaluator, "problem"):
+            discipline = self.evaluator.problem
         else:
-            gs = GenerationStrategy(
-                name="botorch_modular",
-                nodes=[
-                    GenerationStep(
-                        generator=Models.SOBOL,
-                        num_trials=n_init,
-                        min_trials_observed=n_init,
-                    ),
-                    GenerationStep(
-                        generator=Models.BOTORCH_MODULAR,
-                        num_trials=-1,
-                        generator_kwargs={
-                            "botorch_acqf_class": qLogNoisyExpectedImprovement,
-                        },
-                    ),
-                ],
-            )
+            inputs = [p["name"] for p in self.parameters]
+            outputs = [o["name"] for o in self.objectives] + [c["name"] for c in self.constraints]
+            discipline = RemoteDiscipline(self.evaluator, inputs, outputs)
 
-        # Configure parameter space
-        client = Client()
-
-        ax_params = []
+        design_space = DesignSpace()
         for p in self.parameters:
             if p["type"] == "range":
-                ax_params.append(
-                    RangeParameterConfig(
-                        name=p["name"],
-                        parameter_type=p.get("value_type", "float"),
-                        bounds=p["bounds"],
-                    ),
-                )
+                design_space.add_variable(p["name"], lower_bound=p["bounds"][0], upper_bound=p["bounds"][1])
             elif p["type"] == "choice":
-                ax_params.append(
-                    ChoiceParameterConfig(
-                        name=p["name"],
-                        parameter_type=p.get("value_type", "float"),
-                        values=p["values"],
-                    ),
-                )
+                vals = p["values"]
+                if len(vals) == 1:
+                    design_space.add_variable(p["name"], value=0 if isinstance(vals[0], str) else vals[0])
+                else:
+                    if isinstance(vals[0], str):
+                        design_space.add_variable(p["name"], lower_bound=0, upper_bound=len(vals)-1)
+                    else:
+                        design_space.add_variable(p["name"], lower_bound=min(vals), upper_bound=max(vals))
 
-        client.configure_experiment(
-            name="mdo_optimization",
-            parameters=ax_params,
+        objective_name = self.objectives[0]["name"]
+
+        scenario = create_scenario(
+            [discipline],
+            formulation_name="MDF",
+            objective_name=objective_name,
+            design_space=design_space,
+            scenario_type="DOE",
         )
 
-        objective_str = ", ".join(
-            [
-                f"{'-' if obj.get('minimize', True) else ''}{obj['name']}"
-                for obj in self.objectives
-            ],
-        )
-
-        client.configure_optimization(
-            objective=objective_str,
-            outcome_constraints=[
-                f"{c['name']} {c['op']} {c['bound']}" for c in self.constraints
-            ],
-        )
-
-        client.set_generation_strategy(gs)
-
-        history = []
-
-        total_trials = n_init + n_steps
-        objective_names = [o["name"] for o in self.objectives] + [
-            c["name"] for c in self.constraints
-        ]
-
-        for _ in range(total_trials):
-            trials = client.get_next_trials(max_trials=1)
-            for trial_index, parameters in trials.items():
-                # Evaluate using the evaluator
-                results = self.evaluator.evaluate(parameters, objective_names)
-
-                # Record history
-                history.append({"parameters": parameters, "objectives": results})
-
-                # Complete the trial
-                client.complete_trial(trial_index=trial_index, raw_data=results)
+        for c in self.constraints:
+            ctype = 'ineq' if c['op'] == '<=' else 'eq'
+            scenario.add_constraint(c["name"], constraint_type=ctype, value=c["bound"])
 
         try:
-            # Handle possible pareto frontier for multi-objective
-            if len(self.objectives) > 1:
-                frontier = client.get_pareto_frontier()
-                best_params = []
-                best_objs = []
-                if frontier:
-                    for params, metrics, trial_idx, arm_name in frontier:
-                        best_params.append(params)
-                        best_objs.append(
-                            {
-                                k: v[0] if isinstance(v, tuple) else v
-                                for k, v in metrics.items()
-                            },
-                        )
-                else:
-                    best_params = None
-                    best_objs = None
-
-                return {
-                    "best_parameters": best_params,
-                    "best_objectives": best_objs,
-                    "history": history,
-                    "serialized_client": json.dumps(client._to_json_snapshot()),
-                }
-            best_parameters, best_obj, trial_idx, arm_name = (
-                client.get_best_parameterization()
+            scenario.execute(
+                algo_name="Sobol",
+                n_samples=n_samples,
+                n_processes=n_processes,
             )
+
+            # Post-process
+            try:
+                from gemseo.settings.post import ScatterPlotMatrix_Settings
+                scenario.post_process(
+                    "ScatterPlotMatrix",
+                    settings_model=ScatterPlotMatrix_Settings(save=True, show=False)
+                )
+            except Exception as pp_err:
+                logger.warning(f"Failed to post-process DOE: {pp_err}")
+
             return {
-                "best_parameters": best_parameters,
-                "best_objectives": best_obj,
-                "history": history,
-                "serialized_client": json.dumps(client._to_json_snapshot()),
+                "history": scenario.formulation.optimization_problem.database.to_dict(),
             }
         except Exception as e:
-            logger.warning(f"Could not retrieve best parameters: {e}")
+            logger.error(f"Exploration failed: {e}")
+            return {"history": {}}
+
+    def optimize(self, n_steps: int = 5, n_init: int = 5) -> dict[str, Any]:
+        """Runs the optimization loop using GEMSEO MDOScenario."""
+        if self.fidelity_parameter is not None:
+            warnings.warn("fidelity_parameter is ignored.")
+
+        # Get discipline
+        if hasattr(self.evaluator, "problem"):
+            discipline = self.evaluator.problem
+        else:
+            inputs = [p["name"] for p in self.parameters]
+            outputs = [o["name"] for o in self.objectives] + [c["name"] for c in self.constraints]
+            discipline = RemoteDiscipline(self.evaluator, inputs, outputs)
+
+        # Build DesignSpace
+        design_space = DesignSpace()
+        for p in self.parameters:
+            if p["type"] == "range":
+                design_space.add_variable(p["name"], lower_bound=p["bounds"][0], upper_bound=p["bounds"][1])
+            elif p["type"] == "choice":
+                vals = p["values"]
+                if len(vals) == 1:
+                    design_space.add_variable(p["name"], value=0 if isinstance(vals[0], str) else vals[0])
+                else:
+                    if isinstance(vals[0], str):
+                        design_space.add_variable(p["name"], lower_bound=0, upper_bound=len(vals)-1)
+                    else:
+                        design_space.add_variable(p["name"], lower_bound=min(vals), upper_bound=max(vals))
+
+        # Build Scenario
+        objective_name = self.objectives[0]["name"]
+        minimize = self.objectives[0].get("minimize", True)
+
+        scenario = create_scenario(
+            [discipline],
+            formulation_name="MDF",
+            objective_name=objective_name,
+            maximize_objective=not minimize,
+            design_space=design_space,
+            name="MDOScenario_Ax"
+        )
+
+        for c in self.constraints:
+            ctype = 'ineq' if c['op'] == '<=' else 'eq'
+            scenario.add_constraint(c["name"], constraint_type=ctype, value=c["bound"])
+
+        try:
+            from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
+
+            problem = scenario.formulation.optimization_problem
+
+            algo = AxOptimizationLibrary()
+            algo.execute(
+                problem,
+                max_iter=n_steps,
+                n_init=n_init,
+                use_bonsai=self.use_bonsai,
+                ax_parameters=self.parameters
+            )
+
+            # Generate XDSM diagram
+            scenario.xdsmize(show_html=False)
+            # Generate Post-Processing
+            try:
+                scenario.post_process("OptHistoryView", save=True, show=False)
+            except Exception as pp_err:
+                logger.warning(f"Failed to post-process: {pp_err}")
+
+            # Return standardized format
+            best_x = problem.design_space.get_current_value() # The best x evaluated
+            best_obj_eval = problem.objective.evaluate(best_x)
+            best_obj = best_obj_eval[0] if isinstance(best_obj_eval, np.ndarray) else best_obj_eval
+
+            # Map x_opt back to dict
+            best_params = {}
+            offset = 0
+            for v in design_space.variable_names:
+                s = design_space.variable_sizes[v]
+                val = best_x[offset:offset+s]
+                best_params[v] = val[0] if s == 1 else val.tolist()
+                offset += s
+
+            return {
+                "best_parameters": best_params,
+                "best_objectives": {objective_name: best_obj},
+                "history": [],
+                "serialized_client": "{}"
+            }
+        except Exception as e:
+            logger.error(f"Optimization failed: {e}")
             return {
                 "best_parameters": None,
                 "best_objectives": None,
-                "history": history,
-                "serialized_client": client.to_json_snapshot(),
+                "history": [],
+                "serialized_client": "{}"
             }
