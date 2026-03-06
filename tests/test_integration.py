@@ -2,6 +2,7 @@ import unittest
 
 from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.core.translator import GraphProblemBuilder
+import numpy as np
 from mdo_framework.optimization.optimizer import BayesianOptimizer
 
 
@@ -35,11 +36,11 @@ class TestIntegration(unittest.TestCase):
         prob = builder.build_problem(tool_registry)
 
         # Verify Problem Structure
-        self.assertIn("Paraboloid", prob.model._subsystems_allprocs)
+        self.assertEqual(prob.disciplines[0].name, "Paraboloid")
 
         # Check execution
-        prob.run_model()
-        self.assertAlmostEqual(prob.get_val("f_xy")[0], -15.0)
+        out = prob.execute({"x": np.array([3.0]), "y": np.array([-4.0])})
+        self.assertAlmostEqual(float(np.asarray(out["f_xy"]).flat[0]), -15.0)
 
         # 3. Optimize with LocalEvaluator
         evaluator = LocalEvaluator(prob)

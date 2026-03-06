@@ -1,17 +1,17 @@
 from typing import Any
 
-import openmdao.api as om
+from gemseo.core.discipline import Discipline
+import numpy as np
 
 
 class LocalEvaluator:
-    """Evaluates the design parameters locally using an OpenMDAO Problem instance.
+    """Evaluates the design parameters locally using a GEMSEO MDA instance.
 
     Args:
-        problem: An instantiated OpenMDAO Problem object.
-
+        problem: An instantiated GEMSEO MDA (or Discipline) object.
     """
 
-    def __init__(self, problem: om.Problem):
+    def __init__(self, problem: Discipline):
         self.problem = problem
 
     def evaluate(
@@ -19,15 +19,18 @@ class LocalEvaluator:
         parameters: dict[str, Any],
         objectives: list[str],
     ) -> dict[str, float]:
-        for name, val in parameters.items():
-            self.problem.set_val(name, val)
-        self.problem.run_model()
+        # GEMSEO uses a dictionary with string keys and numpy array values for local_data
+        input_data = {name: np.atleast_1d(val) for name, val in parameters.items()}
+
+        # We need to provide all required inputs for the MDA, not just parameters.
+        # This will be passed and merged internally by execute.
+        output_data = self.problem.execute(input_data)
 
         results = {}
         for obj in objectives:
-            results[obj] = (
-                float(self.problem.get_val(obj)[0])
-                if hasattr(self.problem.get_val(obj), "__iter__")
-                else float(self.problem.get_val(obj))
-            )
+            val = output_data.get(obj)
+            if val is not None:
+                results[obj] = float(val[0]) if isinstance(val, np.ndarray) and val.size > 0 else float(val)
+            else:
+                results[obj] = 0.0 # Or raise error depending on context
         return results

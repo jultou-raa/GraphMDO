@@ -1,48 +1,34 @@
 from collections.abc import Callable
 from typing import Any
 
-import openmdao.api as om
+from gemseo.mda.factory import MDAFactory
 
 from mdo_framework.core.components import ToolComponent
 
 
 class GraphProblemBuilder:
-    """Builds an OpenMDAO Problem from a graph schema dictionary."""
+    """Builds a GEMSEO MDA/Scenario from a graph schema dictionary."""
 
     def __init__(self, schema: dict[str, Any]):
         """Initializes the builder with the given graph schema.
 
-        Args:
-            schema: Dictionary representing tools, inputs, and outputs.
-
-        """
-        """
         Args:
             schema: A dictionary containing 'tools' and 'variables' definitions.
                    Produced by GraphManager.get_graph_schema().
         """
         self.schema = schema
 
-    def build_problem(self, tool_registry: dict[str, Callable]) -> om.Problem:
-        """Constructs an OpenMDAO problem from the parsed schema.
-
-        Args:
-            tool_registry: Mapping of tool names to Python callables.
-
-        Returns:
-            An instantiated OpenMDAO Problem object.
-
-        """
-        """
-        Constructs and sets up the OpenMDAO problem.
+    def build_problem(self, tool_registry: dict[str, Callable]) -> Any:
+        """Constructs a GEMSEO MDA from the parsed schema.
 
         Args:
             tool_registry: Dictionary mapping tool names to Python functions.
-        """
-        prob = om.Problem()
-        model = prob.model
 
+        Returns:
+            An instantiated GEMSEO MDA Discipline object.
+        """
         tools = self.schema.get("tools", [])
+        disciplines = []
 
         # Add components
         for tool in tools:
@@ -50,31 +36,29 @@ class GraphProblemBuilder:
             func = tool_registry.get(name)
 
             if not func:
-                # If function not found, perhaps it's a surrogate or dummy?
-                # For this implementation, we require it in registry.
                 raise ValueError(f"Tool function for '{name}' not found in registry.")
 
             inputs = tool.get("inputs", [])
             outputs = tool.get("outputs", [])
 
+            # Wrap the function in our custom GEMSEO Discipline
             comp = ToolComponent(name=name, func=func, inputs=inputs, outputs=outputs)
+            disciplines.append(comp)
 
-            # Promote all variables to connect by name automatically
-            # This matches the graph topology where a Variable node is a shared entity.
-            model.add_subsystem(name, comp, promotes=["*"])
+        # Create an MDA (Multidisciplinary Design Analysis) to handle the coupling
+        # We use 'MDAChain' by default which can handle sequential execution
+        # and incorporates an 'MDAGaussSeidel' if cycles exist.
+        mda_factory = MDAFactory()
+        mda = mda_factory.create("MDAChain", disciplines=disciplines)
 
-        prob.setup()
-
-        # Initialize variables if values are present in schema
+        # We can extract default values from schema and store them
+        # to be used later in execution
+        self.default_inputs = {}
         variables = self.schema.get("variables", [])
         for var in variables:
             val = var.get("value")
             if val is not None:
-                try:
-                    # Only set if it's an input/independent variable or initial guess
-                    prob.set_val(var["name"], val)
-                except Exception:
-                    # Variable might not be promoted or connected, ignore
-                    pass
+                self.default_inputs[var["name"]] = __import__('numpy').atleast_1d(val)
 
-        return prob
+        mda.default_input_data.update(self.default_inputs)
+        return mda
