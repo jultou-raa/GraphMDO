@@ -303,6 +303,7 @@ class TestOptimizer(unittest.TestCase):
         ds.add_variable("x", lower_bound=0.0, upper_bound=1.0)
         ds.add_variable("c", lower_bound=0.0, upper_bound=1.0, type_="integer")
         ds.add_variable("y", lower_bound=0.0, upper_bound=1.0, value=0.5)
+        ds.add_variable("z", lower_bound=42.0, upper_bound=42.0, type_="integer")
 
         prob = OptimizationProblem(ds)
         def obj(x):
