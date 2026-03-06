@@ -20,7 +20,7 @@ class TestOptimizer(unittest.TestCase):
                 super().__init__(name="MockDisc")
                 self.input_grammar.update_from_names(["x", "y", "c"])
                 self.output_grammar.update_from_names(["f_xy", "g_xy"])
-                self.default_inputs = {"x": np.array([0.0]), "y": np.array([0.0]), "c": np.array([0.0])}
+                self.default_input_data = {"x": np.array([0.0]), "y": np.array([0.0]), "c": np.array([0.0])}
             def _run(self, input_data):
                 self.local_data["f_xy"] = np.array([1.0])
                 self.local_data["g_xy"] = np.array([0.0])
