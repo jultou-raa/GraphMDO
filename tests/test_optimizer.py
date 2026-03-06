@@ -201,5 +201,126 @@ class TestOptimizer(unittest.TestCase):
 
         self.assertIn("best_parameters", result)
 
-if __name__ == "__main__":
-    unittest.main()
+
+    @patch("mdo_framework.optimization.optimizer.create_scenario")
+    def test_explore_basic(self, mock_create_scenario):
+        mock_scenario = MagicMock()
+        mock_create_scenario.return_value = mock_scenario
+
+        constraints = [{"name": "g_xy", "op": "<=", "bound": 0.0}]
+        opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives, use_bonsai=True, constraints=constraints)
+        res = opt.explore(n_samples=2, n_processes=1)
+
+        mock_scenario.execute.assert_called_once_with(algo_name="Sobol", n_samples=2, n_processes=1)
+        mock_scenario.post_process.assert_called()
+        self.assertIn("history", res)
+
+    @patch("mdo_framework.optimization.optimizer.create_scenario")
+    def test_explore_exception(self, mock_create_scenario):
+        mock_scenario = MagicMock()
+        mock_create_scenario.return_value = mock_scenario
+        mock_scenario.execute.side_effect = ValueError("DOE failed")
+
+        opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
+        res = opt.explore()
+        self.assertEqual(res, {"history": {}})
+
+    def test_remote_discipline(self):
+        from mdo_framework.optimization.optimizer import RemoteDiscipline
+        mock_evaluator = MagicMock()
+        mock_evaluator.evaluate.return_value = {"y": 42.0}
+
+        disc = RemoteDiscipline(mock_evaluator, ["x"], ["y"])
+        disc.execute({"x": np.array([2.0])})
+
+        self.assertEqual(disc.local_data["y"][0], 42.0)
+
+    @patch("mdo_framework.optimization.optimizer.create_scenario")
+    def test_explore_remote_evaluator(self, mock_create_scenario):
+        mock_scenario = MagicMock()
+        mock_create_scenario.return_value = mock_scenario
+
+        mock_evaluator = RemoteEvaluator("http://test")
+
+        params = [
+            {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
+            {"name": "c_str", "type": "choice", "values": ["A", "B", "C"]},
+            {"name": "c_single", "type": "choice", "values": ["A"]},
+            {"name": "c_num_single", "type": "choice", "values": [42]},
+        ]
+        opt = BayesianOptimizer(mock_evaluator, params, self.objectives)
+        res = opt.explore(n_samples=2, n_processes=1)
+
+        self.assertIn("history", res)
+        # Verify it hits choice branches
+        mock_create_scenario.assert_called_once()
+
+    @patch("mdo_framework.optimization.optimizer.create_scenario")
+    def test_explore_post_process_exception(self, mock_create_scenario):
+        mock_scenario = MagicMock()
+        mock_scenario.post_process.side_effect = Exception("Plot failed")
+        mock_create_scenario.return_value = mock_scenario
+
+        opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
+        res = opt.explore()
+        self.assertIn("history", res)
+
+    @patch("mdo_framework.optimization.ax_algo_lib.Client")
+    def test_optimize_remote_evaluator_and_choices(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.get_next_trials.return_value = {0: {"x": 0.5, "c_str": 1.0, "c_single": 0.0, "c_num_single": 42.0}}
+        mock_client._to_json_snapshot.return_value = {}
+        mock_client.to_json_snapshot.return_value = "{}"
+        mock_client.get_best_parameterization.return_value = (
+            {"x": 0.5, "c_str": 1.0, "c_single": 0.0, "c_num_single": 42.0},
+            {"f_xy": 42.0},
+            0,
+            "0_0",
+        )
+
+        mock_evaluator = RemoteEvaluator("http://test")
+        mock_evaluator.evaluate = MagicMock(return_value={"f_xy": 42.0})
+
+        params = [
+            {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
+            {"name": "c_str", "type": "choice", "values": ["A", "B", "C"]},
+            {"name": "c_single", "type": "choice", "values": ["A"]},
+            {"name": "c_num_single", "type": "choice", "values": [42]},
+        ]
+
+        opt = BayesianOptimizer(mock_evaluator, params, self.objectives)
+        res = opt.optimize(n_steps=1, n_init=1)
+
+        self.assertEqual(res["best_parameters"]["x"], 0.5)
+
+    def test_ax_algo_lib_direct(self):
+        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
+        from gemseo.algos.optimization_problem import OptimizationProblem
+        from gemseo.algos.design_space import DesignSpace
+
+        ds = DesignSpace()
+        ds.add_variable("x", lower_bound=0.0, upper_bound=1.0)
+        ds.add_variable("c", lower_bound=0.0, upper_bound=1.0, type_="integer")
+        ds.add_variable("y", lower_bound=0.0, upper_bound=1.0, value=0.5)
+
+        prob = OptimizationProblem(ds)
+        def obj(x):
+            return np.array([x[0]**2])
+
+        from gemseo.core.mdo_functions.mdo_function import MDOFunction
+        prob.objective = MDOFunction(obj, "obj", expr="x**2")
+
+        algo = AxOptimizationLibrary()
+        algo.execute(prob, max_iter=1, n_init=1)
+
+    @patch("mdo_framework.optimization.ax_algo_lib.AxOptimizationLibrary")
+    def test_optimize_algo_exception(self, mock_algo_cls):
+        mock_algo = MagicMock()
+        mock_algo.execute.side_effect = Exception("Algo failed")
+        mock_algo_cls.return_value = mock_algo
+
+        opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
+        res = opt.optimize(n_steps=1, n_init=1)
+
+        self.assertIsNone(res["best_parameters"])

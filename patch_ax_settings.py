@@ -1,28 +1,14 @@
+# Fix `ChoiceParameterConfig` is not defined!
+# I removed it in ruff check fix earlier in `patch_tests.py` using `ruff check --fix`!!
+# Ruff removed it from imports because it WAS unused before I added the fallback loop back!
+# Let's add `ChoiceParameterConfig` to imports in `ax_algo_lib.py`!
 with open("src/mdo_framework/optimization/ax_algo_lib.py", "r") as f:
-    code = f.read()
+    text = f.read()
 
-code = code.replace(
-"""        for cstr in problem.constraints:
-            if cstr.f_type == 'ineq':
-            cstr_name = cstr.name
-            outcome_constraints.append(f"{cstr_name} <= 0.0")""",
-"""        for cstr in problem.constraints:
-            if cstr.f_type == 'ineq':
-                cstr_name = cstr.name
-                outcome_constraints.append(f"{cstr_name} <= 0.0")"""
-)
-
-code = code.replace(
-"""                    for cstr in problem.constraints:
-                        if cstr.f_type == 'ineq':
-                            val = cstr.value
-                        val = cstr.evaluate(x)
-                        results[cstr.name] = float(np.max(val)) if isinstance(val, np.ndarray) else float(val)""",
-"""                    for cstr in problem.constraints:
-                        if cstr.f_type == 'ineq':
-                            val = cstr.evaluate(x)
-                            results[cstr.name] = float(np.max(val)) if isinstance(val, np.ndarray) else float(val)"""
+text = text.replace(
+"""from ax.api.configs import RangeParameterConfig""",
+"""from ax.api.configs import RangeParameterConfig, ChoiceParameterConfig"""
 )
 
 with open("src/mdo_framework/optimization/ax_algo_lib.py", "w") as f:
-    f.write(code)
+    f.write(text)

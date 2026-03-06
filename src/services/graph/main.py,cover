@@ -1,0 +1,115 @@
+> """
+> This Source Code Form is subject to the terms of the Mozilla Public
+> License, v. 2.0. If a copy of the MPL was not distributed with this
+> file, You can obtain one at http://mozilla.org/MPL/2.0/.
+> """
+
+> from typing import Any
+
+> from fastapi import Depends, FastAPI
+> from pydantic import BaseModel, ConfigDict
+
+> from mdo_framework.db.graph_manager import GraphManager
+
+> app = FastAPI(title="Graph Service")
+
+
+> def get_graph_manager() -> GraphManager:
+>     return GraphManager()
+
+
+> class VariableCreate(BaseModel):
+>     model_config = ConfigDict(extra="allow")
+
+>     name: str
+>     value: float | None = None
+>     lower: float | None = None
+>     upper: float | None = None
+>     param_type: str = "continuous"
+>     choices: list | None = None
+>     value_type: str = "float"
+
+
+> class ToolCreate(BaseModel):
+>     model_config = ConfigDict(extra="allow")
+
+>     name: str
+>     fidelity: str = "high"
+
+
+> class ConnectionCreate(BaseModel):
+>     source: str
+>     target: str
+
+
+> class StatusResponse(BaseModel):
+>     status: str
+
+
+> class VariableResponse(StatusResponse):
+>     variable: str
+
+
+> class ToolResponse(StatusResponse):
+>     tool: str
+
+
+> class ConnectionResponse(StatusResponse):
+>     type: str
+
+
+> class SchemaResponse(BaseModel):
+>     tools: list[dict[str, Any]]
+>     variables: list[dict[str, Any]]
+
+
+> @app.post("/clear", response_model=StatusResponse)
+> def clear_graph(gm: GraphManager = Depends(get_graph_manager)):
+>     gm.clear_graph()
+>     return StatusResponse(status="cleared")
+
+
+> @app.post("/variables", response_model=VariableResponse)
+> def create_variable(var: VariableCreate, gm: GraphManager = Depends(get_graph_manager)):
+>     gm.add_variable(
+>         var.name,
+>         var.value,
+>         var.lower,
+>         var.upper,
+>         var.param_type,
+>         var.choices,
+>         var.value_type,
+>         **(var.model_extra or {}),
+>     )
+>     return VariableResponse(status="created", variable=var.name)
+
+
+> @app.post("/tools", response_model=ToolResponse)
+> def create_tool(tool: ToolCreate, gm: GraphManager = Depends(get_graph_manager)):
+>     gm.add_tool(tool.name, tool.fidelity, **(tool.model_extra or {}))
+>     return ToolResponse(status="created", tool=tool.name)
+
+
+> @app.post("/connections/input", response_model=ConnectionResponse)
+> def connect_input(
+>     conn: ConnectionCreate,
+>     gm: GraphManager = Depends(get_graph_manager),
+> ):
+      # Variable -> Tool
+>     gm.connect_input_to_tool(conn.source, conn.target)
+>     return ConnectionResponse(status="connected", type="input")
+
+
+> @app.post("/connections/output", response_model=ConnectionResponse)
+> def connect_output(
+>     conn: ConnectionCreate,
+>     gm: GraphManager = Depends(get_graph_manager),
+> ):
+      # Tool -> Variable
+>     gm.connect_tool_to_output(conn.source, conn.target)
+>     return ConnectionResponse(status="connected", type="output")
+
+
+> @app.get("/schema", response_model=SchemaResponse)
+> def get_schema(gm: GraphManager = Depends(get_graph_manager)):
+>     return gm.get_graph_schema()

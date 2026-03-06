@@ -63,6 +63,8 @@ class RemoteDiscipline(Discipline):
         self.output_names = outputs
         self.input_grammar.update_from_names(self.input_names)
         self.output_grammar.update_from_names(self.output_names)
+        for in_name in self.input_names:
+            self.default_input_data[in_name] = np.array([0.0])
 
     def _run(self, input_data: dict[str, np.ndarray]) -> None:
         params = {k: v.tolist()[0] if v.size == 1 else v.tolist() for k, v in input_data.items()}
@@ -257,7 +259,8 @@ class BayesianOptimizer:
                 "serialized_client": "{}"
             }
         except Exception as e:
-            logger.error(f"Optimization failed: {e}")
+            import traceback
+            logger.error(f"Optimization failed: {e}\n{traceback.format_exc()}")
             return {
                 "best_parameters": None,
                 "best_objectives": None,

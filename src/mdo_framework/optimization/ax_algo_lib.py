@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 from ax.api.client import Client
-from ax.api.configs import RangeParameterConfig
+from ax.api.configs import RangeParameterConfig, ChoiceParameterConfig
 from ax.generation_strategy.generation_strategy import (
     GenerationStep,
     GenerationStrategy,
@@ -52,7 +52,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
             handle_equality_constraints=False,
             handle_inequality_constraints=True,
             handle_multiobjective=True,
-            handle_integer_variables=False,
+            handle_integer_variables=True,
             positive_constraints=False,
             require_gradient=False,
             for_linear_problems=False,
@@ -126,19 +126,65 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
 
         # Map GEMSEO design space to Ax parameters
         ax_params = []
-        for var_name in design_space.variable_names:
-            l_b = design_space.get_lower_bounds(var_name)
-            u_b = design_space.get_upper_bounds(var_name)
-            size = design_space.variable_sizes[var_name]
-            for i in range(size):
-                param_name = f"{var_name}_{i}" if size > 1 else var_name
-                ax_params.append(
-                    RangeParameterConfig(
-                        name=param_name,
-                        parameter_type="float",
-                        bounds=(float(l_b[i]), float(u_b[i])),
+        ax_parameters = getattr(self._settings, "ax_parameters", None)
+        if ax_parameters:
+            for p in ax_parameters:
+                if p["type"] == "range":
+                    ax_params.append(
+                        RangeParameterConfig(
+                            name=p["name"],
+                            parameter_type=p.get("value_type", "float"),
+                            bounds=p["bounds"],
+                        )
                     )
-                )
+                elif p["type"] == "choice":
+                    ax_params.append(
+                        ChoiceParameterConfig(
+                            name=p["name"],
+                            parameter_type=p.get("value_type", "float"),
+                            values=p["values"],
+                            is_ordered=True,
+                        )
+                    )
+        else:
+            from gemseo.algos.design_space_utils import get_value_and_bounds
+            normalize = getattr(self._settings, 'normalize_design_space', True)
+            x_0, lb_full, ub_full = get_value_and_bounds(design_space, normalize)
+
+            offset = 0
+            for var_name in design_space.variable_names:
+                size = design_space.variable_sizes[var_name]
+                l_b = lb_full[offset:offset+size]
+                u_b = ub_full[offset:offset+size]
+                offset += size
+                for i in range(size):
+                    param_name = f"{var_name}_{i}" if size > 1 else var_name
+
+                    is_float = True
+                    if normalize:
+                        is_float = True
+                    p_type = "float" if is_float else "int"
+
+                    if l_b[i] == u_b[i]:
+                        ax_params.append(
+                            ChoiceParameterConfig(
+                                name=param_name,
+                                parameter_type=p_type,
+                                values=[float(l_b[i]) if is_float else int(l_b[i])],
+                                is_ordered=True,
+                            )
+                        )
+                    else:
+                        ax_params.append(
+                            RangeParameterConfig(
+                                name=param_name,
+                                parameter_type=p_type,
+                                bounds=(
+                                    float(l_b[i]) if is_float else int(l_b[i]),
+                                    float(u_b[i]) if is_float else int(u_b[i])
+                                ),
+                            )
+                        )
 
         client.configure_experiment(
             name="gemseo_ax_opt",
@@ -185,7 +231,8 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
 
                     results = {}
                     # Ax expects objective and constraint outputs in the results dict
-                    results[obj_name] = float(problem.objective.value[0])
+                    obj_val = problem.objective.value
+                    results[obj_name] = float(obj_val[0]) if isinstance(obj_val, np.ndarray) else float(obj_val)
 
                     for cstr in problem.constraints:
                         if cstr.f_type == 'ineq':
@@ -195,7 +242,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                     client.complete_trial(trial_index=trial_index, raw_data=results)
                 except Exception as e:
                     logger.error(f"Failed to evaluate point: {e}")
-                    client.abandon_trial(trial_index=trial_index)
+                    client.mark_trial_abandoned(trial_index=trial_index)
 
         try:
             best_parameters, best_obj, trial_idx, arm_name = client.get_best_parameterization()

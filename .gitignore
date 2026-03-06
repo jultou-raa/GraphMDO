@@ -210,3 +210,4 @@ __marimo__/
 pytest*_out/
 *.openmdao_out
 reports/
+xdsm.html
