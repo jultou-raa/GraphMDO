@@ -58,7 +58,7 @@ tool_registry = {
     "MyTool": my_tool_func
 }
 
-# 2. Build OpenMDAO Problem from Graph Schema
+# 2. Build GEMSEO Problem from Graph Schema
 schema = gm.get_graph_schema()
 builder = GraphProblemBuilder(schema)
 prob = builder.build_problem(tool_registry)

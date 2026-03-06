@@ -1,26 +1,27 @@
 # GraphMDO: Dynamic Multi-Fidelity MDO Framework
 
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
+[![PyPI version](https://img.shields.io/pypi/v/graphmdo.svg)](https://pypi.org/project/graphmdo/)
 [![Quality Checks](https://github.com/jultou-raa/GraphMDO/actions/workflows/quality.yml/badge.svg)](https://github.com/jultou-raa/GraphMDO/actions/workflows/quality.yml)
 [![Security Scan](https://github.com/jultou-raa/GraphMDO/actions/workflows/security.yml/badge.svg)](https://github.com/jultou-raa/GraphMDO/actions/workflows/security.yml)
 [![Deploy Documentation](https://github.com/jultou-raa/GraphMDO/actions/workflows/docs.yml/badge.svg)](https://github.com/jultou-raa/GraphMDO/actions/workflows/docs.yml)
 [![codecov](https://codecov.io/gh/jultou-raa/GraphMDO/graph/badge.svg?token=f2150ayDNv)](https://codecov.io/gh/jultou-raa/GraphMDO)
 
-GraphMDO bridges data engineering and MDO. It extracts topological data (solvers, variables, fidelity levels) to form an oriented graph, specifically utilizing KADMOS for semantic formulation and exporting to CMDOWS. The execution is handled by OpenMDAO and the Surrogate Modeling Toolbox (SMT), driven by constrained Bayesian optimization (ax-platform) or evolutionary algorithms (pymoo). The primary operational goal is to isolate and maximize a single target performance metric while strictly holding all other performance metrics constant.
+GraphMDO bridges data engineering and MDO. It extracts topological data (solvers, variables, fidelity levels) to form an oriented graph, specifically utilizing GEMSEO for semantic formulation and execution. Execution is handled natively by GEMSEO and the Surrogate Modeling Toolbox (SMT), driven by constrained Bayesian optimization (ax-platform) or evolutionary algorithms (pymoo). The primary operational goal is to isolate and maximize a single target performance metric while strictly holding all other performance metrics constant.
 
 ## Key Features
 
 *   **Native Graph Formulation**: Uses [FalkorDB](https://falkordb.com/) to store problem definitions (variables, tools, dependencies) as a property graph.
-*   **Dynamic Problem Construction**: Automatically translates the graph topology into an executable [OpenMDAO](https://openmdao.org/) problem.
+*   **Dynamic Problem Construction**: Automatically translates the graph topology into an executable [GEMSEO](https://gemseo.readthedocs.io/) MDO formulation.
 *   **Multi-Fidelity Surrogates**: Integrates [SMT](https://smt.readthedocs.io/en/latest/) for Co-Kriging and other surrogate models.
-*   **Constrained Bayesian Optimization**: Leverages [Ax Platform](https://ax.dev/) for robust optimization, easily managing KADMOS multi-objective targets, fidelity, and discrete/continuous parameters.
+*   **Constrained Bayesian Optimization**: Leverages [Ax Platform](https://ax.dev/) for robust optimization, easily managing GEMSEO multi-objective targets, fidelity, and discrete/continuous parameters.
 
 ## Project Architecture
 
 1.  **FalkorDB**: Stores the "Fundamental Problem Graph" (FPG).
 2.  **Graph Manager**: Python API to manipulate the graph structure.
-3.  **Translator**: Converts the graph into an OpenMDAO System.
-4.  **Optimizer**: Drivers (Ax, Pymoo) that execute the OpenMDAO problem holding constraints constant.
+3.  **Translator**: Converts the graph into a GEMSEO Problem.
+4.  **Optimizer**: Drivers (Ax, Pymoo) that execute the GEMSEO problem holding constraints constant.
 
 ## Installation
 
@@ -87,12 +88,12 @@ tool_registry = {
     "MyTool": my_tool_func
 }
 
-# Build OpenMDAO Problem from Graph
+# Build GEMSEO Problem from Graph
 schema = gm.get_graph_schema()
 builder = GraphProblemBuilder(schema)
 prob = builder.build_problem(tool_registry)
 
-# Resolve Topology mapping design_vars automatically from KADMOS graph
+# Resolve Topology mapping design_vars automatically from the graph schema
 analyzer = TopologicalAnalyzer(schema)
 design_vars, _ = analyzer.resolve_dependencies(["z"])
 parameters = analyzer.extract_parameters(design_vars)
