@@ -12,8 +12,8 @@ The architecture consists of three primary layers:
     *   Edges represent data flow (Inputs To, Outputs From).
     *   The schema is dynamically queryable via OpenCypher.
 
-2.  **Execution Layer (OpenMDAO)**
-    *   Translates the graph topology into an executable OpenMDAO System.
+2.  **Execution Layer (GEMSEO)**
+    *   Translates the graph topology into an executable GEMSEO Problem.
     *   Wraps Python functions or external codes into `ToolComponent`.
     *   Handles variable promotion and data passing between components.
 
@@ -27,7 +27,7 @@ The architecture consists of three primary layers:
 The framework exposes these layers as independent microservices:
 
 *   **Graph Service**: Manages the FalkorDB connection and provides APIs for graph manipulation (CRUD operations on nodes/edges) and schema export.
-*   **Execution Service**: Consumes the graph schema, builds and pools OpenMDAO problem instances (`ProblemPool`), caches schema data (`SchemaProvider`), and exposes an evaluation endpoint (`/evaluate`). It abstracts the complexity of running the underlying engineering models while offloading synchronous execution to local threads.
+*   **Execution Service**: Consumes the graph schema, builds and pools GEMSEO problem instances (`ProblemPool`), caches schema data (`SchemaProvider`), and exposes an evaluation endpoint (`/evaluate`). It abstracts the complexity of running the underlying engineering models while offloading synchronous execution to local threads.
 *   **Optimization Service**: The "brain" of the operation. It runs the optimization loop via Ax, deciding which design points to evaluate next by checking target metrics and holding constraints constant via calls to the Execution Service.
 
 ## Data Flow
@@ -38,8 +38,8 @@ The framework exposes these layers as independent microservices:
 4.  **Evaluation Loop**:
     *   Optimization Service selects a candidate point `x`.
     *   Sends `x` to Execution Service via HTTP.
-    *   Execution Service acquires a pre-built OpenMDAO problem from the `ProblemPool` (auto-rebuilt if schema hashing changes out-of-band).
-    *   Execution Service runs the OpenMDAO model on a worker thread and returns objective `y`.
+    *   Execution Service acquires a pre-built GEMSEO problem from the `ProblemPool` (auto-rebuilt if schema hashing changes out-of-band).
+    *   Execution Service runs the GEMSEO model on a worker thread and returns objective `y`.
     *   Optimization Service updates its internal model (GP) with `(x, y)`.
     *   Repeat until convergence or step limit.
 5.  **Result**: Optimization Service returns the best design point found.
