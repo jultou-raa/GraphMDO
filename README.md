@@ -120,3 +120,7 @@ uv run pytest tests/
 1.  Follow PEP 8 guidelines.
 2.  Ensure 100% test coverage for new features.
 3.  Use `uv run pre-commit run --all-files` before committing.
+
+## License
+
+This project is licensed under the Mozilla Public License 2.0 (MPL-2.0). See the [LICENSE](LICENSE) file for details.
