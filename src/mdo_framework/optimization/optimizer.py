@@ -1,3 +1,9 @@
+"""
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at http://mozilla.org/MPL/2.0/.
+"""
+
 import json
 import logging
 import warnings
@@ -107,11 +113,6 @@ class BayesianOptimizer:
             ```
 
         """
-        # Fidelity parameters are not yet supported in the modern Ax `Client` API.
-        # `ax.api.configs.RangeParameterConfig` does not expose `is_fidelity` or
-        # `target_value`. The legacy `AxClient` workaround is not viable either,
-        # as it is deprecated and scheduled for removal in Ax 1.4.0.
-        # See: https://ax.dev for updates on the new API roadmap.
         if self.fidelity_parameter is not None:
             warnings.warn(
                 f"The `fidelity_parameter` argument ('{self.fidelity_parameter}') is "
@@ -125,7 +126,6 @@ class BayesianOptimizer:
             )
 
         # Determine client setup
-
         if self.use_bonsai:
             logger.warning("Experimental feature BONSAI algorithm is activated.")
             gs = GenerationStrategy(
@@ -135,12 +135,10 @@ class BayesianOptimizer:
                         generator=Models.SOBOL,
                         num_trials=n_init,
                         min_trials_observed=n_init,
-                        generator_name="SOBOL",
                     ),
                     GenerationStep(
                         generator=Models.BOTORCH_MODULAR,
                         num_trials=-1,
-                        generator_name="BONSAI",
                     ),
                 ],
             )
@@ -153,7 +151,6 @@ class BayesianOptimizer:
                         generator=Models.SOBOL,
                         num_trials=n_init,
                         min_trials_observed=n_init,
-                        generator_name="SOBOL",
                     ),
                     GenerationStep(
                         generator=Models.BOTORCH_MODULAR,
@@ -161,7 +158,6 @@ class BayesianOptimizer:
                         generator_kwargs={
                             "botorch_acqf_class": qLogNoisyExpectedImprovement,
                         },
-                        generator_name="qLogNEI",
                     ),
                 ],
             )
@@ -232,13 +228,11 @@ class BayesianOptimizer:
             # Handle possible pareto frontier for multi-objective
             if len(self.objectives) > 1:
                 frontier = client.get_pareto_frontier()
-                # For simplicity, returning the frontier as best
                 best_params = []
                 best_objs = []
                 if frontier:
                     for params, metrics, trial_idx, arm_name in frontier:
                         best_params.append(params)
-                        # Extract mean metric values
                         best_objs.append(
                             {
                                 k: v[0] if isinstance(v, tuple) else v

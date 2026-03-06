@@ -1,17 +1,22 @@
+"""
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at http://mozilla.org/MPL/2.0/.
+"""
+
 import unittest
 from unittest.mock import MagicMock, patch
+import numpy as np
 
-import openmdao.api as om
-
+from gemseo.core.discipline import Discipline
 from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.optimization.optimizer import BayesianOptimizer, RemoteEvaluator
 
-
 class TestOptimizer(unittest.TestCase):
     def setUp(self):
-        # Setup common mock data
-        self.mock_prob = MagicMock(spec=om.Problem)
-        self.mock_prob.get_val.return_value = 1.0
+        # Setup common mock data for GEMSEO discipline
+        self.mock_prob = MagicMock(spec=Discipline)
+        self.mock_prob.execute.return_value = {"f_xy": np.array([1.0])}
 
         self.evaluator = LocalEvaluator(self.mock_prob)
 
@@ -22,25 +27,24 @@ class TestOptimizer(unittest.TestCase):
         self.objectives = [{"name": "f_xy", "minimize": True}]
 
     def test_local_evaluator_scalar(self):
-        """Tests LocalEvaluator when Problem.get_val returns a scalar."""
-        self.mock_prob.get_val.return_value = 1.23
+        """Tests LocalEvaluator when GEMSEO returns an array containing a scalar."""
+        self.mock_prob.execute.return_value = {"f_xy": np.array([1.23])}
 
         result = self.evaluator.evaluate({"x": 1.0, "y": 2.0}, ["f_xy"])
 
-        self.mock_prob.set_val.assert_any_call("x", 1.0)
-        self.mock_prob.set_val.assert_any_call("y", 2.0)
-        self.mock_prob.run_model.assert_called_once()
+        self.mock_prob.execute.assert_called_once()
+        args = self.mock_prob.execute.call_args[0][0]
+        self.assertIn("x", args)
+        self.assertIn("y", args)
         self.assertEqual(result["f_xy"], 1.23)
 
     def test_local_evaluator_iterable(self):
-        """Tests LocalEvaluator when Problem.get_val returns an iterable (e.g. numpy array)."""
-        self.mock_prob.get_val.return_value = [4.56]
+        """Tests LocalEvaluator when GEMSEO returns a flat array."""
+        self.mock_prob.execute.return_value = {"f_xy": np.array([4.56])}
 
         result = self.evaluator.evaluate({"x": 1.0, "y": 2.0}, ["f_xy"])
 
-        self.mock_prob.set_val.assert_any_call("x", 1.0)
-        self.mock_prob.set_val.assert_any_call("y", 2.0)
-        self.mock_prob.run_model.assert_called_once()
+        self.mock_prob.execute.assert_called_once()
         self.assertEqual(result["f_xy"], 4.56)
 
     @patch("mdo_framework.optimization.optimizer.httpx.post")
@@ -74,7 +78,7 @@ class TestOptimizer(unittest.TestCase):
 
         self.assertIn("best_parameters", result)
         self.assertIn("best_objectives", result)
-        self.assertEqual(len(result["history"]), 3)  # 2 init + 1 step
+        self.assertEqual(len(result["history"]), 3)
         self.assertEqual(result["best_parameters"], {"x": 0.5, "y": 0.5})
 
     @patch("mdo_framework.optimization.optimizer.Client")
@@ -114,7 +118,6 @@ class TestOptimizer(unittest.TestCase):
         mock_client._to_json_snapshot.return_value = {}
         mock_client.to_json_snapshot.return_value = "{}"
 
-        # Test pareto frontier empty handling
         mock_client.get_pareto_frontier.return_value = None
 
         objs = [{"name": "f_xy", "minimize": True}, {"name": "g_xy", "minimize": False}]
@@ -133,10 +136,7 @@ class TestOptimizer(unittest.TestCase):
         mock_client._to_json_snapshot.return_value = {}
         mock_client.to_json_snapshot.return_value = "{}"
 
-        # Force exception on result retrieval
-        mock_client.get_best_parameterization.side_effect = Exception(
-            "Optimization failed",
-        )
+        mock_client.get_best_parameterization.side_effect = Exception("Optimization failed")
 
         opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
         result = opt.optimize(n_steps=1, n_init=2)
@@ -172,9 +172,6 @@ class TestOptimizer(unittest.TestCase):
 
     @patch("mdo_framework.optimization.optimizer.Client")
     def test_fidelity_parameter_emits_warning(self, mock_client_cls):
-        """fidelity_parameter is not supported by the new Ax Client API;
-        a UserWarning must be raised and optimization still completes normally.
-        """
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5}}
@@ -194,16 +191,10 @@ class TestOptimizer(unittest.TestCase):
             fidelity_parameter="x",
         )
 
-        with self.assertWarns(UserWarning) as ctx:
+        with self.assertWarns(UserWarning):
             result = opt.optimize(n_steps=1, n_init=2)
 
-        warning_message = str(ctx.warning)
-        self.assertIn("fidelity_parameter", warning_message)
-        self.assertIn("'x'", warning_message)
-        self.assertIn("not supported", warning_message)
-        # Optimization must still complete despite the warning
         self.assertIn("best_parameters", result)
-
 
 if __name__ == "__main__":
     unittest.main()

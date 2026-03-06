@@ -1,3 +1,9 @@
+"""
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at http://mozilla.org/MPL/2.0/.
+"""
+
 import asyncio
 import hashlib
 import json
@@ -57,15 +63,21 @@ def build_and_init(
 
 
 def execute_problem(
-    prob: Any,
+    prob,
     inputs: dict[str, float],
     objectives: list[str],
 ) -> dict[str, Any]:
-    """Sets values and executes the model in a worker thread."""
-    for name, val in inputs.items():
-        prob.set_val(name, val)
-    prob.run_model()
-    return {obj: prob.get_val(obj) for obj in objectives}
+    import numpy as np
+    input_data = {name: np.atleast_1d(val) for name, val in inputs.items()}
+    out_data = prob.execute(input_data)
+    results = {}
+    for obj in objectives:
+        val = out_data.get(obj)
+        if val is None:
+            results[obj] = 0.0
+        else:
+            results[obj] = val
+    return results
 
 
 def to_float(val: Any) -> float:

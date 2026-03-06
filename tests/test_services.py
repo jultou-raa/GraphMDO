@@ -1,3 +1,9 @@
+"""
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at http://mozilla.org/MPL/2.0/.
+"""
+
 # ruff: noqa: E402
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -231,6 +237,18 @@ class TestExecutionService(unittest.TestCase):
             json={"inputs": {}, "objectives": ["f_xy"]},
         )
         self.assertEqual(response.status_code, 422)
+
+
+    def test_execute_problem_missing_objective(self):
+        from services.execution.main import execute_problem
+        from unittest.mock import MagicMock
+
+        mock_prob = MagicMock()
+        mock_prob.execute.return_value = {"known_obj": 1.0}
+
+        # 'missing_obj' should trigger the `if val is None: results[obj] = 0.0` logic
+        results = execute_problem(mock_prob, inputs={"x": 1.0}, objectives=["known_obj", "missing_obj"])
+        self.assertEqual(results["missing_obj"], 0.0)
 
     def test_evaluate_transformation_failure(self):
         from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
