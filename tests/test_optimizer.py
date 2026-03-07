@@ -574,6 +574,6 @@ class TestOptimizer(unittest.TestCase):
 
         opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives, fidelity_parameter="z")
 
-        with patch("mdo_framework.optimization.ax_algo_lib.AxOptimizationLibrary.execute") as mock_exec:
+        with patch("mdo_framework.optimization.ax_algo_lib.AxOptimizationLibrary.execute"):
             with self.assertWarns(UserWarning):
                 opt.optimize(n_steps=1, n_init=1)
