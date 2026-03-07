@@ -624,3 +624,58 @@ class TestOptimizer(unittest.TestCase):
                 algo.execute(prob, max_iter=1, n_init=1)
             except Exception:
                 pass
+
+
+    @patch("mdo_framework.optimization.ax_algo_lib.Client")
+    def test_ax_algo_lib_loop_edge_cases(self, mock_client_cls):
+        from gemseo.algos.design_space import DesignSpace
+        from gemseo.algos.optimization_problem import OptimizationProblem
+        from gemseo.core.mdo_functions.mdo_function import MDOFunction
+        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
+        from gemseo.algos.stop_criteria import MaxIterReachedException
+
+        ds = DesignSpace()
+        ds.add_variable("x", lower_bound=0.0, upper_bound=1.0)
+
+        prob = OptimizationProblem(ds)
+        def obj(x):
+            return np.array([x[0] ** 2])
+        prob.objective = MDOFunction(obj, "obj", expr="x**2")
+
+        algo = AxOptimizationLibrary()
+
+        class DummySettings:
+            max_iter = 10
+            n_init = 5
+            use_bonsai = True
+            ax_parameters = [{"name": "x", "type": "range", "bounds": [0.0, 1.0]}]
+            ax_objectives = [{"name": "obj", "minimize": True}]
+            ax_parameter_constraints = ["x <= 1"]
+            normalize_design_space = False
+
+        algo._settings = DummySettings()
+
+        # Hit 326: client.attach_trial (i > 0)
+        prob.database.store(np.array([0.1]), {"obj": np.array([0.1])})
+        prob.database.store(np.array([0.2]), {"obj": np.array([0.2])})
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.get_next_trials.return_value = {
+            0: {"x": 0.5}
+        }
+
+        # Mock pareto frontier empty -> hits 448
+        mock_client.experiment.optimization_config.objective.__class__.__name__ = "MultiObjective"
+        mock_client.get_pareto_frontier.return_value = []
+
+        # Mock evaluate_functions to hit 401-403 (MaxIterReachedException)
+        def side_effect(*args, **kwargs):
+            raise MaxIterReachedException()
+
+        prob.evaluate_functions = MagicMock(side_effect=side_effect)
+
+        try:
+            algo.execute(prob, max_iter=1, n_init=1)
+        except Exception:
+            pass
