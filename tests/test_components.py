@@ -7,6 +7,7 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import unittest
 
 import numpy as np
+
 from mdo_framework.core.components import ToolComponent
 
 
@@ -73,7 +74,31 @@ class TestToolComponent(unittest.TestCase):
         # Since _compute_jacobian is empty, we just verify it runs without crashing.
         comp._compute_jacobian(inputs=["x", "y"], outputs=["z"])
 
-    def test_positional_arguments_fallback(self):
+    def test_kwargs_mapping_uses_input_names(self):
+        """Function parameter names must match the declared input names.
+
+        The previous 'positional fallback' was removed because it silently
+        swapped variables when the input order differed from the function
+        signature. Explicit kwargs mapping is now enforced.
+        """
+
+        def matching_args(x, y):
+            return x + y
+
+        comp = ToolComponent(
+            name="matching",
+            func=matching_args,
+            inputs=["x", "y"],
+            outputs=["z"],
+        )
+
+        input_data = {"x": np.array([1.0]), "y": np.array([2.0])}
+        out = comp.execute(input_data)
+        self.assertAlmostEqual(out["z"][0], 3.0)
+
+    def test_mismatched_parameter_names_raise(self):
+        """A function whose parameter names don't match input names must raise."""
+
         def mismatch_args(a, b):
             return a + b
 
@@ -85,8 +110,8 @@ class TestToolComponent(unittest.TestCase):
         )
 
         input_data = {"x": np.array([1.0]), "y": np.array([2.0])}
-        out = comp.execute(input_data)
-        self.assertAlmostEqual(out["z"][0], 3.0)
+        with self.assertRaises(TypeError):
+            comp.execute(input_data)
 
 
 if __name__ == "__main__":

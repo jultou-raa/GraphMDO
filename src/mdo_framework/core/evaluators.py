@@ -6,8 +6,8 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 from typing import Any
 
-from gemseo.core.discipline import Discipline
 import numpy as np
+from gemseo.core.discipline import Discipline
 
 
 class LocalEvaluator:

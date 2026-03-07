@@ -13,6 +13,7 @@ import numpy as np
 from gemseo import create_scenario
 from gemseo.algos.design_space import DesignSpace
 from gemseo.core.discipline import Discipline
+
 import mdo_framework.optimization.ax_algo_lib  # noqa: F401
 
 logger = logging.getLogger(__name__)
@@ -250,7 +251,7 @@ class BayesianOptimizer:
             algo = AxOptimizationLibrary()
             algo.execute(
                 problem,
-                max_iter=n_steps,
+                max_iter=n_steps + n_init,
                 n_init=n_init,
                 use_bonsai=self.use_bonsai,
                 ax_parameters=self.parameters,
@@ -260,27 +261,27 @@ class BayesianOptimizer:
             scenario.xdsmize(show_html=False)
             # Generate Post-Processing
             try:
-                scenario.post_process("OptHistoryView", save=True, show=False)
+                from gemseo.settings.post import OptHistoryView_Settings
+
+                scenario.post_process(
+                    settings_model=OptHistoryView_Settings(save=True, show=False)
+                )
             except Exception as pp_err:
                 logger.warning(f"Failed to post-process: {pp_err}")
 
-            # Return standardized format
-            best_x = problem.design_space.get_current_value()  # The best x evaluated
-            best_obj_eval = problem.objective.evaluate(best_x)
-            best_obj = (
-                best_obj_eval[0]
-                if isinstance(best_obj_eval, np.ndarray)
-                else best_obj_eval
-            )
-
-            # Map x_opt back to dict
+            # problem.optimum is GEMSEO's single source of truth: it searches
+            # all evaluated points (including every Ax trial) for the best
+            # feasible result, consistent with what the GEMSEO logger reports.
+            optimum = problem.optimum
             best_params = {}
             offset = 0
             for v in design_space.variable_names:
                 s = design_space.variable_sizes[v]
-                val = best_x[offset : offset + s]
+                val = optimum.design[offset : offset + s]
                 best_params[v] = val[0] if s == 1 else val.tolist()
                 offset += s
+
+            best_obj = float(optimum.objective)
 
             return {
                 "best_parameters": best_params,

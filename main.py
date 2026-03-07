@@ -30,10 +30,10 @@ def main():
 
     # 2. Populate Graph (Paraboloid Problem)
     # Variables
-    gm.add_variable("x", value=0.0, lower=-10.0, upper=10.0)
-    gm.add_variable("y", value=0.0, lower=-10.0, upper=10.0)
-    gm.add_variable("f_xy", value=0.0)
-    gm.add_variable("c_xy", value=0.0)
+    gm.add_variable("x", lower=-10.0, upper=10.0)
+    gm.add_variable("y", lower=-10.0, upper=10.0)
+    gm.add_variable("f_xy")
+    gm.add_variable("c_xy")
 
     # Tool
     gm.add_tool("Paraboloid")
@@ -78,6 +78,7 @@ def main():
         evaluator=evaluator,
         parameters=parameters,
         objectives=[{"name": "f_xy", "minimize": True}],
+        # constraints=[{"name": "c_xy", "op": "<=", "bound": 0.0}],
     )
 
     try:

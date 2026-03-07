@@ -6,9 +6,10 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import unittest
 from unittest.mock import MagicMock, patch
-import numpy as np
 
+import numpy as np
 from gemseo.core.discipline import Discipline
+
 from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.optimization.optimizer import BayesianOptimizer, RemoteEvaluator
 
@@ -319,9 +320,10 @@ class TestOptimizer(unittest.TestCase):
 
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_ax_algo_lib_direct(self, mock_client_cls):
-        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
-        from gemseo.algos.optimization_problem import OptimizationProblem
         from gemseo.algos.design_space import DesignSpace
+        from gemseo.algos.optimization_problem import OptimizationProblem
+
+        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
 
         ds = DesignSpace()
         ds.add_variable("x", lower_bound=0.0, upper_bound=1.0)

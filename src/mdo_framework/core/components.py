@@ -6,8 +6,8 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 from collections.abc import Callable
 
-from gemseo.core.discipline import Discipline
 import numpy as np
+from gemseo.core.discipline import Discipline
 
 
 class ToolComponent(Discipline):
@@ -51,20 +51,18 @@ class ToolComponent(Discipline):
         Expects the wrapped function to return a dictionary mapping output names
         to their computed values, or a single value for single outputs, or a tuple.
         """
-        # Prepare inputs as a dictionary (GEMSEO stores arrays in local_data)
-        input_vals = {name: self.local_data[name] for name in self._inputs_list}
+        # Prepare inputs as scalars: GEMSEO stores np.ndarray([v]) in local_data,
+        # but wrapped functions typically expect plain floats.
+        input_vals = {}
+        for name in self._inputs_list:
+            val = self.local_data[name]
+            input_vals[name] = (
+                val.item() if isinstance(val, np.ndarray) and val.size == 1 else val
+            )
 
-        # Execute the function
-        try:
-            result = self.func(**input_vals)
-        except TypeError:
-            # Fallback if function expects positional arguments (simple wrappers)
-            # Unpack the arrays if they are single elements and the function expects scalars
-            positional_args = [
-                val[0] if isinstance(val, np.ndarray) and val.size == 1 else val
-                for val in input_vals.values()
-            ]
-            result = self.func(*positional_args)
+        # Always use keyword arguments to guarantee correct mapping
+        # regardless of the order in _inputs_list.
+        result = self.func(**input_vals)
 
         # Map results to outputs inside self.local_data
         if len(self._outputs_list) == 1:

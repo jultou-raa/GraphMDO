@@ -239,8 +239,9 @@ class TestExecutionService(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
 
     def test_execute_problem_missing_objective(self):
-        from services.execution.main import execute_problem
         from unittest.mock import MagicMock
+
+        from services.execution.main import execute_problem
 
         mock_prob = MagicMock()
         mock_prob.execute.return_value = {"known_obj": 1.0}
@@ -470,8 +471,9 @@ class TestExecutionService(unittest.TestCase):
                     self.assertEqual(response.status_code, 400)
 
     def test_schema_provider_lock_timeout_fallback(self):
-        from services.execution.main import SchemaProvider, SchemaEnvelope
         import asyncio
+
+        from services.execution.main import SchemaEnvelope, SchemaProvider
 
         mock_client = AsyncMock()
         provider = SchemaProvider(mock_client)
@@ -490,9 +492,11 @@ class TestExecutionService(unittest.TestCase):
             asyncio.run(test_run())
 
     def test_schema_provider_httpx_errors_fallback(self):
-        from services.execution.main import SchemaProvider, SchemaEnvelope
-        import httpx
         import asyncio
+
+        import httpx
+
+        from services.execution.main import SchemaEnvelope, SchemaProvider
 
         mock_client = AsyncMock()
         mock_client.get.side_effect = httpx.RequestError("Network error")
@@ -507,8 +511,9 @@ class TestExecutionService(unittest.TestCase):
         asyncio.run(test_run())
 
     def test_schema_provider_invalid_data_fallback(self):
-        from services.execution.main import SchemaProvider, SchemaEnvelope
         import asyncio
+
+        from services.execution.main import SchemaEnvelope, SchemaProvider
 
         mock_client = AsyncMock()
         mock_resp = MagicMock()
@@ -526,8 +531,9 @@ class TestExecutionService(unittest.TestCase):
         asyncio.run(test_run())
 
     def test_lifespan_initialization(self):
-        from services.execution.main import lifespan
         import asyncio
+
+        from services.execution.main import lifespan
 
         async def run_lifespan():
             async with lifespan(execution_app):
