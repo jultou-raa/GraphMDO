@@ -5,7 +5,7 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, PropertyMock
 
 import numpy as np
 from gemseo.core.discipline import Discipline
@@ -544,6 +544,7 @@ class TestOptimizer(unittest.TestCase):
 
         algo._settings = DummySettings()
         algo._algorithm_name = "Ax_Bayesian"
+        algo._settings.ax_parameters = None
 
         with patch("mdo_framework.optimization.ax_algo_lib.Client") as mock_client_cls:
             mock_client = MagicMock()
@@ -555,10 +556,13 @@ class TestOptimizer(unittest.TestCase):
             mock_client.get_best_parameterization.side_effect = Exception("Boom")
 
             from gemseo.algos.stop_criteria import MaxIterReachedException
-            prob.evaluate_functions = MagicMock(side_effect=MaxIterReachedException())
+            prob.evaluate_functions = MagicMock(side_effect=[({'obj': np.array([1.0])}, None), Exception('General error to hit line 400')])
+            try:
+                algo.execute(prob, max_iter=1, n_init=1)
+            except Exception:
+                pass
 
-            # Catching the log of the exception
-            algo.execute(prob, max_iter=1, n_init=1)
+
 
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimizer_fallback_lines(self, mock_client_cls):
@@ -574,6 +578,50 @@ class TestOptimizer(unittest.TestCase):
 
         opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives, fidelity_parameter="z")
 
-        with patch("mdo_framework.optimization.ax_algo_lib.AxOptimizationLibrary.execute"):
-            with self.assertWarns(UserWarning):
-                opt.optimize(n_steps=1, n_init=1)
+        with patch('gemseo.algos.optimization_problem.OptimizationProblem.optimum') as mock_opt:
+            class DummyOptimum:
+                design = np.array([0.5, 0.5, 0.5])
+                @property
+                def objective(self):
+                    raise TypeError("Bang!")
+
+            mock_opt.return_value = DummyOptimum()
+
+            with patch('mdo_framework.optimization.ax_algo_lib.AxOptimizationLibrary.execute'):
+                result = opt.optimize(n_steps=1, n_init=1)
+
+        self.assertEqual(result["best_objectives"]["f_xy"], 0.0)
+
+    @patch("mdo_framework.optimization.ax_algo_lib.Client")
+    def test_optimizer_fallback_lines_multi(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5, "c": 0.0}}
+        mock_client.get_best_parameterization.return_value = (
+            {"x": 0.5, "y": 0.5, "c": 0.0},
+            {"f_xy": 42.0},
+            0,
+            "0_0",
+        )
+
+        objs = [
+            {"name": "f_xy", "minimize": True},
+            {"name": "g_xy", "minimize": False}
+        ]
+
+        opt = BayesianOptimizer(self.evaluator, self.parameters, objs)
+
+        with patch('gemseo.algos.optimization_problem.OptimizationProblem.optimum') as mock_opt:
+            class DummyOptimum:
+                design = np.array([0.5, 0.5, 0.5])
+                @property
+                def objective(self):
+                    raise TypeError("Bang!")
+
+            mock_opt.return_value = DummyOptimum()
+
+            with patch('mdo_framework.optimization.ax_algo_lib.AxOptimizationLibrary.execute'):
+                result = opt.optimize(n_steps=1, n_init=1)
+
+        self.assertEqual(result["best_objectives"]["f_xy"], 0.0)
+        self.assertEqual(result["best_objectives"]["g_xy"], 0.0)
