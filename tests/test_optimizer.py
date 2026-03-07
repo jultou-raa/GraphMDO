@@ -5,7 +5,7 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
 import unittest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 from gemseo.core.discipline import Discipline
@@ -555,7 +555,6 @@ class TestOptimizer(unittest.TestCase):
             # mock get_best_parameterization raising Exception to hit 448
             mock_client.get_best_parameterization.side_effect = Exception("Boom")
 
-            from gemseo.algos.stop_criteria import MaxIterReachedException
             prob.evaluate_functions = MagicMock(side_effect=[({'obj': np.array([1.0])}, None), Exception('General error to hit line 400')])
             try:
                 algo.execute(prob, max_iter=1, n_init=1)
