@@ -233,13 +233,17 @@ class BayesianOptimizer:
         # Build Scenario
         objective_names = [o["name"] for o in self.objectives]
 
-        # In GEMSEO, maximize_objective can be a list if there are multiple objectives
-        # But we only need to pass it to Ax properly. GEMSEO expects all minimize internally
-        # so we will just let GEMSEO default and handle multiple objectives in Ax.
+        # Explicitly configure maximize_objective per user request.
+        # GEMSEO maximize_objective expects a single boolean or a list of booleans
+        maximize_objective = [not o.get("minimize", True) for o in self.objectives]
+        if len(maximize_objective) == 1:
+            maximize_objective = maximize_objective[0]
+
         scenario = create_scenario(
             [discipline],
             formulation_name="MDF",
             objective_name=objective_names,
+            maximize_objective=maximize_objective,
             design_space=design_space,
             name="MDOScenario_Ax",
         )
