@@ -511,58 +511,6 @@ class TestOptimizer(unittest.TestCase):
             opt.optimize(n_steps=1, n_init=1)
 
 
-    def test_ax_algo_lib_edge_cases(self):
-        from gemseo.algos.design_space import DesignSpace
-        from gemseo.algos.optimization_problem import OptimizationProblem
-        from gemseo.core.mdo_functions.mdo_function import MDOFunction
-        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary, AxConstraintBuilder, AxObjectiveBuilder
-
-        ds = DesignSpace()
-        ds.add_variable("x", lower_bound=0.0, upper_bound=1.0)
-
-        prob = OptimizationProblem(ds)
-        def obj(x):
-            return np.array([x[0] ** 2])
-        prob.objective = MDOFunction(obj, "obj", expr="x**2")
-
-        res = AxConstraintBuilder.build_outcome_constraints([])
-        self.assertEqual(res, [])
-
-        config = AxObjectiveBuilder.build_optimization_config([{"name": "a", "minimize": True}, {"name": "b", "minimize": False}], prob, [])
-        self.assertIsNotNone(config)
-
-        algo = AxOptimizationLibrary()
-
-        class DummySettings:
-            max_iter = 10
-            n_init = 5
-            use_bonsai = True
-            ax_parameters = [{"name": "x", "type": "range", "bounds": [0.0, 1.0]}]
-            ax_objectives = [{"name": "obj", "minimize": True}]
-            ax_parameter_constraints = ["x <= 1"]
-            normalize_design_space = False
-
-        algo._settings = DummySettings()
-        algo._algorithm_name = "Ax_Bayesian"
-        algo._settings.ax_parameters = None
-
-        with patch("mdo_framework.optimization.ax_algo_lib.Client") as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client_cls.return_value = mock_client
-            mock_client.get_next_trials.return_value = {
-                0: {"x": 0.5}
-            }
-            # mock get_best_parameterization raising Exception to hit 448
-            mock_client.get_best_parameterization.side_effect = Exception("Boom")
-
-            prob.evaluate_functions = MagicMock(side_effect=[({'obj': np.array([1.0])}, None), Exception('General error to hit line 400')])
-            try:
-                algo.execute(prob, max_iter=1, n_init=1)
-            except Exception:
-                pass
-
-
-
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimizer_fallback_lines(self, mock_client_cls):
         mock_client = MagicMock()
@@ -624,3 +572,55 @@ class TestOptimizer(unittest.TestCase):
 
         self.assertEqual(result["best_objectives"]["f_xy"], 0.0)
         self.assertEqual(result["best_objectives"]["g_xy"], 0.0)
+
+
+
+
+    def test_ax_algo_lib_edge_cases(self):
+        from gemseo.algos.design_space import DesignSpace
+        from gemseo.algos.optimization_problem import OptimizationProblem
+        from gemseo.core.mdo_functions.mdo_function import MDOFunction
+        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary, AxConstraintBuilder, AxObjectiveBuilder
+
+        ds = DesignSpace()
+        ds.add_variable("x", lower_bound=0.0, upper_bound=1.0)
+
+        prob = OptimizationProblem(ds)
+        def obj(x):
+            return np.array([x[0] ** 2])
+        prob.objective = MDOFunction(obj, "obj", expr="x**2")
+
+        res = AxConstraintBuilder.build_outcome_constraints([])
+        self.assertEqual(res, [])
+
+        config = AxObjectiveBuilder.build_optimization_config([{"name": "a", "minimize": True}, {"name": "b", "minimize": False}], prob, [])
+        self.assertIsNotNone(config)
+
+        algo = AxOptimizationLibrary()
+
+        class DummySettings:
+            max_iter = 10
+            n_init = 5
+            use_bonsai = True
+            ax_parameters = [{"name": "x", "type": "range", "bounds": [0.0, 1.0]}]
+            ax_objectives = [{"name": "obj", "minimize": True}]
+            ax_parameter_constraints = ["x <= 1"]
+            normalize_design_space = False
+
+        algo._settings = DummySettings()
+
+        with patch("mdo_framework.optimization.ax_algo_lib.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client_cls.return_value = mock_client
+            mock_client.get_next_trials.return_value = {
+                0: {"x": 0.5}
+            }
+            # mock get_best_parameterization raising Exception to hit 448
+            mock_client.get_best_parameterization.side_effect = Exception("Boom")
+
+            prob.evaluate_functions = MagicMock(side_effect=[({'obj': np.array([1.0])}, None), Exception('General error to hit line 400')])
+
+            try:
+                algo.execute(prob, max_iter=1, n_init=1)
+            except Exception:
+                pass
