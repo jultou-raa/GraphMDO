@@ -625,57 +625,116 @@ class TestOptimizer(unittest.TestCase):
             except Exception:
                 pass
 
+    def test_ax_parameter_and_objective_builders_edge_cases(self):
+        from mdo_framework.optimization.ax_algo_lib import AxParameterBuilder, AxObjectiveBuilder
+        from gemseo.algos.design_space import DesignSpace
+
+        # Test parameter builder normalization
+        params = AxParameterBuilder.build_from_ax_parameters([
+            {"name": "c", "type": "choice", "values": [float(1.0), float(2.0)]}
+        ])
+        self.assertEqual(params[0].is_ordered, True) # is_numeric = True, but type int/float handled by ax
+
+        # Test objective builder with list of metric names
+        class DummyObjProblem:
+            class DummyObj:
+                name = ["f1", "f2"]
+            objective = DummyObj()
+
+        class DummySettings:
+            pass
+        fs = DummySettings()
+        setattr(fs, "ax_objectives", [])
+
+        # Test building multi-objective configs natively
+        AxObjectiveBuilder.build_optimization_config([], DummyObjProblem(), [])
+
+        # Test fallback parsing for singleton list metrics
+        DummyObjProblem.objective.name = ["f1"]
+        AxObjectiveBuilder.build_optimization_config([], DummyObjProblem(), [])
+        ds = DesignSpace()
+        ds.add_variable('v', lower_bound=0.0, upper_bound=1.0)
+        ds.set_current_value(np.array([0.5]))
+        AxParameterBuilder.build_from_design_space(ds, normalize=True)
 
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
-    def test_ax_algo_lib_loop_edge_cases(self, mock_client_cls):
+    def test_optimizer_choice_and_fallback_lines(self, mock_client_cls):
+        from gemseo.algos.stop_criteria import MaxIterReachedException
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+
+        mock_client.get_next_trials.return_value = {0: {"x": 0.5, "c_num_0": 1.0, "c_num_1": 2.0}}
+        mock_client.get_best_parameterization.return_value = (
+            {"x": 0.5, "c_num_0": 1.0, "c_num_1": 2.0},
+            {"f_xy": 42.0},
+            0,
+            "0_0",
+        )
+
+        params = [
+            {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
+            {"name": "c_num", "type": "choice", "values": [1.5, 2.5]}
+        ]
+        objs = [{"name": "f_xy", "minimize": True}, {"name": "g_xy", "minimize": False}]
+
+        opt = BayesianOptimizer(self.evaluator, params, objs)
+        opt.explore(n_samples=1)
+
+
+        with patch('mdo_framework.optimization.optimizer.np.atleast_1d') as mock_atleast_1d:
+            mock_arr = MagicMock()
+            mock_arr.flatten.return_value = ["not_a_number", "still_not"]
+            mock_atleast_1d.return_value = mock_arr
+
+            # Since evaluate will run normally, Ax will finish, but then when it builds best_objectives, atleast_1d returns our bad strings!
+            # float("not_a_number") throws ValueError!
+            val = opt.optimize(n_steps=1, n_init=1)
+            self.assertEqual(val["best_objectives"]["f_xy"], 0.0)
+
+
+        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
         from gemseo.algos.design_space import DesignSpace
         from gemseo.algos.optimization_problem import OptimizationProblem
         from gemseo.core.mdo_functions.mdo_function import MDOFunction
-        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
-        from gemseo.algos.stop_criteria import MaxIterReachedException
+
+        algo = AxOptimizationLibrary()
+        algo.algo_options = {"max_iter": 3}
+        algo.client = mock_client
+        algo.client.experiment.search_space.parameters = {"x": MagicMock()}
 
         ds = DesignSpace()
         ds.add_variable("x", lower_bound=0.0, upper_bound=1.0)
-
         prob = OptimizationProblem(ds)
-        def obj(x):
-            return np.array([x[0] ** 2])
-        prob.objective = MDOFunction(obj, "obj", expr="x**2")
+        prob.objective = MDOFunction(lambda x: np.array([x[0]]), "f_xy", expr="x")
 
-        algo = AxOptimizationLibrary()
+        algo.problem = prob
+
+        algo.problem.database.store(np.array([0.1]), {"f_xy": np.array([0.1])})
+        algo.problem.database.store(np.array([0.2]), {"f_xy": np.array([0.2])})
+
+        algo._seed_database(algo.client, algo.problem, ds)
+
+        def mock_eval(*args, **kwargs):
+            raise MaxIterReachedException(10)
+        algo.problem.evaluate_functions = mock_eval
 
         class DummySettings:
-            max_iter = 10
-            n_init = 5
-            use_bonsai = True
+            max_iter = 3
+            n_init = 1
+            use_bonsai = False
             ax_parameters = [{"name": "x", "type": "range", "bounds": [0.0, 1.0]}]
-            ax_objectives = [{"name": "obj", "minimize": True}]
-            ax_parameter_constraints = ["x <= 1"]
+            ax_objectives = [{"name": "f_xy", "minimize": True}]
+            ax_parameter_constraints = []
             normalize_design_space = False
-
         algo._settings = DummySettings()
+                # execution completes without crashing even if trials fail
+        algo._run(algo.problem)
 
-        # Hit 326: client.attach_trial (i > 0)
-        prob.database.store(np.array([0.1]), {"obj": np.array([0.1])})
-        prob.database.store(np.array([0.2]), {"obj": np.array([0.2])})
 
-        mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
-        mock_client.get_next_trials.return_value = {
-            0: {"x": 0.5}
-        }
-
-        # Mock pareto frontier empty -> hits 448
-        mock_client.experiment.optimization_config.objective.__class__.__name__ = "MultiObjective"
+        from ax.core.objective import MultiObjective
+        mock_client.experiment.optimization_config.objective = MagicMock(spec=MultiObjective)
         mock_client.get_pareto_frontier.return_value = []
-
-        # Mock evaluate_functions to hit 401-403 (MaxIterReachedException)
-        def side_effect(*args, **kwargs):
-            raise MaxIterReachedException()
-
-        prob.evaluate_functions = MagicMock(side_effect=side_effect)
-
-        try:
-            algo.execute(prob, max_iter=1, n_init=1)
-        except Exception:
-            pass
+        # When Pareto empty, the best_parameters shouldn't crash, it should just return empty dicts or None depending on upstream
+        opt2 = BayesianOptimizer(self.evaluator, [{"name": "x", "type": "range", "bounds": [0, 1]}], [{"name": "f_xy"}])
+        res2 = opt2.optimize(n_steps=1, n_init=1)
+        self.assertTrue(res2["best_parameters"] is not None)
