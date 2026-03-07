@@ -100,6 +100,42 @@ class TestOptimizer(unittest.TestCase):
         self.assertEqual(result["best_parameters"], {"x": 0.5, "y": 0.5, "c": 0.5})
 
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
+    @patch("mdo_framework.optimization.ax_algo_lib.Client")
+    def test_optimize_multi_objective(self, mock_client_cls, mock2=None):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5, "c": 0.0}}
+        mock_client._to_json_snapshot.return_value = {}
+        mock_client.to_json_snapshot.return_value = "{}"
+
+        # Mock pareto frontier
+        mock_client.get_pareto_frontier.return_value = [
+            ({"x": 0.5, "y": 0.5, "c": 0.0}, {"f_xy": 42.0, "g_xy": 10.0}, 0, "0_0"),
+        ]
+
+        # Configure a mock multi-objective setup
+        mock_opt_config = MagicMock()
+        mock_opt_config.objective = MagicMock()
+        from ax.core.objective import MultiObjective
+
+        mock_opt_config.objective.__class__ = MultiObjective
+        mock_client.experiment = MagicMock()
+        mock_client.experiment.optimization_config = mock_opt_config
+
+        objs = [
+            {"name": "f_xy", "minimize": True},
+            {"name": "g_xy", "minimize": False, "threshold": 100.0},
+        ]
+
+        opt = BayesianOptimizer(self.evaluator, self.parameters, objs)
+        result = opt.optimize(n_steps=1, n_init=1)
+
+        self.assertIn("best_parameters", result)
+        self.assertEqual(result["best_parameters"]["x"], 0.5)
+        # Check if the optimization passed smoothly
+        self.assertIsNotNone(result["best_objectives"])
+
+    @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimize_bonsai_and_multi_objective(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
@@ -371,3 +407,38 @@ class TestOptimizer(unittest.TestCase):
         res = opt.optimize(n_steps=1, n_init=1)
 
         self.assertIsNone(res["best_parameters"])
+
+    @patch("mdo_framework.optimization.ax_algo_lib.Client")
+    def test_optimize_with_parameter_constraints(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5, "c": 0.0}}
+        mock_client._to_json_snapshot.return_value = {}
+        mock_client.to_json_snapshot.return_value = "{}"
+
+        mock_opt_config = MagicMock()
+        mock_client.experiment = MagicMock()
+        mock_client.experiment.optimization_config = mock_opt_config
+        mock_client.get_best_parameterization.return_value = (
+            {"x": 0.5, "y": 0.5, "c": 0.0},
+            {"f_xy": 42.0},
+            0,
+            "0_0",
+        )
+
+        opt = BayesianOptimizer(
+            self.evaluator,
+            self.parameters,
+            self.objectives,
+            parameter_constraints=["x <= y"],
+        )
+        result = opt.optimize(n_steps=1, n_init=1)
+
+        self.assertIn("best_parameters", result)
+        self.assertEqual(result["best_parameters"]["x"], 0.5)
+        # Check that parameter_constraints was correctly passed to the Ax client
+        # Since we mock Client, we can inspect mock_client.configure_experiment call args
+        mock_client.configure_experiment.assert_called()
+        call_kwargs = mock_client.configure_experiment.call_args.kwargs
+        self.assertIn("parameter_constraints", call_kwargs)
+        self.assertEqual(call_kwargs["parameter_constraints"], ["x <= y"])

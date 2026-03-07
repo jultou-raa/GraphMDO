@@ -68,6 +68,7 @@ class OptimizeRequest(BaseModel):
     objectives: list[ObjectiveConfig]
     constraints: list[ConstraintConfig] | None = None
     fidelity_parameter: str | None = None  # Name of the parameter determining fidelity
+    parameter_constraints: list[str] | None = None
     n_steps: int = 5
     n_init: int = 5
     use_bonsai: bool = False
@@ -132,6 +133,7 @@ async def optimize(req: OptimizeRequest, request: Request):
             constraints=constraints,
             fidelity_parameter=req.fidelity_parameter,
             use_bonsai=req.use_bonsai,
+            parameter_constraints=req.parameter_constraints,
         )
 
         # 6. Run Optimization (offload to thread to avoid blocking the event loop)

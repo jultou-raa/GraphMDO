@@ -89,6 +89,7 @@ class BayesianOptimizer:
         constraints: Dict defining boundaries mapped out of GEMSEO evaluations.
         fidelity_parameter: Name of variable designating multi-fidelity.
         use_bonsai: Toggle for experimental algorithmic execution.
+        parameter_constraints: List of string-based constraints on the search space parameters.
 
     """
 
@@ -100,6 +101,7 @@ class BayesianOptimizer:
         constraints: list[dict[str, Any]] | None = None,
         fidelity_parameter: str | None = None,
         use_bonsai: bool = False,
+        parameter_constraints: list[str] | None = None,
     ) -> None:
         self.evaluator = evaluator
         self.parameters = parameters
@@ -107,6 +109,7 @@ class BayesianOptimizer:
         self.constraints = constraints or []
         self.fidelity_parameter = fidelity_parameter
         self.use_bonsai = use_bonsai
+        self.parameter_constraints = parameter_constraints
 
     def explore(self, n_samples: int = 10, n_processes: int = 1) -> dict[str, Any]:
         """Runs a Design of Experiments (DOE) exploration using GEMSEO DOEScenario.
@@ -149,12 +152,13 @@ class BayesianOptimizer:
                             p["name"], lower_bound=min(vals), upper_bound=max(vals)
                         )
 
-        objective_name = self.objectives[0]["name"]
+        # We pass multiple objective names to GEMSEO
+        objective_names = [o["name"] for o in self.objectives]
 
         scenario = create_scenario(
             [discipline],
             formulation_name="MDF",
-            objective_name=objective_name,
+            objective_name=objective_names,
             design_space=design_space,
             scenario_type="DOE",
         )
@@ -227,14 +231,15 @@ class BayesianOptimizer:
                         )
 
         # Build Scenario
-        objective_name = self.objectives[0]["name"]
-        minimize = self.objectives[0].get("minimize", True)
+        objective_names = [o["name"] for o in self.objectives]
 
+        # In GEMSEO, maximize_objective can be a list if there are multiple objectives
+        # But we only need to pass it to Ax properly. GEMSEO expects all minimize internally
+        # so we will just let GEMSEO default and handle multiple objectives in Ax.
         scenario = create_scenario(
             [discipline],
             formulation_name="MDF",
-            objective_name=objective_name,
-            maximize_objective=not minimize,
+            objective_name=objective_names,
             design_space=design_space,
             name="MDOScenario_Ax",
         )
@@ -255,6 +260,8 @@ class BayesianOptimizer:
                 n_init=n_init,
                 use_bonsai=self.use_bonsai,
                 ax_parameters=self.parameters,
+                ax_objectives=self.objectives,
+                ax_parameter_constraints=self.parameter_constraints,
             )
 
             # Generate XDSM diagram
@@ -272,20 +279,41 @@ class BayesianOptimizer:
             # problem.optimum is GEMSEO's single source of truth: it searches
             # all evaluated points (including every Ax trial) for the best
             # feasible result, consistent with what the GEMSEO logger reports.
+            # If multiple objectives, optimum might not be a single point, but we can return Pareto front.
             optimum = problem.optimum
-            best_params = {}
-            offset = 0
-            for v in design_space.variable_names:
-                s = design_space.variable_sizes[v]
-                val = optimum.design[offset : offset + s]
-                best_params[v] = val[0] if s == 1 else val.tolist()
-                offset += s
+            best_params = None
+            best_objectives = None
+            if optimum is not None:
+                best_params = {}
+                offset = 0
+                for v in design_space.variable_names:
+                    s = design_space.variable_sizes[v]
+                    val = optimum.design[offset : offset + s]
+                    best_params[v] = val[0] if s == 1 else val.tolist()
+                    offset += s
 
-            best_obj = float(optimum.objective)
+                best_objectives = {}
+                if len(objective_names) == 1:
+                    try:
+                        best_objectives[objective_names[0]] = float(
+                            np.atleast_1d(optimum.objective)[0]
+                        )
+                    except Exception:
+                        best_objectives[objective_names[0]] = 0.0
+                else:
+                    for n in objective_names:
+                        best_objectives[n] = 0.0
+                    try:
+                        obj_arr = np.atleast_1d(optimum.objective).flatten()
+                        for i, n in enumerate(objective_names):
+                            if i < len(obj_arr):
+                                best_objectives[n] = float(obj_arr[i])
+                    except Exception:
+                        pass
 
             return {
                 "best_parameters": best_params,
-                "best_objectives": {objective_name: best_obj},
+                "best_objectives": best_objectives,
                 "history": [],
                 "serialized_client": "{}",
             }
