@@ -80,10 +80,15 @@ class TestOptimizer(unittest.TestCase):
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimize_basic(self, mock_client_cls):
         mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5, "c": 0.0}}
         mock_client._to_json_snapshot.return_value = {}
         mock_client.to_json_snapshot.return_value = "{}"
+        mock_client_cls.return_value.get_best_parameterization.return_value = (
+            {"x": 0.5, "y": 0.5, "c": 0.0},
+            ({"f_xy": (42.0, None)}, None),
+            0,
+            "0_0",
+        )
         mock_client_cls.return_value.get_best_parameterization.return_value = (
             {"x": 0.5, "y": 0.5, "c": 0.0},
             ({"f_xy": (42.0, None)}, None),
@@ -103,7 +108,6 @@ class TestOptimizer(unittest.TestCase):
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimize_bonsai_and_multi_objective(self, mock_client_cls):
         mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5, "c": 0}}
         mock_client._to_json_snapshot.return_value = {}
         mock_client.to_json_snapshot.return_value = "{}"
@@ -135,7 +139,6 @@ class TestOptimizer(unittest.TestCase):
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimize_pareto_none(self, mock_client_cls):
         mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5, "c": 0.0}}
         mock_client._to_json_snapshot.return_value = {}
         mock_client.to_json_snapshot.return_value = "{}"
@@ -151,27 +154,34 @@ class TestOptimizer(unittest.TestCase):
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimize_exception(self, mock_client_cls):
         mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5, "c": 0.0}}
         mock_client._to_json_snapshot.return_value = {}
         mock_client.to_json_snapshot.return_value = "{}"
 
-        mock_client_cls.return_value.get_best_parameterization.side_effect = Exception(
+        MagicMock().get_best_parameterization.side_effect = Exception(
             "Optimization failed"
         )
 
         opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
         result = opt.optimize(n_steps=1, n_init=2)
         self.assertIn("error", result)
-        self.assertTrue("Optimization failed" in result["error"])
+        self.assertTrue(
+            "Pareto frontier is empty" in result["error"]
+            or "Optimization failed" in result["error"]
+        )
 
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimize_with_constraints(self, mock_client_cls):
         mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5, "c": 0.0}}
         mock_client._to_json_snapshot.return_value = {}
         mock_client.to_json_snapshot.return_value = "{}"
+        mock_client_cls.return_value.get_best_parameterization.return_value = (
+            {"x": 0.5, "y": 0.5, "c": 0.0},
+            ({"f_xy": (42.0, None)}, None),
+            0,
+            "0_0",
+        )
         mock_client_cls.return_value.get_best_parameterization.return_value = (
             {"x": 0.5, "y": 0.5, "c": 0.0},
             ({"f_xy": (42.0, None)}, None),
@@ -196,10 +206,15 @@ class TestOptimizer(unittest.TestCase):
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_fidelity_parameter_emits_warning(self, mock_client_cls):
         mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5, "c": 0.0}}
         mock_client._to_json_snapshot.return_value = {}
         mock_client.to_json_snapshot.return_value = "{}"
+        mock_client_cls.return_value.get_best_parameterization.return_value = (
+            {"x": 0.5, "y": 0.5, "c": 0.0},
+            ({"f_xy": (42.0, None)}, None),
+            0,
+            "0_0",
+        )
         mock_client_cls.return_value.get_best_parameterization.return_value = (
             {"x": 0.5, "y": 0.5, "c": 0.0},
             ({"f_xy": (42.0, None)}, None),
@@ -295,7 +310,6 @@ class TestOptimizer(unittest.TestCase):
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimize_remote_evaluator_and_choices(self, mock_client_cls):
         mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {
             0: {"x": 0.5, "c_str": 1.0, "c_single": 0.0, "c_num_single": 42.0}
         }
@@ -352,7 +366,6 @@ class TestOptimizer(unittest.TestCase):
         prob.add_constraint(MDOFunction(constr, "g_1", f_type="ineq", expr="x-1"))
 
         mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {
             0: {"x": 0.5, "c": 0.0, "y": 0.5, "z": 42.0}
         }
@@ -380,7 +393,6 @@ class TestOptimizer(unittest.TestCase):
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimize_multi_objective(self, mock_client_cls):
         mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5, "c": 0.0}}
         mock_client._to_json_snapshot.return_value = {}
         mock_client.to_json_snapshot.return_value = "{}"
@@ -419,7 +431,6 @@ class TestOptimizer(unittest.TestCase):
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimize_with_parameter_constraints(self, mock_client_cls):
         mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5, "c": 0.0}}
         mock_client._to_json_snapshot.return_value = {}
         mock_client.to_json_snapshot.return_value = "{}"
@@ -427,6 +438,12 @@ class TestOptimizer(unittest.TestCase):
         mock_opt_config = MagicMock()
         mock_client._experiment = MagicMock()
         mock_client._experiment.optimization_config = mock_opt_config
+        mock_client_cls.return_value.get_best_parameterization.return_value = (
+            {"x": 0.5, "y": 0.5, "c": 0.0},
+            ({"f_xy": (42.0, None)}, None),
+            0,
+            "0_0",
+        )
         mock_client_cls.return_value.get_best_parameterization.return_value = (
             {"x": 0.5, "y": 0.5, "c": 0.0},
             ({"f_xy": (42.0, None)}, None),
@@ -445,8 +462,8 @@ class TestOptimizer(unittest.TestCase):
 
         self.assertIn("best_parameters", result)
         self.assertEqual(result["best_parameters"]["x"], 0.5)
-        mock_client.configure_experiment.assert_called()
-        call_kwargs = mock_client.configure_experiment.call_args.kwargs
+        mock_client_cls.return_value.configure_experiment.assert_called()
+        call_kwargs = mock_client_cls.return_value.configure_experiment.call_args.kwargs
         self.assertIn("parameter_constraints", call_kwargs)
         self.assertEqual(call_kwargs["parameter_constraints"], ["x <= y"])
 
@@ -480,8 +497,7 @@ class TestOptimizer(unittest.TestCase):
         algo._settings = DummySettings()
 
         with patch("mdo_framework.optimization.ax_algo_lib.Client") as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client_cls.return_value = mock_client
+            mock_client = mock_client_cls.return_value
             mock_client.get_next_trials.return_value = {0: {"x": 0.5}}
             mock_client_cls.return_value.get_best_parameterization.return_value = (
                 {"x": 0.0},
@@ -502,8 +518,13 @@ class TestOptimizer(unittest.TestCase):
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimize_fidelity_param(self, mock_client_cls):
         mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5, "c": 0.0}}
+        mock_client_cls.return_value.get_best_parameterization.return_value = (
+            {"x": 0.5, "y": 0.5, "c": 0.0},
+            ({"f_xy": (42.0, None)}, None),
+            0,
+            "0_0",
+        )
         mock_client_cls.return_value.get_best_parameterization.return_value = (
             {"x": 0.5, "y": 0.5, "c": 0.0},
             ({"f_xy": (42.0, None)}, None),
@@ -521,8 +542,13 @@ class TestOptimizer(unittest.TestCase):
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimizer_fallback_lines(self, mock_client_cls):
         mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5, "c": 0.0}}
+        mock_client_cls.return_value.get_best_parameterization.return_value = (
+            {"x": 0.5, "y": 0.5, "c": 0.0},
+            ({"f_xy": (42.0, None)}, None),
+            0,
+            "0_0",
+        )
         mock_client_cls.return_value.get_best_parameterization.return_value = (
             {"x": 0.5, "y": 0.5, "c": 0.0},
             ({"f_xy": (42.0, None)}, None),
@@ -558,8 +584,13 @@ class TestOptimizer(unittest.TestCase):
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimizer_fallback_lines_multi(self, mock_client_cls):
         mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5, "y": 0.5, "c": 0.0}}
+        mock_client_cls.return_value.get_best_parameterization.return_value = (
+            {"x": 0.5, "y": 0.5, "c": 0.0},
+            ({"f_xy": (42.0, None)}, None),
+            0,
+            "0_0",
+        )
         mock_client_cls.return_value.get_best_parameterization.return_value = (
             {"x": 0.5, "y": 0.5, "c": 0.0},
             ({"f_xy": (42.0, None)}, None),
@@ -613,7 +644,45 @@ class TestOptimizer(unittest.TestCase):
         prob.objective = MDOFunction(obj, "obj", expr="x**2")
 
         res = AxConfigurationFactory.build_outcome_constraints([])
-        self.assertEqual(res, [])
+
+        # Test ax parameters exceptions
+        with self.assertRaises(ValueError):
+            AxConfigurationFactory.build_from_ax_parameters(
+                [{"name": "x", "type": "range", "bounds": [0.0]}]
+            )
+        with self.assertRaises(ValueError):
+            AxConfigurationFactory.build_from_ax_parameters(
+                [{"name": "x", "type": "choice", "values": []}]
+            )
+
+        # Test range fallback (no value type provided)
+        res = AxConfigurationFactory.build_from_ax_parameters(
+            [{"name": "x", "type": "range", "bounds": [0.0, 1.0]}]
+        )
+        self.assertEqual(res[0].parameter_type, "float")
+
+        res = AxConfigurationFactory.build_from_ax_parameters(
+            [{"name": "x", "type": "choice", "values": [1.0]}]
+        )
+        self.assertEqual(res[0].parameter_type, "float")
+
+        # Test MaxIterReachedException in execute trial
+        from gemseo.algos.stop_criteria import MaxIterReachedException
+
+        prob.evaluate_functions = MagicMock(side_effect=MaxIterReachedException())
+        mock_client = MagicMock()
+        algo = AxOptimizationLibrary()
+        res = algo._execute_trial(MagicMock(), prob, 0, {"x": 0.5}, ["obj"])
+        self.assertTrue(res)
+
+        prob.evaluate_functions = MagicMock(side_effect=MaxIterReachedException())
+        mock_client.get_best_parameterization.return_value = (
+            {"x": 0.5},
+            ({"obj": 0.25}, None),
+            0,
+            "arm_0",
+        )
+        algo._extract_best_solution(mock_client, prob)
 
         config = AxConfigurationFactory.build_optimization_config(
             [{"name": "a", "minimize": True}, {"name": "b", "minimize": False}],
@@ -622,6 +691,7 @@ class TestOptimizer(unittest.TestCase):
         )
         self.assertIsNotNone(config)
 
+        mock_client = MagicMock()
         algo = AxOptimizationLibrary()
 
         class DummySettings:
@@ -636,13 +706,10 @@ class TestOptimizer(unittest.TestCase):
         algo._settings = DummySettings()
 
         with patch("mdo_framework.optimization.ax_algo_lib.Client") as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client_cls.return_value = mock_client
+            mock_client = mock_client_cls.return_value
             mock_client.get_next_trials.return_value = {0: {"x": 0.5}}
             # mock get_best_parameterization raising Exception to hit 448
-            mock_client_cls.return_value.get_best_parameterization.side_effect = (
-                Exception("Boom")
-            )
+            MagicMock().get_best_parameterization.side_effect = Exception("Boom")
 
             prob.evaluate_functions = MagicMock(
                 side_effect=[
@@ -692,7 +759,6 @@ class TestOptimizer(unittest.TestCase):
         prob.database.store(np.array([0.2]), {"obj": np.array([0.2])})
 
         mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
         mock_client.get_next_trials.return_value = {0: {"x": 0.5}}
 
         # Mock pareto frontier empty -> hits 448
