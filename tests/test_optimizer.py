@@ -599,8 +599,7 @@ class TestOptimizer(unittest.TestCase):
         from gemseo.core.mdo_functions.mdo_function import MDOFunction
         from mdo_framework.optimization.ax_algo_lib import (
             AxOptimizationLibrary,
-            build_outcome_constraints,
-            build_optimization_config,
+            AxConfigurationFactory,
         )
 
         ds = DesignSpace()
@@ -613,10 +612,10 @@ class TestOptimizer(unittest.TestCase):
 
         prob.objective = MDOFunction(obj, "obj", expr="x**2")
 
-        res = build_outcome_constraints([])
+        res = AxConfigurationFactory.build_outcome_constraints([])
         self.assertEqual(res, [])
 
-        config = build_optimization_config(
+        config = AxConfigurationFactory.build_optimization_config(
             [{"name": "a", "minimize": True}, {"name": "b", "minimize": False}],
             prob,
             [],

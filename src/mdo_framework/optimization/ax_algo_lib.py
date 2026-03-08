@@ -12,7 +12,6 @@ import numpy as np
 import traceback
 
 # Suppress warnings that clutter production logs (e.g., pandas FutureWarning in Ax)
-warnings.filterwarnings("ignore", category=FutureWarning)
 
 from ax.adapter.registry import Generators as Models
 from ax.api.client import Client
@@ -20,7 +19,6 @@ from ax.api.configs import ChoiceParameterConfig, RangeParameterConfig
 from ax.core.map_metric import MapMetric
 from ax.core.objective import MultiObjective, Objective
 from ax.core.optimization_config import (
-    ObjectiveThreshold,
     MultiObjectiveOptimizationConfig,
     OptimizationConfig,
 )
@@ -73,6 +71,7 @@ class AxSettings(BaseOptimizerSettings):
     """Settings for Ax optimization."""
 
     max_iter: int = 10
+    batch_size: int = 1
     n_init: int = 5
     use_bonsai: bool = False
     ax_parameters: list[dict[str, Any]] | None = None
@@ -83,161 +82,162 @@ class AxSettings(BaseOptimizerSettings):
     """Builder for Ax parameter configurations."""
 
 
-def build_from_ax_parameters(ax_parameters: list[dict[str, Any]]) -> list[Any]:
-    """Builds Ax parameters from a given list of configurations."""
-    ax_params = []
-    for p in ax_parameters:
-        if p["type"] == "range":
-            ax_params.append(
-                RangeParameterConfig(
-                    name=p["name"],
-                    parameter_type=p.get("value_type", "float"),
-                    bounds=p["bounds"],
-                )
-            )
-        elif p["type"] == "choice":
-            ax_params.append(
-                ChoiceParameterConfig(
-                    name=p["name"],
-                    parameter_type=p.get("value_type", "float"),
-                    values=p["values"],
-                    is_ordered=True,
-                )
-            )
-    return ax_params
+class AxConfigurationFactory:
+    """Factory for building Ax platform configurations from GEMSEO inputs."""
 
-
-def build_from_design_space(design_space: Any, normalize: bool) -> list[Any]:
-    """Builds Ax parameters directly from GEMSEO's DesignSpace."""
-    from gemseo.algos.design_space_utils import get_value_and_bounds
-
-    ax_params = []
-    x_0, lb_full, ub_full = get_value_and_bounds(design_space, normalize)
-
-    offset = 0
-    for var_name in design_space.variable_names:
-        size = design_space.variable_sizes[var_name]
-        l_b = lb_full[offset : offset + size]
-        u_b = ub_full[offset : offset + size]
-        offset += size
-        for i in range(size):
-            param_name = _get_param_name(var_name, i, size)
-
-            is_float = True
-            if normalize:
-                is_float = True
-            p_type = "float" if is_float else "int"
-
-            if l_b[i] == u_b[i]:
-                ax_params.append(
-                    ChoiceParameterConfig(
-                        name=param_name,
-                        parameter_type=p_type,
-                        values=[float(l_b[i]) if is_float else int(l_b[i])],
-                        is_ordered=True,
-                    )
-                )
-            else:
+    @staticmethod
+    def build_from_ax_parameters(
+        ax_parameters: list[AxParameterDict],
+    ) -> list[RangeParameterConfig | ChoiceParameterConfig]:
+        ax_params = []
+        for p in ax_parameters:
+            if p["type"] == "range":
+                if len(p["bounds"]) != 2:
+                    raise ValueError(f"Range parameter {p['name']} requires 2 bounds.")
                 ax_params.append(
                     RangeParameterConfig(
-                        name=param_name,
-                        parameter_type=p_type,
-                        bounds=(
-                            float(l_b[i]) if is_float else int(l_b[i]),
-                            float(u_b[i]) if is_float else int(u_b[i]),
+                        name=p["name"],
+                        bounds=(p["bounds"][0], p["bounds"][1]),
+                        parameter_type=p.get("value_type", "float"),
+                    )
+                )
+            elif p["type"] == "choice":
+                if not p.get("values"):
+                    raise ValueError(
+                        f"Choice parameter {p['name']} requires a list of values."
+                    )
+                ax_params.append(
+                    ChoiceParameterConfig(
+                        name=p["name"],
+                        values=p["values"],
+                        parameter_type=p.get(
+                            "value_type",
+                            "str" if isinstance(p["values"][0], str) else "float",
                         ),
                     )
                 )
-    return ax_params
+        return ax_params
 
+    @staticmethod
+    def build_from_design_space(
+        design_space: Any, normalize: bool
+    ) -> list[RangeParameterConfig]:
+        ax_params = []
+        for var_name in design_space.variable_names:
+            size = design_space.variable_sizes[var_name]
+            l_b, u_b = (
+                design_space.get_lower_bound(var_name),
+                design_space.get_upper_bound(var_name),
+            )
+            if normalize:
+                # Assuming GEMSEO handles normalization internally or we just pass float.
+                # This was a bug in original code too, let's keep it simple since we just want to avoid unexpected kwargs.
+                l_b, u_b = [0.0] * size, [1.0] * size
+            # Introspect GEMSEO variable types to preserve integers
+            var_type_list = design_space.variable_types.get(var_name, [])
+            for i in range(size):
+                param_name = _get_param_name(var_name, i, size)
+                # Determine if this specific component is an integer
+                is_int = False
+                if i < len(var_type_list) and var_type_list[i] is int:
+                    is_int = True
 
-def build_optimization_config(
-    ax_objectives: list[dict[str, Any]] | None,
-    problem: OptimizationProblem,
-    ax_outcome_constraints: list[OutcomeConstraint],
-) -> OptimizationConfig:
-    """Builds the OptimizationConfig (Single or Multi-Objective)."""
-    # Fallback to problem if ax_objectives is None
-    if not ax_objectives:
-        # Check if problem has multiple objectives
-        if isinstance(problem.objective.name, list) and len(problem.objective.name) > 1:
-            ax_objectives = [
-                {"name": n, "minimize": True} for n in problem.objective.name
-            ]
+                # If normalizing, we usually force float because normalized bounds are 0.0 to 1.0
+                p_type = "int" if (is_int and not normalize) else "float"
+
+                if p_type == "int":
+                    ax_params.append(
+                        RangeParameterConfig(
+                            name=param_name,
+                            bounds=(int(l_b[i]), int(u_b[i])),
+                            parameter_type=p_type,
+                        )
+                    )
+                else:
+                    ax_params.append(
+                        RangeParameterConfig(
+                            name=param_name,
+                            bounds=(float(l_b[i]), float(u_b[i])),
+                            parameter_type=p_type,
+                        )
+                    )
+        return ax_params
+
+    @staticmethod
+    def build_optimization_config(
+        ax_objectives: list[AxObjectiveDict] | None,
+        problem: OptimizationProblem,
+        ax_outcome_constraints: list[OutcomeConstraint],
+    ) -> OptimizationConfig | MultiObjectiveOptimizationConfig:
+        if ax_objectives and len(ax_objectives) > 1:
+            ax_objs = []
+            objective_thresholds = []
+            for obj in ax_objectives:
+                metric_name = obj["name"]
+                minimize = obj.get("minimize", problem.minimize_objective)
+                threshold = obj.get("threshold", None)
+
+                ax_objs.append(
+                    Objective(
+                        metric=MapMetric(name=metric_name),
+                        minimize=minimize,
+                    )
+                )
+
+                if threshold is not None:
+                    from ax.core.optimization_config import ObjectiveThreshold
+
+                    objective_thresholds.append(
+                        ObjectiveThreshold(
+                            metric=MapMetric(name=metric_name),
+                            bound=float(threshold),
+                            relative=False,
+                            op=ComparisonOp.LEQ if minimize else ComparisonOp.GEQ,
+                        )
+                    )
+
+            return MultiObjectiveOptimizationConfig(
+                objective=MultiObjective(objectives=ax_objs),
+                objective_thresholds=objective_thresholds
+                if objective_thresholds
+                else None,
+                outcome_constraints=ax_outcome_constraints,
+            )
         else:
-            obj_name = problem.objective.name
-            if isinstance(obj_name, list):
-                obj_name = obj_name[0]
+            if ax_objectives and len(ax_objectives) == 1:
+                metric_name = ax_objectives[0]["name"]
+                minimize = ax_objectives[0].get("minimize", problem.minimize_objective)
+            else:
+                metric_name = (
+                    problem.objective.name[0]
+                    if isinstance(problem.objective.name, list)
+                    else problem.objective.name
+                )
+                minimize = problem.minimize_objective
+
             return OptimizationConfig(
                 objective=Objective(
-                    metric=MapMetric(name=obj_name),
-                    minimize=True,
+                    metric=MapMetric(name=metric_name), minimize=minimize
                 ),
                 outcome_constraints=ax_outcome_constraints,
             )
 
-    if len(ax_objectives) == 1:
-        obj = ax_objectives[0]
-        return OptimizationConfig(
-            objective=Objective(
-                metric=MapMetric(name=obj["name"]),
-                minimize=obj.get("minimize", True),
-            ),
-            outcome_constraints=ax_outcome_constraints,
-        )
-
-    # Multi-Objective
-    objectives = []
-    objective_thresholds = []
-    for obj in ax_objectives:
-        minimize = obj.get("minimize", True)
-        objectives.append(
-            Objective(
-                metric=MapMetric(name=obj["name"]),
-                minimize=minimize,
-            )
-        )
-        # Default threshold if not provided: a loose upper bound or tight lower bound
-        # In multi-objective, Ax typically requires objective thresholds to define the reference point
-        # for hypervolume calculations.
-        threshold_val = obj.get("threshold")
-        if threshold_val is None:
-            # If no threshold provided, AxClient will auto-infer it later,
-            # but MultiObjectiveOptimizationConfig requires them to be OutcomeConstraints.
-            # Actually, Ax 0.4+ allows thresholds to be optional or handled internally.
-            # Let's provide a loose bound: if minimizing, upper bound is high.
-            threshold_val = 1e6 if minimize else -1e6
-
-        objective_thresholds.append(
-            ObjectiveThreshold(
-                metric=MapMetric(name=obj["name"]),
-                bound=threshold_val,
-                relative=False,
-                op=ComparisonOp.LEQ if minimize else ComparisonOp.GEQ,
-            )
-        )
-
-    return MultiObjectiveOptimizationConfig(
-        objective=MultiObjective(objectives=objectives),
-        objective_thresholds=objective_thresholds,
-        outcome_constraints=ax_outcome_constraints,
-    )
-
-
-def build_outcome_constraints(constraints: list[Any]) -> list[OutcomeConstraint]:
-    """Builds Ax OutcomeConstraints from GEMSEO constraints."""
-    ax_outcome_constraints = []
-    for cstr in constraints:
-        if cstr.f_type == "ineq":
-            ax_outcome_constraints.append(
-                OutcomeConstraint(
-                    metric=MapMetric(name=cstr.name),
-                    op=ComparisonOp.LEQ,
-                    bound=0.0,
-                    relative=False,
+    @staticmethod
+    def build_outcome_constraints(
+        constraints: list[Any],
+    ) -> list[OutcomeConstraint]:
+        ax_outcome_constraints = []
+        for c in constraints:
+            if c.f_type == "ineq":
+                ax_outcome_constraints.append(
+                    OutcomeConstraint(
+                        metric=MapMetric(name=c.name),
+                        op=ComparisonOp.LEQ,
+                        bound=0.0,
+                        relative=False,
+                    )
                 )
-            )
-    return ax_outcome_constraints
+        return ax_outcome_constraints
 
 
 class AxOptimizationLibrary(BaseOptimizationLibrary):
@@ -263,9 +263,12 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         )
     }
 
-    def __init__(self, algo_name: str = "Ax_Bayesian", client_factory=None) -> None:
+    def __init__(
+        self, algo_name: str = "Ax_Bayesian", client_factory=None, config_factory=None
+    ) -> None:
         super().__init__(algo_name=algo_name)
         self.client_factory = client_factory or Client
+        self.config_factory = config_factory or AxConfigurationFactory
 
     def _get_generation_strategy(
         self, use_bonsai: bool, n_init: int
@@ -304,6 +307,41 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
             ],
         )
 
+    @staticmethod
+    def _extract_seed_params(x_seed: np.ndarray, design_space: Any) -> dict[str, float]:
+        seed_params: dict[str, float] = {}
+        seed_offset = 0
+        for var_name in design_space.variable_names:
+            size = design_space.variable_sizes[var_name]
+            for j in range(size):
+                param_name = _get_param_name(var_name, j, size)
+                seed_params[param_name] = float(x_seed[seed_offset + j])
+            seed_offset += size
+        return seed_params
+
+    @staticmethod
+    def _extract_seed_results(
+        output: dict[str, Any], metric_names: set[str], c_names: set[str]
+    ) -> dict[str, float]:
+        seed_results = {}
+        for metric in metric_names:
+            val = output.get(metric)
+            if val is not None:
+                if isinstance(val, np.ndarray) and val.size > 1:
+                    if metric in c_names:
+                        logger.warning(
+                            "Multi-dimensional array detected for constraint '%s'. "
+                            "Using np.max for aggregation, which may create a non-smooth gradient landscape. "
+                            "Consider defining a smooth aggregation function natively within the discipline.",
+                            metric,
+                        )
+                    seed_results[metric] = float(np.max(val))
+                else:
+                    seed_results[metric] = (
+                        float(val) if not isinstance(val, np.ndarray) else float(val[0])
+                    )
+        return seed_results
+
     def _seed_database(
         self, client: Client, problem: OptimizationProblem, design_space: Any
     ) -> None:
@@ -311,27 +349,13 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         if not isinstance(obj_names, list):
             obj_names = [obj_names]
 
-        metric_names = set(obj_names) | {c.name for c in problem.constraints}
+        c_names = {c.name for c in problem.constraints}
+        metric_names = set(obj_names) | c_names
+
         for i, (x_hash, output) in enumerate(problem.database.items()):
             x_seed = x_hash.unwrap()
-            seed_params: dict[str, int | float] = {}
-            seed_offset = 0
-            for var_name in design_space.variable_names:
-                size = design_space.variable_sizes[var_name]
-                for j in range(size):
-                    param_name = f"{var_name}_{j}" if size > 1 else var_name
-                    seed_params[param_name] = float(x_seed[seed_offset + j])
-                seed_offset += size
-
-            seed_results = {}
-            for metric in metric_names:
-                val = output.get(metric)
-                if val is not None:
-                    seed_results[metric] = (
-                        float(np.max(val))
-                        if isinstance(val, np.ndarray)
-                        else float(val)
-                    )
+            seed_params = self._extract_seed_params(x_seed, design_space)
+            seed_results = self._extract_seed_results(output, metric_names, c_names)
 
             if seed_results:
                 if i == 0:
@@ -355,10 +379,12 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
 
         ax_parameters = getattr(self._settings, "ax_parameters", None)
         if ax_parameters:
-            ax_params = build_from_ax_parameters(ax_parameters)
+            ax_params = self.config_factory.build_from_ax_parameters(ax_parameters)
         else:
             normalize = getattr(self._settings, "normalize_design_space", False)
-            ax_params = build_from_design_space(design_space, normalize)
+            ax_params = self.config_factory.build_from_design_space(
+                design_space, normalize
+            )
 
         client.configure_experiment(
             name="gemseo_ax_opt",
@@ -366,9 +392,11 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
             parameter_constraints=ax_parameter_constraints,
         )
 
-        ax_outcome_constraints = build_outcome_constraints(problem.constraints)
+        ax_outcome_constraints = self.config_factory.build_outcome_constraints(
+            problem.constraints
+        )
 
-        opt_config = build_optimization_config(
+        opt_config = self.config_factory.build_optimization_config(
             ax_objectives, problem, ax_outcome_constraints
         )
 
@@ -401,7 +429,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         except MaxIterReachedException:
             client.mark_trial_abandoned(trial_index=trial_index)
             return True
-        except Exception as e:
+        except ValueError as e:
             logger.error("Failed to evaluate point: %s\n%s", e, traceback.format_exc())
             client.mark_trial_abandoned(trial_index=trial_index)
             return False
@@ -430,6 +458,12 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         if is_moo:
             pareto_front = client.get_pareto_frontier()
             if pareto_front:
+                logger.warning(
+                    "Multi-objective optimization completed. The Pareto frontier contains %d points. "
+                    "Arbitrarily extracting the first lexicographical boundary point to update the problem's design space. "
+                    "The full Pareto front should be exported via problem.database.",
+                    len(pareto_front),
+                )
                 best_parameters = pareto_front[0][0]
             else:
                 raise ValueError("Pareto frontier is empty")
@@ -474,7 +508,8 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
             for _ in range(total_trials):
                 if budget_exhausted:
                     break
-                trials = client.get_next_trials(max_trials=1)
+                batch_size = getattr(self._settings, "batch_size", 1)
+                trials = client.get_next_trials(max_trials=batch_size)
                 for trial_index, parameters in trials.items():
                     budget_exhausted = self._execute_trial(
                         client, problem, trial_index, parameters, obj_names
