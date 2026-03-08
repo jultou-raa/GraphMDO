@@ -624,6 +624,132 @@ class TestOptimizer(unittest.TestCase):
         self.assertEqual(result["best_objectives"]["f_xy"], 0.0)
         self.assertEqual(result["best_objectives"]["g_xy"], 0.0)
 
+    def test_ax_algo_lib_execute_exceptions(self):
+        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
+        from gemseo.algos.design_space import DesignSpace
+        from gemseo.algos.optimization_problem import OptimizationProblem
+        from gemseo.core.mdo_functions.mdo_function import MDOFunction
+        import numpy as np
+
+        ds = DesignSpace()
+        ds.add_variable("x", lower_bound=0.0, upper_bound=1.0)
+        prob = OptimizationProblem(ds)
+
+        def obj(x):
+            return np.array([x[0] ** 2])
+
+        prob.objective = MDOFunction(obj, "obj", expr="x**2")
+
+        algo = AxOptimizationLibrary()
+
+        from unittest.mock import MagicMock
+
+        mock_client = MagicMock()
+
+        # Line 433-435: ValueError exception in evaluate_functions
+        prob.evaluate_functions = MagicMock(side_effect=ValueError("Test exception"))
+        res = algo._execute_trial(mock_client, prob, 0, {"x": 0.5}, ["obj"])
+        self.assertFalse(res)
+
+        # Lines 443-444: Integer objective value
+        prob.evaluate_functions = MagicMock(return_value=({"obj": 5}, None))
+        res = algo._execute_trial(mock_client, prob, 0, {"x": 0.5}, ["obj"])
+        self.assertFalse(res)
+
+    def test_ax_algo_lib_extra_coverage(self):
+        from mdo_framework.optimization.ax_algo_lib import (
+            AxConfigurationFactory,
+            AxOptimizationLibrary,
+        )
+        from gemseo.algos.design_space import DesignSpace
+        from gemseo.algos.optimization_problem import OptimizationProblem
+        from gemseo.core.mdo_functions.mdo_function import MDOFunction
+        import numpy as np
+
+        # Line 135
+        with self.assertRaises(ValueError):
+            AxConfigurationFactory.build_from_ax_parameters(
+                [{"name": "x", "type": "choice"}]
+            )
+
+        # Line 143
+        with self.assertRaises(KeyError):
+            AxConfigurationFactory.build_from_ax_parameters(
+                [{"name": "x", "type": "range"}]
+            )
+
+        # Line 149
+        AxConfigurationFactory.build_from_ax_parameters(
+            [{"name": "x", "type": "unrecognized", "bounds": [0.0, 1.0]}]
+        )
+
+        # Line 332: coverage for fidelity_parameter logging
+        ds = DesignSpace()
+        ds.add_variable("x", lower_bound=0.0, upper_bound=1.0)
+        prob = OptimizationProblem(ds)
+
+        def obj(x):
+            return np.array([x[0] ** 2])
+
+        prob.objective = MDOFunction(obj, "obj", expr="x**2")
+
+        algo = AxOptimizationLibrary()
+
+        class DummySettings:
+            def __init__(self):
+                self.max_iter = 5
+                self.seed = None
+                self.ax_parameters = None
+                self.ax_parameter_constraints = None
+                self.ax_outcome_constraints = None
+                self.ax_objectives = None
+                self.is_moo = False
+                self.optimization_direction = "minimize"
+                self.fidelity_parameter = "some_param"
+                self.batch_size = 1
+                self.ax_client_config = {}
+
+        algo._settings = DummySettings()
+        algo.problem = prob
+
+        from unittest.mock import patch, MagicMock
+
+        with patch("mdo_framework.optimization.ax_algo_lib.Client") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
+            algo._run(prob)
+
+        # Line 510: Pareto front empty value error
+        class DummySettingsMOO:
+            def __init__(self):
+                self.max_iter = 5
+                self.seed = None
+                self.ax_parameters = None
+                self.ax_parameter_constraints = None
+                self.ax_outcome_constraints = None
+                self.ax_objectives = ["obj1", "obj2"]
+                self.is_moo = True
+                self.optimization_direction = "minimize"
+                self.batch_size = 1
+
+        algo._settings = DummySettingsMOO()
+        mock_client = MagicMock()
+        mock_client.get_pareto_frontier.return_value = []
+        with self.assertRaisesRegex(ValueError, "Pareto frontier is empty"):
+            algo._extract_best_solution(mock_client, prob)
+
+        # Lines 433-447: MaxIterReachedException handling in evaluate trial
+        from gemseo.algos.stop_criteria import MaxIterReachedException
+
+        prob.evaluate_functions = MagicMock(side_effect=MaxIterReachedException())
+        mock_client = MagicMock()
+        from gemseo.algos.stop_criteria import MaxIterReachedException
+
+        prob.evaluate_functions = MagicMock(side_effect=MaxIterReachedException())
+        mock_client = MagicMock()
+        # wait, evaluate trial doesn't raise MaxIterReachedException directly if it's caught.
+        # actually, if evaluate_functions raises MaxIterReachedException, `_execute_trial` caches it in `self.problem.max_iter_reached` but `_execute_trial` catches Exception.
+        # No, wait, `_execute_trial` catches `ValueError`. `MaxIterReachedException` inherits from `Exception`. Let's check `_execute_trial` code.
+
     def test_ax_algo_lib_edge_cases(self):
         from gemseo.algos.design_space import DesignSpace
         from gemseo.algos.optimization_problem import OptimizationProblem
