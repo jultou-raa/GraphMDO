@@ -326,6 +326,7 @@ class BayesianOptimizer:
 
             logger.error(f"Optimization failed: {e}\n{traceback.format_exc()}")
             return {
+                "error": f"Optimization failed: {str(e)}",
                 "best_parameters": None,
                 "best_objectives": None,
                 "history": [],
