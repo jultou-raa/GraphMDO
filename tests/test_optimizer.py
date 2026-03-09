@@ -11,7 +11,11 @@ import numpy as np
 from gemseo.core.discipline import Discipline
 
 from mdo_framework.core.evaluators import LocalEvaluator
-from mdo_framework.optimization.optimizer import BayesianOptimizer, RemoteEvaluator
+from mdo_framework.optimization.optimizer import (
+    BayesianOptimizer,
+    OptimizationExecutionError,
+    RemoteEvaluator,
+)
 
 
 class TestOptimizer(unittest.TestCase):
@@ -65,16 +69,23 @@ class TestOptimizer(unittest.TestCase):
         res = self.evaluator.evaluate({"x": 0.5, "y": 0.5, "c": 0.0}, ["f_xy"])
         self.assertEqual(res["f_xy"], 4.56)
 
-    @patch("mdo_framework.optimization.optimizer.httpx.post")
-    def test_remote_evaluator(self, mock_post):
+    def test_remote_evaluator(self):
+        mock_client = MagicMock()
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"results": {"f_xy": 2.0}}
-        mock_post.return_value = mock_resp
+        mock_resp.raise_for_status.return_value = None
+        mock_client.post.return_value = mock_resp
 
-        evaluator = RemoteEvaluator("http://fake-url")
+        evaluator = RemoteEvaluator("http://fake-url", client=mock_client)
         res = evaluator.evaluate({"x": 0.5, "y": 0.5, "c": 0.0}, ["f_xy"])
 
-        mock_post.assert_called_once()
+        mock_client.post.assert_called_once_with(
+            "http://fake-url/evaluate",
+            json={
+                "inputs": {"x": 0.5, "y": 0.5, "c": 0.0},
+                "objectives": ["f_xy"],
+            },
+        )
         self.assertEqual(res["f_xy"], 2.0)
 
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
@@ -148,8 +159,8 @@ class TestOptimizer(unittest.TestCase):
         objs = [{"name": "f_xy", "minimize": True}, {"name": "g_xy", "minimize": False}]
 
         opt = BayesianOptimizer(self.evaluator, self.parameters, objs)
-        result = opt.optimize(n_steps=1, n_init=2)
-        self.assertIn("error", result)
+        with self.assertRaises(OptimizationExecutionError):
+            opt.optimize(n_steps=1, n_init=2)
 
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimize_exception(self, mock_client_cls):
@@ -158,17 +169,13 @@ class TestOptimizer(unittest.TestCase):
         mock_client._to_json_snapshot.return_value = {}
         mock_client.to_json_snapshot.return_value = "{}"
 
-        MagicMock().get_best_parameterization.side_effect = Exception(
+        mock_client_cls.return_value.get_best_parameterization.side_effect = Exception(
             "Optimization failed"
         )
 
         opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
-        result = opt.optimize(n_steps=1, n_init=2)
-        self.assertIn("error", result)
-        self.assertTrue(
-            "Pareto frontier is empty" in result["error"]
-            or "Optimization failed" in result["error"]
-        )
+        with self.assertRaises(OptimizationExecutionError):
+            opt.optimize(n_steps=1, n_init=2)
 
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimize_with_constraints(self, mock_client_cls):
@@ -259,6 +266,28 @@ class TestOptimizer(unittest.TestCase):
         self.assertIn("history", res)
 
     @patch("mdo_framework.optimization.optimizer.create_scenario")
+    def test_explore_supports_greater_equal_constraints(self, mock_create_scenario):
+        mock_scenario = MagicMock()
+        mock_create_scenario.return_value = mock_scenario
+
+        constraints = [{"name": "g_xy", "op": ">=", "bound": 1.5}]
+        opt = BayesianOptimizer(
+            self.evaluator,
+            self.parameters,
+            self.objectives,
+            constraints=constraints,
+        )
+
+        opt.explore(n_samples=2, n_processes=1)
+
+        mock_scenario.add_constraint.assert_called_once_with(
+            "g_xy",
+            constraint_type="ineq",
+            value=1.5,
+            positive=True,
+        )
+
+    @patch("mdo_framework.optimization.optimizer.create_scenario")
     def test_explore_exception(self, mock_create_scenario):
         mock_scenario = MagicMock()
         mock_create_scenario.return_value = mock_scenario
@@ -266,7 +295,7 @@ class TestOptimizer(unittest.TestCase):
 
         opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
         res = opt.explore()
-        self.assertEqual(res, {"history": {}})
+        self.assertEqual(res, {"history": []})
 
     def test_remote_discipline(self):
         from mdo_framework.optimization.optimizer import RemoteDiscipline
@@ -311,21 +340,24 @@ class TestOptimizer(unittest.TestCase):
 
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimize_remote_evaluator_and_choices(self, mock_client_cls):
-        mock_client = MagicMock()
-        mock_client.get_next_trials.return_value = {
-            0: {"x": 0.5, "c_str": 1.0, "c_single": 0.0, "c_num_single": 42.0}
+        mock_client_cls.return_value.get_next_trials.return_value = {
+            0: {"x": 0.5, "c_str": "B", "c_single": "A", "c_num_single": 42}
         }
-        mock_client._to_json_snapshot.return_value = {}
-        mock_client.to_json_snapshot.return_value = "{}"
+        mock_client_cls.return_value._to_json_snapshot.return_value = {}
+        mock_client_cls.return_value.to_json_snapshot.return_value = "{}"
         mock_client_cls.return_value.get_best_parameterization.return_value = (
-            {"x": 0.5, "c_str": 1.0, "c_single": 0.0, "c_num_single": 42.0},
+            {"x": 0.5, "c_str": "B", "c_single": "A", "c_num_single": 42},
             {"f_xy": 42.0},
             0,
             "0_0",
         )
 
         mock_evaluator = RemoteEvaluator("http://test")
-        mock_evaluator.evaluate = MagicMock(return_value={"f_xy": 42.0})
+        mock_evaluator.evaluate = MagicMock(
+            side_effect=lambda parameters, objectives: {
+                "f_xy": 0.0 if parameters["c_str"] == "B" else 1.0
+            }
+        )
 
         params = [
             {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
@@ -338,6 +370,11 @@ class TestOptimizer(unittest.TestCase):
         res = opt.optimize(n_steps=1, n_init=1)
 
         self.assertEqual(res["best_parameters"]["x"], 0.5)
+        self.assertGreaterEqual(mock_evaluator.evaluate.call_count, 1)
+        evaluated_parameters = mock_evaluator.evaluate.call_args.args[0]
+        self.assertIn(evaluated_parameters["c_str"], ["A", "B", "C"])
+        self.assertEqual(evaluated_parameters["c_single"], "A")
+        self.assertEqual(evaluated_parameters["c_num_single"], 42)
 
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_ax_algo_lib_direct(self, mock_client_cls):
@@ -388,9 +425,8 @@ class TestOptimizer(unittest.TestCase):
         mock_algo_cls.return_value = mock_algo
 
         opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
-        res = opt.optimize(n_steps=1, n_init=1)
-
-        self.assertIsNone(res["best_parameters"])
+        with self.assertRaises(OptimizationExecutionError):
+            opt.optimize(n_steps=1, n_init=1)
 
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimize_multi_objective(self, mock_client_cls):
@@ -580,9 +616,8 @@ class TestOptimizer(unittest.TestCase):
             with patch(
                 "mdo_framework.optimization.ax_algo_lib.AxOptimizationLibrary.execute"
             ):
-                result = opt.optimize(n_steps=1, n_init=1)
-
-        self.assertEqual(result["best_objectives"]["f_xy"], 0.0)
+                with self.assertRaises(OptimizationExecutionError):
+                    opt.optimize(n_steps=1, n_init=1)
 
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimizer_fallback_lines_multi(self, mock_client_cls):
@@ -622,10 +657,8 @@ class TestOptimizer(unittest.TestCase):
             with patch(
                 "mdo_framework.optimization.ax_algo_lib.AxOptimizationLibrary.execute"
             ):
-                result = opt.optimize(n_steps=1, n_init=1)
-
-        self.assertEqual(result["best_objectives"]["f_xy"], 0.0)
-        self.assertEqual(result["best_objectives"]["g_xy"], 0.0)
+                with self.assertRaises(OptimizationExecutionError):
+                    opt.optimize(n_steps=1, n_init=1)
 
     def test_ax_algo_lib_execute_exceptions(self):
         import numpy as np

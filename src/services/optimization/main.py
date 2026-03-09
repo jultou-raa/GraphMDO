@@ -7,14 +7,21 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
-from mdo_framework.optimization.optimizer import BayesianOptimizer, RemoteEvaluator
+from mdo_framework.optimization.optimizer import (
+    BayesianOptimizer,
+    OptimizationConfigurationError,
+    OptimizationExecutionError,
+    RemoteEvaluationContractError,
+    RemoteEvaluationTransportError,
+    RemoteEvaluator,
+)
 
 
 def to_jsonable(obj: Any) -> Any:
@@ -61,7 +68,7 @@ class ObjectiveConfig(BaseModel):
 class ConstraintConfig(BaseModel):
     name: str
     bound: float
-    op: str = "<="  # "<=" or ">="
+    op: Literal["<=", ">="] = "<="
 
 
 class OptimizeRequest(BaseModel):
@@ -137,11 +144,18 @@ async def optimize(req: OptimizeRequest, request: Request):
         )
 
         # 6. Run Optimization (offload to thread to avoid blocking the event loop)
-        result = await asyncio.to_thread(
-            optimizer.optimize,
-            n_steps=req.n_steps,
-            n_init=req.n_init,
-        )
+        try:
+            result = await asyncio.to_thread(
+                optimizer.optimize,
+                n_steps=req.n_steps,
+                n_init=req.n_init,
+            )
+        except OptimizationConfigurationError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except (RemoteEvaluationTransportError, RemoteEvaluationContractError) as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        except OptimizationExecutionError as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
         # Convert tensor/numpy to lists for JSON
         return to_jsonable(
@@ -158,8 +172,12 @@ async def optimize(req: OptimizeRequest, request: Request):
                 "serialized_client": result.get("serialized_client"),
             },
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Optimization failed: {e}")
+    finally:
+        evaluator.close()
 
 
 @app.get("/health")

@@ -163,15 +163,51 @@ def _build_design_vector(
     parameters: Mapping[str, Any],
     design_space: DesignSpace,
     normalize: bool,
+    ax_parameters: list[AxParameterDict] | None = None,
 ) -> np.ndarray:
     """Maps Ax parameters back to a physical GEMSEO design vector."""
+
+    def get_parameter_definition(parameter_name: str) -> AxParameterDict | None:
+        if ax_parameters is None:
+            return None
+        return next(
+            (
+                parameter
+                for parameter in ax_parameters
+                if parameter["name"] == parameter_name
+            ),
+            None,
+        )
+
+    def encode_parameter_value(parameter_name: str, raw_value: Any) -> float:
+        parameter_definition = get_parameter_definition(parameter_name)
+        if parameter_definition is None:
+            return float(raw_value)
+        if parameter_definition["type"] == "choice":
+            values = parameter_definition.get("values")
+            if not values:
+                raise ValueError(
+                    f"Choice parameter {parameter_name} requires a list of values."
+                )
+            if len(values) == 1:
+                return 0.0
+            if raw_value in values:
+                return float(values.index(raw_value))
+            return float(raw_value)
+        if parameter_definition.get("value_type") == "int":
+            return float(int(raw_value))
+        return float(raw_value)
+
     design_vector = np.zeros(design_space.dimension)
     offset = 0
     for var_name in design_space.variable_names:
         size = design_space.variable_sizes[var_name]
         for index in range(size):
             param_name = _get_param_name(var_name, index, size)
-            design_vector[offset + index] = float(parameters[param_name])
+            design_vector[offset + index] = encode_parameter_value(
+                param_name,
+                parameters[param_name],
+            )
         offset += size
     if normalize:
         return design_space.unnormalize_vect(design_vector)
@@ -403,6 +439,21 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         super().__init__(algo_name=algo_name)
         self.client_factory = client_factory or Client
         self.trial_history: list[dict[str, dict[str, Any]]] = []
+        self.best_objectives: dict[str, float] | None = None
+
+    @staticmethod
+    def _normalize_best_metrics(metrics: Any) -> dict[str, float]:
+        if isinstance(metrics, tuple):
+            metrics = metrics[0]
+        if not isinstance(metrics, Mapping):
+            return {}
+
+        normalized_metrics: dict[str, float] = {}
+        for metric_name, metric_value in metrics.items():
+            if isinstance(metric_value, tuple):
+                metric_value = metric_value[0]
+            normalized_metrics[metric_name] = float(metric_value)
+        return normalized_metrics
 
     def _get_generation_strategy(
         self, use_bonsai: bool, n_init: int
@@ -443,15 +494,44 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
 
     @staticmethod
     def _extract_seed_params(
-        x_seed: np.ndarray, design_space: DesignSpace
-    ) -> dict[str, float]:
-        seed_params: dict[str, float] = {}
+        x_seed: np.ndarray,
+        design_space: DesignSpace,
+        ax_parameters: list[AxParameterDict] | None = None,
+    ) -> dict[str, Any]:
+        def decode_parameter_value(parameter_name: str, value: float) -> Any:
+            if ax_parameters is None:
+                return float(value)
+            parameter_definition = next(
+                (
+                    parameter
+                    for parameter in ax_parameters
+                    if parameter["name"] == parameter_name
+                ),
+                None,
+            )
+            if parameter_definition is None:
+                return float(value)
+            if parameter_definition["type"] == "choice":
+                choices = parameter_definition.get("values")
+                if not choices:
+                    raise ValueError(
+                        f"Choice parameter {parameter_name} requires a list of values."
+                    )
+                return choices[int(round(float(value)))]
+            if parameter_definition.get("value_type") == "int":
+                return int(round(float(value)))
+            return float(value)
+
+        seed_params: dict[str, Any] = {}
         seed_offset = 0
         for var_name in design_space.variable_names:
             size = design_space.variable_sizes[var_name]
             for j in range(size):
                 param_name = _get_param_name(var_name, j, size)
-                seed_params[param_name] = float(x_seed[seed_offset + j])
+                seed_params[param_name] = decode_parameter_value(
+                    param_name,
+                    x_seed[seed_offset + j],
+                )
             seed_offset += size
         return seed_params
 
@@ -484,6 +564,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         problem: OptimizationProblem,
         design_space: DesignSpace,
         normalize: bool,
+        ax_parameters: list[AxParameterDict] | None = None,
     ) -> None:
         obj_names = _normalize_name_list(problem.objective.name)
 
@@ -494,7 +575,11 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
             x_seed = x_hash.unwrap()
             if normalize:
                 x_seed = design_space.normalize_vect(x_seed)
-            seed_params = self._extract_seed_params(x_seed, design_space)
+            seed_params = self._extract_seed_params(
+                x_seed,
+                design_space,
+                ax_parameters,
+            )
             seed_results = self._extract_seed_results(output, metric_names, c_names)
 
             if seed_results:
@@ -557,9 +642,10 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         parameters: Mapping[str, Any],
         metric_names: set[str],
         normalize: bool = False,
+        ax_parameters: list[AxParameterDict] | None = None,
     ) -> bool:
         design_space = problem.design_space
-        x = _build_design_vector(parameters, design_space, normalize)
+        x = _build_design_vector(parameters, design_space, normalize, ax_parameters)
 
         try:
             out_dict, _ = problem.evaluate_functions(
@@ -616,6 +702,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         problem: OptimizationProblem,
         is_moo: bool,
         normalize: bool = False,
+        ax_parameters: list[AxParameterDict] | None = None,
     ) -> None:
         design_space = problem.design_space
 
@@ -629,12 +716,19 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                     len(pareto_front),
                 )
                 best_parameters = pareto_front[0][0]
+                self.best_objectives = self._normalize_best_metrics(pareto_front[0][1])
             else:
                 raise ValueError("Pareto frontier is empty")
         else:
-            best_parameters, *_ = client.get_best_parameterization()
+            best_parameters, best_metrics, *_ = client.get_best_parameterization()
+            self.best_objectives = self._normalize_best_metrics(best_metrics)
 
-        x_opt = _build_design_vector(best_parameters, design_space, normalize)
+        x_opt = _build_design_vector(
+            best_parameters,
+            design_space,
+            normalize,
+            ax_parameters,
+        )
 
         try:
             problem.evaluate_functions(x_opt, design_vector_is_normalized=False)
@@ -646,8 +740,35 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
             )
         design_space.set_current_value(x_opt)
 
-    def _record_last_point(self, problem: OptimizationProblem) -> None:
+    def _record_last_point(
+        self,
+        problem: OptimizationProblem,
+        ax_parameters: list[AxParameterDict] | None = None,
+    ) -> None:
         """Appends the latest GEMSEO point when Ax produces no executable trial."""
+
+        def decode_parameter_value(parameter_name: str, value: Any) -> Any:
+            if ax_parameters is None:
+                return value
+            parameter_definition = next(
+                (
+                    parameter
+                    for parameter in ax_parameters
+                    if parameter["name"] == parameter_name
+                ),
+                None,
+            )
+            if parameter_definition is None:
+                return value
+            if parameter_definition["type"] == "choice":
+                choices = parameter_definition.get("values")
+                if not choices:
+                    return value
+                return choices[int(round(float(value)))]
+            if parameter_definition.get("value_type") == "int":
+                return int(round(float(value)))
+            return float(value)
+
         try:
             last_point = problem.history.last_point
         except ValueError:
@@ -659,7 +780,10 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         for var_name in design_space.variable_names:
             size = design_space.variable_sizes[var_name]
             values = last_point.design[offset : offset + size]
-            parameters[var_name] = values[0] if size == 1 else values.tolist()
+            parameters[var_name] = decode_parameter_value(
+                var_name,
+                values[0] if size == 1 else values.tolist(),
+            )
             offset += size
 
         objectives = {}
@@ -684,6 +808,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=FutureWarning, module=r"ax\.")
             self.trial_history = []
+            self.best_objectives = None
 
             if not isinstance(problem, OptimizationProblem):
                 raise TypeError(
@@ -698,6 +823,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                 problem,
                 problem.design_space,
                 normalize=settings.normalize_design_space,
+                ax_parameters=settings.ax_parameters,
             )
 
             budget_exhausted = False
@@ -722,17 +848,19 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                         parameters,
                         metric_names,
                         normalize=settings.normalize_design_space,
+                        ax_parameters=settings.ax_parameters,
                     )
                     if budget_exhausted:
                         break
                 if not executed_trial:
-                    self._record_last_point(problem)
+                    self._record_last_point(problem, settings.ax_parameters)
 
             self._extract_best_solution(
                 configured.client,
                 problem,
                 configured.is_moo,
                 normalize=settings.normalize_design_space,
+                ax_parameters=settings.ax_parameters,
             )
 
         if budget_exhausted:

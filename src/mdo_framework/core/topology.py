@@ -41,21 +41,26 @@ class TopologicalAnalyzer:
             1. A list of independent design variables (inputs without any tool source).
             2. A list of tool configurations required for execution.
         """
-        visited_tools: set[str] = set()
-        required_inputs: set[str] = set()
+        visited_tool_names: set[str] = set()
+        visited_tools: list[str] = []
+        required_input_names: set[str] = set()
+        required_inputs: list[str] = []
 
         def _traverse(var_name: str):
             sources = self.var_sources.get(var_name, [])
 
             # If there are no sources, this is an independent input (design variable)
             if not sources:
-                required_inputs.add(var_name)
+                if var_name not in required_input_names:
+                    required_input_names.add(var_name)
+                    required_inputs.append(var_name)
                 return
 
             # Traverse upstream through tools producing this variable
             for source_tool in sources:
-                if source_tool not in visited_tools:
-                    visited_tools.add(source_tool)
+                if source_tool not in visited_tool_names:
+                    visited_tool_names.add(source_tool)
+                    visited_tools.append(source_tool)
                     tool_data = self.tools[source_tool]
                     for input_var in tool_data.get("inputs", []):
                         _traverse(input_var)
@@ -66,10 +71,9 @@ class TopologicalAnalyzer:
             _traverse(out)
 
         # Map variable names back to definitions to maintain schema structure format
-        design_vars = list(required_inputs)
         req_tools = [self.tools[t] for t in visited_tools]
 
-        return design_vars, req_tools
+        return required_inputs, req_tools
 
     def extract_parameters(self, design_vars: list[str]) -> list[dict[str, Any]]:
         """Formats design variables into Ax-Platform ready parameter structures."""
