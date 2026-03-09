@@ -35,6 +35,12 @@ from gemseo.algos.opt.base_optimizer_settings import BaseOptimizerSettings
 from gemseo.algos.optimization_problem import OptimizationProblem
 from gemseo.algos.stop_criteria import MaxIterReachedException
 
+from mdo_framework.optimization.parameter_codec import (
+    build_parameter_lookup,
+    decode_parameter_value,
+    encode_parameter_value,
+)
+
 logger = logging.getLogger(__name__)
 
 # Exceptions that indicate a recoverable evaluation failure.
@@ -166,37 +172,7 @@ def _build_design_vector(
     ax_parameters: list[AxParameterDict] | None = None,
 ) -> np.ndarray:
     """Maps Ax parameters back to a physical GEMSEO design vector."""
-
-    def get_parameter_definition(parameter_name: str) -> AxParameterDict | None:
-        if ax_parameters is None:
-            return None
-        return next(
-            (
-                parameter
-                for parameter in ax_parameters
-                if parameter["name"] == parameter_name
-            ),
-            None,
-        )
-
-    def encode_parameter_value(parameter_name: str, raw_value: Any) -> float:
-        parameter_definition = get_parameter_definition(parameter_name)
-        if parameter_definition is None:
-            return float(raw_value)
-        if parameter_definition["type"] == "choice":
-            values = parameter_definition.get("values")
-            if not values:
-                raise ValueError(
-                    f"Choice parameter {parameter_name} requires a list of values."
-                )
-            if len(values) == 1:
-                return 0.0
-            if raw_value in values:
-                return float(values.index(raw_value))
-            return float(raw_value)
-        if parameter_definition.get("value_type") == "int":
-            return float(int(raw_value))
-        return float(raw_value)
+    parameter_lookup = build_parameter_lookup(ax_parameters)
 
     design_vector = np.zeros(design_space.dimension)
     offset = 0
@@ -205,7 +181,7 @@ def _build_design_vector(
         for index in range(size):
             param_name = _get_param_name(var_name, index, size)
             design_vector[offset + index] = encode_parameter_value(
-                param_name,
+                parameter_lookup.get(param_name),
                 parameters[param_name],
             )
         offset += size
@@ -498,30 +474,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         design_space: DesignSpace,
         ax_parameters: list[AxParameterDict] | None = None,
     ) -> dict[str, Any]:
-        def decode_parameter_value(parameter_name: str, value: float) -> Any:
-            if ax_parameters is None:
-                return float(value)
-            parameter_definition = next(
-                (
-                    parameter
-                    for parameter in ax_parameters
-                    if parameter["name"] == parameter_name
-                ),
-                None,
-            )
-            if parameter_definition is None:
-                return float(value)
-            if parameter_definition["type"] == "choice":
-                choices = parameter_definition.get("values")
-                if not choices:
-                    raise ValueError(
-                        f"Choice parameter {parameter_name} requires a list of values."
-                    )
-                return choices[int(round(float(value)))]
-            if parameter_definition.get("value_type") == "int":
-                return int(round(float(value)))
-            return float(value)
-
+        parameter_lookup = build_parameter_lookup(ax_parameters)
         seed_params: dict[str, Any] = {}
         seed_offset = 0
         for var_name in design_space.variable_names:
@@ -529,7 +482,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
             for j in range(size):
                 param_name = _get_param_name(var_name, j, size)
                 seed_params[param_name] = decode_parameter_value(
-                    param_name,
+                    parameter_lookup.get(param_name),
                     x_seed[seed_offset + j],
                 )
             seed_offset += size
@@ -746,28 +699,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         ax_parameters: list[AxParameterDict] | None = None,
     ) -> None:
         """Appends the latest GEMSEO point when Ax produces no executable trial."""
-
-        def decode_parameter_value(parameter_name: str, value: Any) -> Any:
-            if ax_parameters is None:
-                return value
-            parameter_definition = next(
-                (
-                    parameter
-                    for parameter in ax_parameters
-                    if parameter["name"] == parameter_name
-                ),
-                None,
-            )
-            if parameter_definition is None:
-                return value
-            if parameter_definition["type"] == "choice":
-                choices = parameter_definition.get("values")
-                if not choices:
-                    return value
-                return choices[int(round(float(value)))]
-            if parameter_definition.get("value_type") == "int":
-                return int(round(float(value)))
-            return float(value)
+        parameter_lookup = build_parameter_lookup(ax_parameters)
 
         try:
             last_point = problem.history.last_point
@@ -781,7 +713,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
             size = design_space.variable_sizes[var_name]
             values = last_point.design[offset : offset + size]
             parameters[var_name] = decode_parameter_value(
-                var_name,
+                parameter_lookup.get(var_name),
                 values[0] if size == 1 else values.tolist(),
             )
             offset += size

@@ -16,6 +16,12 @@ from mdo_framework.optimization.optimizer import (
     OptimizationExecutionError,
     RemoteEvaluator,
 )
+from mdo_framework.optimization.parameter_codec import (
+    ParameterDefinitionError,
+    ParameterValueError,
+    decode_parameter_value,
+    encode_parameter_value,
+)
 
 
 class TestOptimizer(unittest.TestCase):
@@ -294,8 +300,19 @@ class TestOptimizer(unittest.TestCase):
         mock_scenario.execute.side_effect = ValueError("DOE failed")
 
         opt = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
-        res = opt.explore()
-        self.assertEqual(res, {"history": []})
+        with self.assertRaises(OptimizationExecutionError):
+            opt.explore()
+
+    def test_explore_invalid_constraint_operator(self):
+        opt = BayesianOptimizer(
+            self.evaluator,
+            self.parameters,
+            self.objectives,
+            constraints=[{"name": "g_xy", "op": "==", "bound": 0.0}],
+        )
+
+        with self.assertRaises(ValueError):
+            opt.explore()
 
     def test_remote_discipline(self):
         from mdo_framework.optimization.optimizer import RemoteDiscipline
@@ -375,6 +392,96 @@ class TestOptimizer(unittest.TestCase):
         self.assertIn(evaluated_parameters["c_str"], ["A", "B", "C"])
         self.assertEqual(evaluated_parameters["c_single"], "A")
         self.assertEqual(evaluated_parameters["c_num_single"], 42)
+
+    def test_parameter_codec_round_trip_variants(self):
+        cases = [
+            ({"name": "x", "type": "range", "value_type": "float"}, 1.25, 1.25),
+            ({"name": "n", "type": "range", "value_type": "int"}, 1.6, 2),
+            ({"name": "c_str", "type": "choice", "values": ["A", "B"]}, "B", "B"),
+            ({"name": "c_bool", "type": "choice", "values": [False, True]}, True, True),
+            ({"name": "c_single", "type": "choice", "values": [42]}, 42, 42),
+        ]
+
+        for parameter, input_value, expected_value in cases:
+            encoded_value = encode_parameter_value(parameter, input_value)
+            decoded_value = decode_parameter_value(parameter, encoded_value)
+            self.assertEqual(decoded_value, expected_value)
+
+    def test_parameter_codec_rejects_invalid_choice_definition(self):
+        parameter = {"name": "c_bad", "type": "choice", "values": []}
+
+        with self.assertRaises(ParameterDefinitionError):
+            encode_parameter_value(parameter, 0)
+
+        with self.assertRaises(ParameterDefinitionError):
+            decode_parameter_value(parameter, 0)
+
+    def test_parameter_codec_rejects_invalid_choice_index(self):
+        parameter = {"name": "c_str", "type": "choice", "values": ["A", "B"]}
+
+        with self.assertRaises(ParameterValueError):
+            decode_parameter_value(parameter, 3)
+
+    def test_parameter_codec_does_not_match_bool_to_int_choice(self):
+        parameter = {"name": "c_int", "type": "choice", "values": [0, 1]}
+
+        with self.assertRaises(ParameterValueError):
+            encode_parameter_value(parameter, True)
+
+    def test_ax_algo_lib_record_last_point_decodes_parameters(self):
+        from gemseo.algos.design_space import DesignSpace
+
+        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
+
+        design_space = DesignSpace()
+        design_space.add_variable("x", lower_bound=0.0, upper_bound=1.0)
+        design_space.add_variable(
+            "c_str",
+            lower_bound=0,
+            upper_bound=2,
+            type_="integer",
+        )
+        design_space.add_variable(
+            "count",
+            lower_bound=0,
+            upper_bound=5,
+            type_="integer",
+        )
+
+        class DummyLastPoint:
+            design = np.array([0.5, 1.0, 2.0])
+            objective = np.array([10.0])
+            constraints = {"g": -1.0}
+
+        problem = MagicMock()
+        problem.design_space = design_space
+        problem.history.last_point = DummyLastPoint()
+        problem.objective.name = "obj"
+
+        algo = AxOptimizationLibrary()
+        algo._record_last_point(
+            problem,
+            [
+                {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
+                {"name": "c_str", "type": "choice", "values": ["A", "B", "C"]},
+                {
+                    "name": "count",
+                    "type": "range",
+                    "bounds": [0, 5],
+                    "value_type": "int",
+                },
+            ],
+        )
+
+        self.assertEqual(
+            algo.trial_history,
+            [
+                {
+                    "parameters": {"x": 0.5, "c_str": "B", "count": 2},
+                    "objectives": {"obj": 10.0, "g": -1.0},
+                }
+            ],
+        )
 
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_ax_algo_lib_direct(self, mock_client_cls):

@@ -24,13 +24,13 @@ MockGraphManager = gm_patcher.start()
 mock_gm_instance = MockGraphManager.return_value
 
 # Now safe to import
-from services.execution.main import app as execution_app
-from services.graph.main import app as graph_app
-from services.optimization.main import app as optimization_app
 from mdo_framework.optimization.optimizer import (
     OptimizationConfigurationError,
     RemoteEvaluationTransportError,
 )
+from services.execution.main import app as execution_app
+from services.graph.main import app as graph_app
+from services.optimization.main import app as optimization_app
 
 
 class TestGraphService(unittest.TestCase):

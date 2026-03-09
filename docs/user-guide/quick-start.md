@@ -5,7 +5,7 @@ This guide will walk you through setting up a simple Multidisciplinary Design Op
 ## Prerequisites
 
 - Python 3.12+
--  installed (recommended)
+- `uv` installed (recommended)
 - Docker (for FalkorDB and microservices)
 
 ## Define a Problem Graph

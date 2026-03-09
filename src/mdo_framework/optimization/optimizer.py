@@ -15,6 +15,17 @@ from gemseo.algos.design_space import DesignSpace
 from gemseo.core.discipline import Discipline
 
 import mdo_framework.optimization.ax_algo_lib  # noqa: F401
+from mdo_framework.optimization.parameter_codec import (
+    ParameterDefinitionError,
+    ParameterValueError,
+    build_parameter_lookup,
+)
+from mdo_framework.optimization.parameter_codec import (
+    coerce_scalar as _shared_coerce_scalar,
+)
+from mdo_framework.optimization.parameter_codec import (
+    decode_parameter_value as _shared_decode_parameter_value,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,46 +59,17 @@ def _get_optimization_history(
 
 
 def _coerce_scalar(value: Any) -> Any:
-    if isinstance(value, np.ndarray):
-        if value.size == 1:
-            return value.item()
-        return value.tolist()
-    if isinstance(value, np.generic):
-        return value.item()
-    return value
+    return _shared_coerce_scalar(value)
 
 
 def _decode_parameter_value(parameter: dict[str, Any], raw_value: Any) -> ScalarValue:
     """Decode a GEMSEO design-space value to the user-facing parameter value."""
-    value = _coerce_scalar(raw_value)
-    if parameter["type"] == "choice":
-        choices = parameter.get("values", [])
-        if not choices:
-            raise OptimizationConfigurationError(
-                f"Choice parameter {parameter['name']} requires at least one value."
-            )
-        if isinstance(value, (str, bool)) and value in choices:
-            return value
-        try:
-            index = int(round(float(value)))
-        except (TypeError, ValueError) as exc:
-            raise OptimizationExecutionError(
-                f"Cannot decode choice parameter {parameter['name']} from value {value!r}."
-            ) from exc
-        if not 0 <= index < len(choices):
-            raise OptimizationExecutionError(
-                f"Choice index {index} is out of bounds for parameter {parameter['name']}."
-            )
-        return choices[index]
-
-    value_type = parameter.get("value_type", "float")
-    if value_type == "int" and not isinstance(value, bool):
-        return int(round(float(value)))
-    if isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(
-        value, bool
-    ):
-        return float(value)
-    return value
+    try:
+        return _shared_decode_parameter_value(parameter, raw_value)
+    except ParameterDefinitionError as exc:
+        raise OptimizationConfigurationError(str(exc)) from exc
+    except ParameterValueError as exc:
+        raise OptimizationExecutionError(str(exc)) from exc
 
 
 def _build_design_space(parameters: list[dict[str, Any]]) -> DesignSpace:
@@ -308,14 +290,14 @@ class RemoteDiscipline(Discipline):
         self.evaluator = evaluator
         if inputs and isinstance(inputs[0], str):
             self.input_names = list(inputs)
-            self.parameter_definitions = {
-                name: {"name": name, "type": "range", "value_type": "float"}
-                for name in self.input_names
-            }
+            self.parameter_definitions = build_parameter_lookup(
+                [
+                    {"name": name, "type": "range", "value_type": "float"}
+                    for name in self.input_names
+                ]
+            )
         else:
-            self.parameter_definitions = {
-                parameter["name"]: parameter for parameter in inputs
-            }
+            self.parameter_definitions = build_parameter_lookup(inputs)
             self.input_names = [parameter["name"] for parameter in inputs]
         self.output_names = outputs
         self.input_grammar.update_from_names(self.input_names)
@@ -375,6 +357,53 @@ class BayesianOptimizer:
         self.use_bonsai = use_bonsai
         self.parameter_constraints = parameter_constraints
 
+    def _build_output_names(self) -> list[str]:
+        return [objective["name"] for objective in self.objectives] + [
+            constraint["name"] for constraint in self.constraints
+        ]
+
+    def _build_discipline(self) -> Discipline:
+        if hasattr(self.evaluator, "problem"):
+            return self.evaluator.problem
+        return RemoteDiscipline(
+            self.evaluator,
+            self.parameters,
+            self._build_output_names(),
+        )
+
+    def _prepare_scenario_context(self) -> tuple[Discipline, DesignSpace, list[str]]:
+        return (
+            self._build_discipline(),
+            _build_design_space(self.parameters),
+            [objective["name"] for objective in self.objectives],
+        )
+
+    def _create_scenario(
+        self,
+        *,
+        discipline: Discipline,
+        design_space: DesignSpace,
+        objective_names: list[str],
+        scenario_type: str | None = None,
+        maximize_objective: bool | list[bool] | None = None,
+        name: str | None = None,
+    ) -> Any:
+        scenario_kwargs: dict[str, Any] = {
+            "formulation_name": "MDF",
+            "objective_name": objective_names,
+            "design_space": design_space,
+        }
+        if scenario_type is not None:
+            scenario_kwargs["scenario_type"] = scenario_type
+        if maximize_objective is not None:
+            scenario_kwargs["maximize_objective"] = maximize_objective
+        if name is not None:
+            scenario_kwargs["name"] = name
+
+        scenario = create_scenario([discipline], **scenario_kwargs)
+        _add_constraints_to_scenario(scenario, self.constraints)
+        return scenario
+
     def explore(self, n_samples: int = 10, n_processes: int = 1) -> dict[str, Any]:
         """Runs a Design of Experiments (DOE) exploration using GEMSEO DOEScenario.
 
@@ -385,28 +414,14 @@ class BayesianOptimizer:
         Returns:
             A dictionary containing the exploration history.
         """
-        if hasattr(self.evaluator, "problem"):
-            discipline = self.evaluator.problem
-        else:
-            outputs = [o["name"] for o in self.objectives] + [
-                c["name"] for c in self.constraints
-            ]
-            discipline = RemoteDiscipline(self.evaluator, self.parameters, outputs)
+        discipline, design_space, objective_names = self._prepare_scenario_context()
 
-        design_space = _build_design_space(self.parameters)
-
-        # We pass multiple objective names to GEMSEO
-        objective_names = [o["name"] for o in self.objectives]
-
-        scenario = create_scenario(
-            [discipline],
-            formulation_name="MDF",
-            objective_name=objective_names,
+        scenario = self._create_scenario(
+            discipline=discipline,
             design_space=design_space,
+            objective_names=objective_names,
             scenario_type="DOE",
         )
-
-        _add_constraints_to_scenario(scenario, self.constraints)
 
         try:
             scenario.execute(
@@ -429,26 +444,22 @@ class BayesianOptimizer:
             return {
                 "history": scenario.to_dataset(),
             }
+        except (
+            OptimizationConfigurationError,
+            OptimizationExecutionError,
+            RemoteEvaluationContractError,
+            RemoteEvaluationTransportError,
+        ):
+            raise
         except Exception as e:
             logger.error(f"Exploration failed: {e}")
-            return {"history": []}
+            raise OptimizationExecutionError(f"Exploration failed: {str(e)}") from e
 
     def optimize(self, n_steps: int = 5, n_init: int = 5) -> dict[str, Any]:
         """Runs the optimization loop using GEMSEO MDOScenario."""
         if self.fidelity_parameter is not None:
             warnings.warn("fidelity_parameter is ignored.")
-        if hasattr(self.evaluator, "problem"):
-            discipline = self.evaluator.problem
-        else:
-            outputs = [o["name"] for o in self.objectives] + [
-                c["name"] for c in self.constraints
-            ]
-            discipline = RemoteDiscipline(self.evaluator, self.parameters, outputs)
-
-        design_space = _build_design_space(self.parameters)
-
-        # Build Scenario
-        objective_names = [o["name"] for o in self.objectives]
+        discipline, design_space, objective_names = self._prepare_scenario_context()
 
         # Explicitly configure maximize_objective per user request.
         # GEMSEO maximize_objective expects a single boolean or a list of booleans
@@ -456,16 +467,13 @@ class BayesianOptimizer:
         if len(maximize_objective) == 1:
             maximize_objective = maximize_objective[0]
 
-        scenario = create_scenario(
-            [discipline],
-            formulation_name="MDF",
-            objective_name=objective_names,
-            maximize_objective=maximize_objective,
+        scenario = self._create_scenario(
+            discipline=discipline,
             design_space=design_space,
+            objective_names=objective_names,
+            maximize_objective=maximize_objective,
             name="MDOScenario_Ax",
         )
-
-        _add_constraints_to_scenario(scenario, self.constraints)
 
         algo = None
         try:

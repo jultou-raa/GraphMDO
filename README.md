@@ -7,14 +7,14 @@
 [![Deploy Documentation](https://github.com/jultou-raa/GraphMDO/actions/workflows/docs.yml/badge.svg)](https://github.com/jultou-raa/GraphMDO/actions/workflows/docs.yml)
 [![codecov](https://codecov.io/gh/jultou-raa/GraphMDO/graph/badge.svg?token=f2150ayDNv)](https://codecov.io/gh/jultou-raa/GraphMDO)
 
-GraphMDO bridges data engineering and MDO. It extracts topological data (solvers, variables, fidelity levels) to form an oriented graph, specifically utilizing GEMSEO for semantic formulation and execution. Execution is handled natively by GEMSEO and the Surrogate Modeling Toolbox (SMT), driven by constrained Bayesian optimization (ax-platform) or evolutionary algorithms (pymoo). The primary operational goal is to isolate and maximize a single target performance metric while strictly holding all other performance metrics constant.
+GraphMDO bridges data engineering and MDO. It extracts topological data (solvers, variables, fidelity levels) to form an oriented graph, specifically utilizing GEMSEO for semantic formulation and execution. Execution is handled natively by GEMSEO and the Surrogate Modeling Toolbox (SMT), with optimization workflows currently centered on constrained Bayesian optimization (ax-platform) and DOE exploration through GEMSEO. The framework supports single- and multi-objective optimization over graph-derived design variables with explicit inequality constraints.
 
 ## Key Features
 
 *   **Native Graph Formulation**: Uses [FalkorDB](https://falkordb.com/) to store problem definitions (variables, tools, dependencies) as a property graph.
 *   **Dynamic Problem Construction**: Automatically translates the graph topology into an executable [GEMSEO](https://gemseo.readthedocs.io/) MDO formulation.
 *   **Multi-Fidelity Surrogates**: Integrates [SMT](https://smt.readthedocs.io/en/latest/) for Co-Kriging and other surrogate models.
-*   **Constrained Bayesian Optimization**: Leverages [Ax Platform](https://ax.dev/) for robust optimization, easily managing GEMSEO multi-objective targets, fidelity, and discrete/continuous parameters.
+*   **Constrained Bayesian Optimization**: Leverages [Ax Platform](https://ax.dev/) for robust optimization, supporting GEMSEO objectives, inequality constraints, and mixed discrete/continuous parameters.
 
 ## Project Architecture
 
@@ -196,6 +196,7 @@ optimizer = BayesianOptimizer(
 
 result = optimizer.optimize(n_steps=10)
 print(f"Best Result: {result['best_objectives']} at {result['best_parameters']}")
+print(f"Trial History: {result['history']}")
 ```
 
 ### 3. Running Tests
