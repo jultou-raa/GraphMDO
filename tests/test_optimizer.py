@@ -471,6 +471,7 @@ class TestOptimizer(unittest.TestCase):
         from gemseo.algos.design_space import DesignSpace
         from gemseo.algos.optimization_problem import OptimizationProblem
         from gemseo.core.mdo_functions.mdo_function import MDOFunction
+
         from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
 
         ds = DesignSpace()
@@ -625,11 +626,12 @@ class TestOptimizer(unittest.TestCase):
         self.assertEqual(result["best_objectives"]["g_xy"], 0.0)
 
     def test_ax_algo_lib_execute_exceptions(self):
-        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
+        import numpy as np
         from gemseo.algos.design_space import DesignSpace
         from gemseo.algos.optimization_problem import OptimizationProblem
         from gemseo.core.mdo_functions.mdo_function import MDOFunction
-        import numpy as np
+
+        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
 
         ds = DesignSpace()
         ds.add_variable("x", lower_bound=0.0, upper_bound=1.0)
@@ -657,29 +659,26 @@ class TestOptimizer(unittest.TestCase):
         self.assertFalse(res)
 
     def test_ax_algo_lib_extra_coverage(self):
-        from mdo_framework.optimization.ax_algo_lib import (
-            AxConfigurationFactory,
-            AxOptimizationLibrary,
-        )
+        import numpy as np
         from gemseo.algos.design_space import DesignSpace
         from gemseo.algos.optimization_problem import OptimizationProblem
         from gemseo.core.mdo_functions.mdo_function import MDOFunction
-        import numpy as np
+
+        from mdo_framework.optimization.ax_algo_lib import (
+            AxOptimizationLibrary,
+            build_from_ax_parameters,
+        )
 
         # Line 135
         with self.assertRaises(ValueError):
-            AxConfigurationFactory.build_from_ax_parameters(
-                [{"name": "x", "type": "choice"}]
-            )
+            build_from_ax_parameters([{"name": "x", "type": "choice"}])
 
         # Line 143
-        with self.assertRaises(KeyError):
-            AxConfigurationFactory.build_from_ax_parameters(
-                [{"name": "x", "type": "range"}]
-            )
+        with self.assertRaises(ValueError):
+            build_from_ax_parameters([{"name": "x", "type": "range"}])
 
         # Line 149
-        AxConfigurationFactory.build_from_ax_parameters(
+        build_from_ax_parameters(
             [{"name": "x", "type": "unrecognized", "bounds": [0.0, 1.0]}]
         )
 
@@ -712,7 +711,7 @@ class TestOptimizer(unittest.TestCase):
         algo._settings = DummySettings()
         algo.problem = prob
 
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         with patch("mdo_framework.optimization.ax_algo_lib.Client") as mock_client_cls:
             mock_client = mock_client_cls.return_value
@@ -732,6 +731,7 @@ class TestOptimizer(unittest.TestCase):
                 self.batch_size = 1
 
         algo._settings = DummySettingsMOO()
+        algo._is_moo = True
         mock_client = MagicMock()
         mock_client.get_pareto_frontier.return_value = []
         with self.assertRaisesRegex(ValueError, "Pareto frontier is empty"):
@@ -754,9 +754,12 @@ class TestOptimizer(unittest.TestCase):
         from gemseo.algos.design_space import DesignSpace
         from gemseo.algos.optimization_problem import OptimizationProblem
         from gemseo.core.mdo_functions.mdo_function import MDOFunction
+
         from mdo_framework.optimization.ax_algo_lib import (
             AxOptimizationLibrary,
-            AxConfigurationFactory,
+            build_from_ax_parameters,
+            build_optimization_config,
+            build_outcome_constraints,
         )
 
         ds = DesignSpace()
@@ -769,25 +772,21 @@ class TestOptimizer(unittest.TestCase):
 
         prob.objective = MDOFunction(obj, "obj", expr="x**2")
 
-        res = AxConfigurationFactory.build_outcome_constraints([])
+        res = build_outcome_constraints([])
 
         # Test ax parameters exceptions
         with self.assertRaises(ValueError):
-            AxConfigurationFactory.build_from_ax_parameters(
-                [{"name": "x", "type": "range", "bounds": [0.0]}]
-            )
+            build_from_ax_parameters([{"name": "x", "type": "range", "bounds": [0.0]}])
         with self.assertRaises(ValueError):
-            AxConfigurationFactory.build_from_ax_parameters(
-                [{"name": "x", "type": "choice", "values": []}]
-            )
+            build_from_ax_parameters([{"name": "x", "type": "choice", "values": []}])
 
         # Test range fallback (no value type provided)
-        res = AxConfigurationFactory.build_from_ax_parameters(
+        res = build_from_ax_parameters(
             [{"name": "x", "type": "range", "bounds": [0.0, 1.0]}]
         )
         self.assertEqual(res[0].parameter_type, "float")
 
-        res = AxConfigurationFactory.build_from_ax_parameters(
+        res = build_from_ax_parameters(
             [{"name": "x", "type": "choice", "values": [1.0]}]
         )
         self.assertEqual(res[0].parameter_type, "float")
@@ -810,7 +809,7 @@ class TestOptimizer(unittest.TestCase):
         )
         algo._extract_best_solution(mock_client, prob)
 
-        config = AxConfigurationFactory.build_optimization_config(
+        config = build_optimization_config(
             [{"name": "a", "minimize": True}, {"name": "b", "minimize": False}],
             prob,
             [],
@@ -853,9 +852,10 @@ class TestOptimizer(unittest.TestCase):
     def test_ax_algo_lib_loop_edge_cases(self, mock_client_cls):
         from gemseo.algos.design_space import DesignSpace
         from gemseo.algos.optimization_problem import OptimizationProblem
-        from gemseo.core.mdo_functions.mdo_function import MDOFunction
-        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
         from gemseo.algos.stop_criteria import MaxIterReachedException
+        from gemseo.core.mdo_functions.mdo_function import MDOFunction
+
+        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
 
         ds = DesignSpace()
         ds.add_variable("x", lower_bound=0.0, upper_bound=1.0)
