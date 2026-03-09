@@ -8,7 +8,7 @@ import logging
 import traceback
 import warnings
 from collections.abc import Mapping
-from typing import Any, NamedTuple, TypedDict
+from typing import Any, Literal, NamedTuple, TypedDict, cast
 
 import numpy as np
 from ax.adapter.registry import Generators as Models
@@ -73,6 +73,121 @@ def _normalize_name_list(names: str | list[str]) -> list[str]:
     return names if isinstance(names, list) else [names]
 
 
+def _get_expected_parameter_names(design_space: DesignSpace) -> list[str]:
+    """Builds the parameter names expected by the design-space mapping."""
+    parameter_names = []
+    for var_name in design_space.variable_names:
+        size = design_space.variable_sizes[var_name]
+        for index in range(size):
+            parameter_names.append(_get_param_name(var_name, index, size))
+    return parameter_names
+
+
+def _get_range_parameter_type(parameter: AxParameterDict) -> Literal["float", "int"]:
+    """Validates the range parameter type accepted by Ax."""
+    parameter_type = parameter.get("value_type", "float")
+    if parameter_type not in {"float", "int"}:
+        raise ValueError(
+            f"Range parameter {parameter['name']} requires value_type 'float' or 'int'."
+        )
+    return cast(Literal["float", "int"], parameter_type)
+
+
+def _infer_choice_parameter_type(
+    values: list[Any],
+) -> Literal["float", "int", "str", "bool"]:
+    """Infers the Ax choice parameter type from the first value."""
+    first_value = values[0]
+    if isinstance(first_value, bool):
+        return "bool"
+    if isinstance(first_value, str):
+        return "str"
+    if isinstance(first_value, int):
+        return "int"
+    return "float"
+
+
+def _get_choice_parameter_type(
+    parameter: AxParameterDict,
+    values: list[Any],
+) -> Literal["float", "int", "str", "bool"]:
+    """Validates the choice parameter type accepted by Ax."""
+    parameter_type = parameter.get("value_type", _infer_choice_parameter_type(values))
+    if parameter_type not in {"float", "int", "str", "bool"}:
+        raise ValueError(
+            f"Choice parameter {parameter['name']} requires value_type 'float', 'int', 'str' or 'bool'."
+        )
+    return cast(Literal["float", "int", "str", "bool"], parameter_type)
+
+
+def _validate_custom_ax_parameters(
+    ax_parameters: list[AxParameterDict],
+    design_space: DesignSpace,
+    normalize: bool,
+) -> None:
+    """Rejects custom parameter layouts that the design-space mapper cannot honor."""
+    if normalize:
+        raise ValueError(
+            "normalize_design_space=True is only supported when Ax parameters are "
+            "derived from the GEMSEO design space."
+        )
+
+    actual_names = [parameter["name"] for parameter in ax_parameters]
+    duplicate_names = sorted(
+        {name for name in actual_names if actual_names.count(name) > 1}
+    )
+    if duplicate_names:
+        raise ValueError(
+            "Duplicate Ax parameter names are not supported: "
+            f"{', '.join(duplicate_names)}."
+        )
+
+    expected_names = set(_get_expected_parameter_names(design_space))
+    actual_name_set = set(actual_names)
+    missing_names = sorted(expected_names - actual_name_set)
+    extra_names = sorted(actual_name_set - expected_names)
+    if missing_names or extra_names:
+        details = []
+        if missing_names:
+            details.append(f"missing {missing_names}")
+        if extra_names:
+            details.append(f"unexpected {extra_names}")
+        raise ValueError(
+            "Custom ax_parameters must match the GEMSEO design-space parameter names; "
+            + "; ".join(details)
+            + "."
+        )
+
+
+def _build_design_vector(
+    parameters: Mapping[str, Any],
+    design_space: DesignSpace,
+    normalize: bool,
+) -> np.ndarray:
+    """Maps Ax parameters back to a physical GEMSEO design vector."""
+    design_vector = np.zeros(design_space.dimension)
+    offset = 0
+    for var_name in design_space.variable_names:
+        size = design_space.variable_sizes[var_name]
+        for index in range(size):
+            param_name = _get_param_name(var_name, index, size)
+            design_vector[offset + index] = float(parameters[param_name])
+        offset += size
+    if normalize:
+        return design_space.unnormalize_vect(design_vector)
+    return design_vector
+
+
+def _require_ax_settings(settings: BaseOptimizerSettings | None) -> "AxSettings":
+    """Returns Ax settings or fails fast with an explicit runtime error."""
+    if not isinstance(settings, AxSettings):
+        raise TypeError(
+            "AxOptimizationLibrary expects AxSettings in self._settings, "
+            f"got {type(settings).__name__}."
+        )
+    return settings
+
+
 class _ConfiguredClient(NamedTuple):
     """Bundles a configured Ax Client with derived optimization metadata."""
 
@@ -108,7 +223,7 @@ def build_from_ax_parameters(
                 RangeParameterConfig(
                     name=p["name"],
                     bounds=(bounds[0], bounds[1]),
-                    parameter_type=p.get("value_type", "float"),  # type: ignore[arg-type]
+                    parameter_type=_get_range_parameter_type(p),
                 )
             )
         elif p["type"] == "choice":
@@ -121,11 +236,13 @@ def build_from_ax_parameters(
                 ChoiceParameterConfig(
                     name=p["name"],
                     values=values,
-                    parameter_type=p.get(  # type: ignore[arg-type]
-                        "value_type",
-                        "str" if isinstance(values[0], str) else "float",
-                    ),
+                    parameter_type=_get_choice_parameter_type(p, values),
+                    is_ordered=p.get("is_ordered"),
                 )
+            )
+        else:
+            raise ValueError(
+                f"Unsupported Ax parameter type for {p['name']}: {p['type']}."
             )
     return ax_params
 
@@ -252,6 +369,10 @@ def build_outcome_constraints(
                     relative=False,
                 )
             )
+            continue
+        raise ValueError(
+            f"Unsupported constraint type for {c.name}: {c.f_type}. Only 'ineq' is supported."
+        )
     return ax_outcome_constraints
 
 
@@ -383,8 +504,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                 client.complete_trial(trial_index=trial_idx, raw_data=seed_results)
 
     def _configure_client(self, problem: OptimizationProblem) -> _ConfiguredClient:
-        assert isinstance(self._settings, AxSettings)
-        settings = self._settings
+        settings = _require_ax_settings(self._settings)
 
         design_space = problem.design_space
         gs = self._get_generation_strategy(settings.use_bonsai, settings.n_init)
@@ -392,6 +512,11 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         client = self.client_factory()
 
         if settings.ax_parameters:
+            _validate_custom_ax_parameters(
+                settings.ax_parameters,
+                design_space,
+                settings.normalize_design_space,
+            )
             ax_params = build_from_ax_parameters(settings.ax_parameters)
         else:
             ax_params = build_from_design_space(
@@ -424,16 +549,10 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         trial_index: int,
         parameters: Mapping[str, Any],
         metric_names: set[str],
+        normalize: bool = False,
     ) -> bool:
         design_space = problem.design_space
-        x = np.zeros(design_space.dimension)
-        offset = 0
-        for var_name in design_space.variable_names:
-            size = design_space.variable_sizes[var_name]
-            for i in range(size):
-                param_name = _get_param_name(var_name, i, size)
-                x[offset + i] = parameters[param_name]
-            offset += size
+        x = _build_design_vector(parameters, design_space, normalize)
 
         try:
             out_dict, _ = problem.evaluate_functions(
@@ -478,7 +597,11 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         return False
 
     def _extract_best_solution(
-        self, client: Client, problem: OptimizationProblem, is_moo: bool
+        self,
+        client: Client,
+        problem: OptimizationProblem,
+        is_moo: bool,
+        normalize: bool = False,
     ) -> None:
         design_space = problem.design_space
 
@@ -497,14 +620,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         else:
             best_parameters, *_ = client.get_best_parameterization()
 
-        x_opt = np.zeros(design_space.dimension)
-        offset = 0
-        for var_name in design_space.variable_names:
-            size = design_space.variable_sizes[var_name]
-            for i in range(size):
-                param_name = _get_param_name(var_name, i, size)
-                x_opt[offset + i] = best_parameters[param_name]
-            offset += size
+        x_opt = _build_design_vector(best_parameters, design_space, normalize)
 
         try:
             problem.evaluate_functions(x_opt, design_vector_is_normalized=False)
@@ -526,8 +642,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                     f"Expected OptimizationProblem, got {type(problem).__name__}"
                 )
 
-            assert isinstance(self._settings, AxSettings)
-            settings = self._settings
+            settings = _require_ax_settings(self._settings)
 
             configured = self._configure_client(problem)
             self._seed_database(
@@ -556,11 +671,17 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                         trial_index,
                         parameters,
                         metric_names,
+                        normalize=settings.normalize_design_space,
                     )
                     if budget_exhausted:
                         break
 
-            self._extract_best_solution(configured.client, problem, configured.is_moo)
+            self._extract_best_solution(
+                configured.client,
+                problem,
+                configured.is_moo,
+                normalize=settings.normalize_design_space,
+            )
 
         if budget_exhausted:
             return "Optimization stopped early: evaluation budget exhausted.", 0

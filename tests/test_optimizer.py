@@ -679,9 +679,10 @@ class TestOptimizer(unittest.TestCase):
             build_from_ax_parameters([{"name": "x", "type": "range"}])
 
         # Line 149
-        build_from_ax_parameters(
-            [{"name": "x", "type": "unrecognized", "bounds": [0.0, 1.0]}]
-        )
+        with self.assertRaises(ValueError):
+            build_from_ax_parameters(
+                [{"name": "x", "type": "unrecognized", "bounds": [0.0, 1.0]}]
+            )
 
         # Line 332: coverage for fidelity_parameter logging
         ds = DesignSpace()
@@ -759,6 +760,13 @@ class TestOptimizer(unittest.TestCase):
         prob.objective = MDOFunction(obj, "obj", expr="x**2")
 
         res = build_outcome_constraints([])
+        self.assertEqual(res, [])
+
+        unsupported_constraint = MagicMock()
+        unsupported_constraint.name = "h"
+        unsupported_constraint.f_type = "eq"
+        with self.assertRaises(ValueError):
+            build_outcome_constraints([unsupported_constraint])
 
         # Test ax parameters exceptions
         with self.assertRaises(ValueError):
@@ -776,6 +784,11 @@ class TestOptimizer(unittest.TestCase):
             [{"name": "x", "type": "choice", "values": [1.0]}]
         )
         self.assertEqual(res[0].parameter_type, "float")
+
+        res = build_from_ax_parameters(
+            [{"name": "flag", "type": "choice", "values": [True, False]}]
+        )
+        self.assertEqual(res[0].parameter_type, "bool")
 
         # Test MaxIterReachedException in execute trial
         from gemseo.algos.stop_criteria import MaxIterReachedException
@@ -833,6 +846,94 @@ class TestOptimizer(unittest.TestCase):
                 algo.execute(prob, max_iter=1, n_init=1)
             except Exception:
                 pass
+
+    def test_ax_algo_lib_normalized_design_vectors_are_unnormalized(self):
+        from gemseo.algos.design_space import DesignSpace
+        from gemseo.algos.optimization_problem import OptimizationProblem
+        from gemseo.core.mdo_functions.mdo_function import MDOFunction
+
+        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
+
+        ds = DesignSpace()
+        ds.add_variable("x", lower_bound=0.0, upper_bound=10.0)
+        prob = OptimizationProblem(ds)
+
+        def obj(x):
+            return np.array([x[0] ** 2])
+
+        prob.objective = MDOFunction(obj, "obj", expr="x**2")
+        prob.evaluate_functions = MagicMock(
+            return_value=({"obj": np.array([25.0])}, None)
+        )
+
+        algo = AxOptimizationLibrary()
+        client = MagicMock()
+
+        algo._execute_trial(client, prob, 0, {"x": 0.5}, {"obj"}, normalize=True)
+
+        evaluated_x = prob.evaluate_functions.call_args.args[0]
+        self.assertEqual(float(evaluated_x[0]), 5.0)
+
+        prob.evaluate_functions.reset_mock(return_value=True)
+        client.get_best_parameterization.return_value = (
+            {"x": 0.5},
+            ({"obj": 25.0}, None),
+            0,
+            "arm_0",
+        )
+
+        algo._extract_best_solution(client, prob, False, normalize=True)
+
+        optimum_x = prob.evaluate_functions.call_args.args[0]
+        self.assertEqual(float(optimum_x[0]), 5.0)
+        self.assertEqual(float(prob.design_space.get_current_value()[0]), 5.0)
+
+    def test_ax_algo_lib_rejects_incompatible_custom_ax_parameters(self):
+        from gemseo.algos.design_space import DesignSpace
+        from gemseo.algos.optimization_problem import OptimizationProblem
+        from gemseo.core.mdo_functions.mdo_function import MDOFunction
+
+        from mdo_framework.optimization.ax_algo_lib import (
+            AxOptimizationLibrary,
+            AxSettings,
+        )
+
+        ds = DesignSpace()
+        ds.add_variable("x", lower_bound=0.0, upper_bound=1.0)
+        prob = OptimizationProblem(ds)
+
+        def obj(x):
+            return np.array([x[0] ** 2])
+
+        prob.objective = MDOFunction(obj, "obj", expr="x**2")
+
+        algo = AxOptimizationLibrary()
+
+        algo._settings = AxSettings(
+            max_iter=1,
+            n_init=1,
+            batch_size=1,
+            use_bonsai=False,
+            ax_parameters=[{"name": "custom_x", "type": "range", "bounds": [0.0, 1.0]}],
+            ax_objectives=[{"name": "obj", "minimize": True}],
+            normalize_design_space=False,
+        )
+
+        with self.assertRaises(ValueError):
+            algo._configure_client(prob)
+
+        algo._settings = AxSettings(
+            max_iter=1,
+            n_init=1,
+            batch_size=1,
+            use_bonsai=False,
+            ax_parameters=[{"name": "x", "type": "range", "bounds": [0.0, 1.0]}],
+            ax_objectives=[{"name": "obj", "minimize": True}],
+            normalize_design_space=True,
+        )
+
+        with self.assertRaises(ValueError):
+            algo._configure_client(prob)
 
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_ax_algo_lib_loop_edge_cases(self, mock_client_cls):
