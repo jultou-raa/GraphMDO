@@ -203,6 +203,7 @@ cython_debug/
 
 # VS Code settings
 .vscode/
+.agents/
 
 # Marimo
 marimo/_static/

@@ -24,6 +24,10 @@ MockGraphManager = gm_patcher.start()
 mock_gm_instance = MockGraphManager.return_value
 
 # Now safe to import
+from mdo_framework.optimization.optimizer import (
+    OptimizationConfigurationError,
+    RemoteEvaluationTransportError,
+)
 from services.execution.main import app as execution_app
 from services.graph.main import app as graph_app
 from services.optimization.main import app as optimization_app
@@ -1137,6 +1141,50 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
             response = client.post("/optimize", json=payload)
             self.assertEqual(response.status_code, 500)
             self.assertIn("Optimization failed", response.json()["detail"])
+
+    @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
+    async def test_optimize_exception_mapping(self, mock_resolve):
+        mock_client = AsyncMock()
+        optimization_app.state.client = mock_client
+        client = TestClient(optimization_app)
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "variables": [
+                {
+                    "name": "x",
+                    "param_type": "range",
+                    "lower": 0.0,
+                    "upper": 1.0,
+                    "value_type": "float",
+                },
+            ],
+            "tools": [{"name": "ToolA", "inputs": ["x"], "outputs": ["f_xy"]}],
+        }
+        mock_client.get.return_value = mock_resp
+        mock_resolve.return_value = (["x"], [])
+
+        payload = {
+            "objectives": [{"name": "f_xy"}],
+            "n_steps": 1,
+            "n_init": 1,
+        }
+
+        with patch(
+            "mdo_framework.optimization.optimizer.BayesianOptimizer.optimize",
+            side_effect=OptimizationConfigurationError("invalid optimization config"),
+        ):
+            response = client.post("/optimize", json=payload)
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("invalid optimization config", response.json()["detail"])
+
+        with patch(
+            "mdo_framework.optimization.optimizer.BayesianOptimizer.optimize",
+            side_effect=RemoteEvaluationTransportError("execution service unavailable"),
+        ):
+            response = client.post("/optimize", json=payload)
+            self.assertEqual(response.status_code, 502)
+            self.assertIn("execution service unavailable", response.json()["detail"])
 
 
 if __name__ == "__main__":

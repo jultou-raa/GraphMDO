@@ -49,9 +49,9 @@ class TestTopologicalAnalyzer(unittest.TestCase):
         design_vars, req_tools = analyzer.resolve_dependencies(["out1"])
 
         # Unused inputs/tools should not be here
-        self.assertCountEqual(design_vars, ["x", "y"])
+        self.assertEqual(design_vars, ["x", "y"])
         tool_names = [t["name"] for t in req_tools]
-        self.assertCountEqual(tool_names, ["Tool1", "Tool2"])
+        self.assertEqual(tool_names, ["Tool2", "Tool1"])
 
     def test_extract_parameters(self):
         analyzer = TopologicalAnalyzer(self.schema)

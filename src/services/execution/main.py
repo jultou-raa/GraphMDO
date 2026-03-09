@@ -64,7 +64,7 @@ def build_and_init(
 
 def execute_problem(
     prob,
-    inputs: dict[str, float],
+    inputs: dict[str, bool | int | float | str],
     objectives: list[str],
 ) -> dict[str, Any]:
     import numpy as np
@@ -91,6 +91,7 @@ def to_float(val: Any) -> float:
 # --- Tool Registry ---
 ToolRegistry: TypeAlias = dict[str, Callable[..., Any]]
 TOOL_REGISTRY: ToolRegistry = {"Paraboloid": paraboloid_func}
+InputScalar: TypeAlias = bool | int | float | str
 
 
 # --- Domain Models ---
@@ -312,12 +313,12 @@ async def get_problem_pool(request: Request) -> ProblemPool:
 
 # --- Request Models ---
 class EvaluateRequest(BaseModel):
-    inputs: dict[str, float]
+    inputs: dict[str, InputScalar]
     objectives: list[str] = Field(..., min_length=1)
 
     @field_validator("inputs")
     @classmethod
-    def validate_inputs(cls, v: dict[str, float]) -> dict[str, float]:
+    def validate_inputs(cls, v: dict[str, InputScalar]) -> dict[str, InputScalar]:
         if not v:
             raise ValueError("At least one input is required.")
         if len(v) > 100:
