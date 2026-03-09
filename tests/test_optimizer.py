@@ -7,18 +7,24 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import unittest
 from unittest.mock import MagicMock, patch
 
+import httpx
 import numpy as np
 from gemseo.core.discipline import Discipline
 
 from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.optimization.optimizer import (
     BayesianOptimizer,
+    OptimizationConfigurationError,
     OptimizationExecutionError,
+    RemoteEvaluationContractError,
     RemoteEvaluator,
+    RemoteEvaluationTransportError,
 )
 from mdo_framework.optimization.parameter_codec import (
     ParameterDefinitionError,
     ParameterValueError,
+    build_parameter_lookup,
+    coerce_scalar,
     decode_parameter_value,
     encode_parameter_value,
 )
@@ -1132,3 +1138,325 @@ class TestOptimizer(unittest.TestCase):
             algo.execute(prob, max_iter=1, n_init=1)
         except Exception:
             pass
+
+    def test_local_evaluator_missing_output_raises_key_error(self):
+        mock_problem = MagicMock()
+        mock_problem.execute.return_value = {"g_xy": np.array([0.0])}
+        evaluator = LocalEvaluator(mock_problem)
+
+        with self.assertRaises(KeyError):
+            evaluator.evaluate({"x": 0.5, "y": 0.5, "c": 0.0}, ["f_xy"])
+
+    def test_parameter_codec_helper_branches(self):
+        self.assertEqual(coerce_scalar(np.array([1.5])), 1.5)
+        self.assertEqual(coerce_scalar(np.array([1.0, 2.0])), [1.0, 2.0])
+        self.assertEqual(coerce_scalar(np.float64(2.5)), 2.5)
+        self.assertEqual(build_parameter_lookup(None), {})
+        self.assertEqual(
+            decode_parameter_value({"name": "label", "type": "range"}, "A"), "A"
+        )
+
+    def test_build_design_space_rejects_invalid_parameters(self):
+        from mdo_framework.optimization.optimizer import _build_design_space
+
+        with self.assertRaises(OptimizationConfigurationError):
+            _build_design_space([{"name": "x", "type": "range", "bounds": [0.0]}])
+
+        with self.assertRaises(OptimizationConfigurationError):
+            _build_design_space([{"name": "x", "type": "categorical"}])
+
+        with self.assertRaises(OptimizationConfigurationError):
+            _build_design_space([{"name": "x", "type": "choice", "values": []}])
+
+        design_space = _build_design_space(
+            [
+                {
+                    "name": "count",
+                    "type": "range",
+                    "bounds": [0, 5],
+                    "value_type": "int",
+                }
+            ]
+        )
+        self.assertEqual(float(design_space.get_lower_bound("count")[0]), 0.0)
+        self.assertEqual(float(design_space.get_upper_bound("count")[0]), 5.0)
+
+    def test_optimizer_helpers_cover_fallbacks_and_wrapped_errors(self):
+        from mdo_framework.optimization.optimizer import (
+            _decode_parameter_value,
+            _extract_best_objectives,
+            _get_optimization_history,
+        )
+
+        class BrokenOptimum:
+            @property
+            def objective(self):
+                raise RuntimeError("no objective")
+
+        with self.assertRaises(OptimizationConfigurationError):
+            _decode_parameter_value({"name": "c", "type": "choice", "values": []}, 0)
+
+        with self.assertRaises(OptimizationExecutionError):
+            _decode_parameter_value(
+                {"name": "c", "type": "choice", "values": ["A"]}, True
+            )
+
+        objectives = _extract_best_objectives(
+            BrokenOptimum(),
+            ["f_xy", "g_xy"],
+            fallback_metrics={"f_xy": 1.0, "g_xy": 2.0},
+        )
+        self.assertEqual(objectives, {"f_xy": 1.0, "g_xy": 2.0})
+
+        self.assertEqual(_get_optimization_history(None, object()), [])
+        self.assertEqual(
+            _get_optimization_history(None, MagicMock(trial_history=[{"ok": True}])),
+            [{"ok": True}],
+        )
+
+    def test_extract_best_objectives_raises_when_fallback_is_incomplete(self):
+        from mdo_framework.optimization.optimizer import _extract_best_objectives
+
+        class PartialOptimum:
+            objective = np.array([1.0])
+
+        with self.assertRaises(OptimizationExecutionError):
+            _extract_best_objectives(
+                PartialOptimum(),
+                ["f_xy", "g_xy"],
+                fallback_metrics={"f_xy": 1.0},
+            )
+
+    def test_parameter_codec_rejects_non_numeric_choice_decode(self):
+        with self.assertRaises(ParameterValueError):
+            decode_parameter_value(
+                {"name": "c_str", "type": "choice", "values": ["A", "B"]},
+                "invalid-index",
+            )
+
+    def test_remote_evaluator_transport_errors(self):
+        url = "http://fake-url/evaluate"
+        request = httpx.Request("POST", url)
+
+        timeout_client = MagicMock()
+        timeout_client.post.side_effect = httpx.TimeoutException("slow")
+        with self.assertRaises(RemoteEvaluationTransportError):
+            RemoteEvaluator("http://fake-url", client=timeout_client).evaluate(
+                {}, ["f_xy"]
+            )
+
+        server_error_client = MagicMock()
+        server_error = httpx.HTTPStatusError(
+            "server error",
+            request=request,
+            response=httpx.Response(503, request=request),
+        )
+        server_error_client.post.return_value = MagicMock(
+            raise_for_status=MagicMock(side_effect=server_error)
+        )
+        with self.assertRaises(RemoteEvaluationTransportError):
+            RemoteEvaluator("http://fake-url", client=server_error_client).evaluate(
+                {}, ["f_xy"]
+            )
+
+        request_error_client = MagicMock()
+        request_error_client.post.side_effect = httpx.RequestError(
+            "network down", request=request
+        )
+        with self.assertRaises(RemoteEvaluationTransportError):
+            RemoteEvaluator("http://fake-url", client=request_error_client).evaluate(
+                {}, ["f_xy"]
+            )
+
+    def test_remote_evaluator_contract_errors(self):
+        url = "http://fake-url/evaluate"
+        request = httpx.Request("POST", url)
+
+        client_400 = MagicMock()
+        client_400.post.return_value = MagicMock(
+            raise_for_status=MagicMock(
+                side_effect=httpx.HTTPStatusError(
+                    "bad request",
+                    request=request,
+                    response=httpx.Response(400, request=request),
+                )
+            )
+        )
+        with self.assertRaises(RemoteEvaluationContractError):
+            RemoteEvaluator("http://fake-url", client=client_400).evaluate({}, ["f_xy"])
+
+        invalid_json_client = MagicMock()
+        invalid_json_response = MagicMock()
+        invalid_json_response.raise_for_status.return_value = None
+        invalid_json_response.json.side_effect = ValueError("bad json")
+        invalid_json_client.post.return_value = invalid_json_response
+        with self.assertRaises(RemoteEvaluationContractError):
+            RemoteEvaluator("http://fake-url", client=invalid_json_client).evaluate(
+                {}, ["f_xy"]
+            )
+
+        missing_results_client = MagicMock()
+        missing_results_response = MagicMock()
+        missing_results_response.raise_for_status.return_value = None
+        missing_results_response.json.return_value = {}
+        missing_results_client.post.return_value = missing_results_response
+        with self.assertRaises(RemoteEvaluationContractError):
+            RemoteEvaluator("http://fake-url", client=missing_results_client).evaluate(
+                {}, ["f_xy"]
+            )
+
+        missing_objective_client = MagicMock()
+        missing_objective_response = MagicMock()
+        missing_objective_response.raise_for_status.return_value = None
+        missing_objective_response.json.return_value = {"results": {"other": 1.0}}
+        missing_objective_client.post.return_value = missing_objective_response
+        with self.assertRaises(RemoteEvaluationContractError):
+            RemoteEvaluator(
+                "http://fake-url", client=missing_objective_client
+            ).evaluate({}, ["f_xy"])
+
+        non_numeric_client = MagicMock()
+        non_numeric_response = MagicMock()
+        non_numeric_response.raise_for_status.return_value = None
+        non_numeric_response.json.return_value = {"results": {"f_xy": "NaN?"}}
+        non_numeric_client.post.return_value = non_numeric_response
+        with self.assertRaises(RemoteEvaluationContractError):
+            RemoteEvaluator("http://fake-url", client=non_numeric_client).evaluate(
+                {}, ["f_xy"]
+            )
+
+    @patch("mdo_framework.optimization.optimizer.httpx.Client")
+    def test_remote_evaluator_close_only_closes_owned_client(self, mock_httpx_client):
+        owned_client = MagicMock()
+        mock_httpx_client.return_value = owned_client
+
+        owned_evaluator = RemoteEvaluator("http://owned")
+        owned_evaluator.close()
+        owned_client.close.assert_called_once()
+
+        external_client = MagicMock()
+        external_evaluator = RemoteEvaluator("http://external", client=external_client)
+        external_evaluator.close()
+        external_client.close.assert_not_called()
+
+    @patch("mdo_framework.optimization.optimizer.create_scenario")
+    @patch("mdo_framework.optimization.ax_algo_lib.AxOptimizationLibrary.execute")
+    def test_optimize_requires_valid_optimum(self, mock_execute, mock_create_scenario):
+        mock_problem = MagicMock(optimum=None)
+        mock_scenario = MagicMock()
+        mock_scenario.formulation.optimization_problem = mock_problem
+        mock_create_scenario.return_value = mock_scenario
+
+        optimizer = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
+
+        with self.assertRaises(OptimizationExecutionError):
+            optimizer.optimize(n_steps=1, n_init=1)
+
+        mock_execute.assert_called_once()
+
+    def test_ax_execute_trial_success_and_empty_metrics_paths(self):
+        from gemseo.algos.design_space import DesignSpace
+        from gemseo.algos.optimization_problem import OptimizationProblem
+        from gemseo.core.mdo_functions.mdo_function import MDOFunction
+
+        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
+
+        ds = DesignSpace()
+        ds.add_variable("x", lower_bound=0.0, upper_bound=1.0)
+        problem = OptimizationProblem(ds)
+
+        def obj(x):
+            return np.array([x[0] ** 2])
+
+        problem.objective = MDOFunction(obj, "obj", expr="x**2")
+        algo = AxOptimizationLibrary()
+        client = MagicMock()
+
+        problem.evaluate_functions = MagicMock(
+            return_value=({"obj": np.array([1.0, 3.0])}, None)
+        )
+        self.assertFalse(algo._execute_trial(client, problem, 0, {"x": 0.5}, {"obj"}))
+        client.complete_trial.assert_called_once_with(
+            trial_index=0, raw_data={"obj": 3.0}
+        )
+        self.assertEqual(
+            algo.trial_history[-1],
+            {"parameters": {"x": 0.5}, "objectives": {"obj": 3.0}},
+        )
+
+        client.reset_mock()
+        problem.evaluate_functions = MagicMock(return_value=({"other": 1.0}, None))
+        self.assertFalse(algo._execute_trial(client, problem, 1, {"x": 0.25}, {"obj"}))
+        client.mark_trial_abandoned.assert_called_once_with(trial_index=1)
+
+    def test_ax_helpers_cover_empty_history_and_invalid_settings(self):
+        from gemseo.algos.design_space import DesignSpace
+        from gemseo.algos.optimization_problem import OptimizationProblem
+        from gemseo.core.mdo_functions.mdo_function import MDOFunction
+
+        from mdo_framework.optimization.ax_algo_lib import (
+            AxOptimizationLibrary,
+            _require_ax_settings,
+        )
+
+        with self.assertRaises(TypeError):
+            _require_ax_settings(object())
+
+        ds = DesignSpace()
+        ds.add_variable("x", lower_bound=0.0, upper_bound=1.0)
+        problem = OptimizationProblem(ds)
+
+        def obj(x):
+            return np.array([x[0] ** 2])
+
+        problem.objective = MDOFunction(obj, "obj", expr="x**2")
+        problem.history = MagicMock()
+        problem.history.last_point = property(lambda self: None)
+        type(problem.history).last_point = property(
+            lambda self: (_ for _ in ()).throw(ValueError("no history"))
+        )
+
+        algo = AxOptimizationLibrary()
+        algo._record_last_point(problem)
+        self.assertEqual(algo.trial_history, [])
+
+    def test_ax_run_records_last_point_when_client_yields_no_trials(self):
+        from gemseo.algos.design_space import DesignSpace
+        from gemseo.algos.optimization_problem import OptimizationProblem
+        from gemseo.core.mdo_functions.mdo_function import MDOFunction
+
+        from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
+
+        ds = DesignSpace()
+        ds.add_variable("x", lower_bound=0.0, upper_bound=1.0)
+        problem = OptimizationProblem(ds)
+
+        def obj(x):
+            return np.array([x[0] ** 2])
+
+        problem.objective = MDOFunction(obj, "obj", expr="x**2")
+        problem.database.store(np.array([0.2]), {"obj": np.array([0.04])})
+        problem.evaluate_functions = MagicMock(
+            return_value=({"obj": np.array([0.04])}, None)
+        )
+
+        mock_client = MagicMock()
+        mock_client.get_next_trials.return_value = {}
+        mock_client.get_best_parameterization.return_value = (
+            {"x": 0.2},
+            ({"obj": (0.04, None)}, None),
+            0,
+            "0_0",
+        )
+
+        algo = AxOptimizationLibrary(client_factory=lambda: mock_client)
+        algo.execute(
+            problem,
+            max_iter=1,
+            n_init=1,
+            ax_parameters=[{"name": "x", "type": "range", "bounds": [0.0, 1.0]}],
+            ax_objectives=[{"name": "obj", "minimize": True}],
+        )
+
+        self.assertGreaterEqual(len(algo.trial_history), 2)
+        self.assertEqual(algo.trial_history[-1]["parameters"], {"x": 0.2})
