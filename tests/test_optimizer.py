@@ -666,6 +666,7 @@ class TestOptimizer(unittest.TestCase):
 
         from mdo_framework.optimization.ax_algo_lib import (
             AxOptimizationLibrary,
+            AxSettings,
             build_from_ax_parameters,
         )
 
@@ -694,21 +695,7 @@ class TestOptimizer(unittest.TestCase):
 
         algo = AxOptimizationLibrary()
 
-        class DummySettings:
-            def __init__(self):
-                self.max_iter = 5
-                self.seed = None
-                self.ax_parameters = None
-                self.ax_parameter_constraints = None
-                self.ax_outcome_constraints = None
-                self.ax_objectives = None
-                self.is_moo = False
-                self.optimization_direction = "minimize"
-                self.fidelity_parameter = "some_param"
-                self.batch_size = 1
-                self.ax_client_config = {}
-
-        algo._settings = DummySettings()
+        algo._settings = AxSettings(max_iter=5)
         algo.problem = prob
 
         from unittest.mock import MagicMock, patch

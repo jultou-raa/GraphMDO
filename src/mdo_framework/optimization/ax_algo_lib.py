@@ -7,6 +7,7 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import logging
 import traceback
 import warnings
+from collections.abc import Mapping
 from typing import Any, NamedTuple, TypedDict
 
 import numpy as np
@@ -50,6 +51,7 @@ class AxParameterDict(_AxParameterDictBase, total=False):
     bounds: list[float]
     values: list[Any]
     is_ordered: bool
+    value_type: str
 
 
 class _AxObjectiveDictBase(TypedDict):
@@ -176,60 +178,64 @@ def build_from_design_space(
     return ax_params
 
 
+def _build_moo_config(
+    ax_objectives: list[AxObjectiveDict],
+    problem: OptimizationProblem,
+    ax_outcome_constraints: list[OutcomeConstraint],
+) -> MultiObjectiveOptimizationConfig:
+    ax_objs = []
+    objective_thresholds = []
+    for obj in ax_objectives:
+        metric_name = obj["name"]
+        minimize = obj.get("minimize", problem.minimize_objective)
+        threshold = obj.get("threshold", None)
+        ax_objs.append(Objective(metric=MapMetric(name=metric_name), minimize=minimize))
+        if threshold is not None:
+            op = ComparisonOp.LEQ if minimize else ComparisonOp.GEQ
+            objective_thresholds.append(
+                ObjectiveThreshold(
+                    metric=MapMetric(name=metric_name),
+                    bound=float(threshold),
+                    relative=False,
+                    op=op,  # type: ignore[arg-type]  # Pyright widens IntEnum to int
+                )
+            )
+    return MultiObjectiveOptimizationConfig(
+        objective=MultiObjective(objectives=ax_objs),
+        objective_thresholds=objective_thresholds if objective_thresholds else None,
+        outcome_constraints=ax_outcome_constraints,
+    )
+
+
+def _build_soo_config(
+    ax_objectives: list[AxObjectiveDict] | None,
+    problem: OptimizationProblem,
+    ax_outcome_constraints: list[OutcomeConstraint],
+) -> OptimizationConfig:
+    if ax_objectives and len(ax_objectives) == 1:
+        metric_name = ax_objectives[0]["name"]
+        minimize = ax_objectives[0].get("minimize", problem.minimize_objective)
+    else:
+        metric_name = (
+            problem.objective.name[0]
+            if isinstance(problem.objective.name, list)
+            else problem.objective.name
+        )
+        minimize = problem.minimize_objective
+    return OptimizationConfig(
+        objective=Objective(metric=MapMetric(name=metric_name), minimize=minimize),
+        outcome_constraints=ax_outcome_constraints,
+    )
+
+
 def build_optimization_config(
     ax_objectives: list[AxObjectiveDict] | None,
     problem: OptimizationProblem,
     ax_outcome_constraints: list[OutcomeConstraint],
 ) -> OptimizationConfig | MultiObjectiveOptimizationConfig:
     if ax_objectives and len(ax_objectives) > 1:
-        ax_objs = []
-        objective_thresholds = []
-        for obj in ax_objectives:
-            metric_name = obj["name"]
-            minimize = obj.get("minimize", problem.minimize_objective)
-            threshold = obj.get("threshold", None)
-
-            ax_objs.append(
-                Objective(
-                    metric=MapMetric(name=metric_name),
-                    minimize=minimize,
-                )
-            )
-
-            if threshold is not None:
-                op: ComparisonOp = (
-                    ComparisonOp.LEQ if minimize else ComparisonOp.GEQ  # type: ignore[assignment]
-                )
-                objective_thresholds.append(
-                    ObjectiveThreshold(
-                        metric=MapMetric(name=metric_name),
-                        bound=float(threshold),
-                        relative=False,
-                        op=op,
-                    )
-                )
-
-        return MultiObjectiveOptimizationConfig(
-            objective=MultiObjective(objectives=ax_objs),
-            objective_thresholds=objective_thresholds if objective_thresholds else None,
-            outcome_constraints=ax_outcome_constraints,
-        )
-    else:
-        if ax_objectives and len(ax_objectives) == 1:
-            metric_name = ax_objectives[0]["name"]
-            minimize = ax_objectives[0].get("minimize", problem.minimize_objective)
-        else:
-            metric_name = (
-                problem.objective.name[0]
-                if isinstance(problem.objective.name, list)
-                else problem.objective.name
-            )
-            minimize = problem.minimize_objective
-
-        return OptimizationConfig(
-            objective=Objective(metric=MapMetric(name=metric_name), minimize=minimize),
-            outcome_constraints=ax_outcome_constraints,
-        )
+        return _build_moo_config(ax_objectives, problem, ax_outcome_constraints)
+    return _build_soo_config(ax_objectives, problem, ax_outcome_constraints)
 
 
 def build_outcome_constraints(
@@ -241,7 +247,7 @@ def build_outcome_constraints(
             ax_outcome_constraints.append(
                 OutcomeConstraint(
                     metric=MapMetric(name=c.name),
-                    op=ComparisonOp.LEQ,  # type: ignore[arg-type]
+                    op=ComparisonOp.LEQ,  # type: ignore[arg-type]  # Pyright widens IntEnum to int
                     bound=0.0,
                     relative=False,
                 )
@@ -314,7 +320,9 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         )
 
     @staticmethod
-    def _extract_seed_params(x_seed: np.ndarray, design_space: Any) -> dict[str, float]:
+    def _extract_seed_params(
+        x_seed: np.ndarray, design_space: DesignSpace
+    ) -> dict[str, float]:
         seed_params: dict[str, float] = {}
         seed_offset = 0
         for var_name in design_space.variable_names:
@@ -349,7 +357,11 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         return seed_results
 
     def _seed_database(
-        self, client: Client, problem: OptimizationProblem, design_space: DesignSpace
+        self,
+        client: Client,
+        problem: OptimizationProblem,
+        design_space: DesignSpace,
+        normalize: bool,
     ) -> None:
         obj_names = _normalize_name_list(problem.objective.name)
 
@@ -358,6 +370,8 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
 
         for i, (x_hash, output) in enumerate(problem.database.items()):
             x_seed = x_hash.unwrap()
+            if normalize:
+                x_seed = design_space.normalize_vect(x_seed)
             seed_params = self._extract_seed_params(x_seed, design_space)
             seed_results = self._extract_seed_results(output, metric_names, c_names)
 
@@ -369,35 +383,31 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                 client.complete_trial(trial_index=trial_idx, raw_data=seed_results)
 
     def _configure_client(self, problem: OptimizationProblem) -> _ConfiguredClient:
-        n_init = getattr(self._settings, "n_init", 5)
-        use_bonsai = getattr(self._settings, "use_bonsai", False)
-        ax_objectives = getattr(self._settings, "ax_objectives", None)
-        ax_parameter_constraints = getattr(
-            self._settings, "ax_parameter_constraints", None
-        )
+        assert isinstance(self._settings, AxSettings)
+        settings = self._settings
 
         design_space = problem.design_space
-        gs = self._get_generation_strategy(use_bonsai, n_init)
+        gs = self._get_generation_strategy(settings.use_bonsai, settings.n_init)
 
         client = self.client_factory()
 
-        ax_parameters = getattr(self._settings, "ax_parameters", None)
-        if ax_parameters:
-            ax_params = build_from_ax_parameters(ax_parameters)
+        if settings.ax_parameters:
+            ax_params = build_from_ax_parameters(settings.ax_parameters)
         else:
-            normalize = getattr(self._settings, "normalize_design_space", False)
-            ax_params = build_from_design_space(design_space, normalize)
+            ax_params = build_from_design_space(
+                design_space, settings.normalize_design_space
+            )
 
         client.configure_experiment(
             name="gemseo_ax_opt",
             parameters=ax_params,
-            parameter_constraints=ax_parameter_constraints,
+            parameter_constraints=settings.ax_parameter_constraints,
         )
 
         ax_outcome_constraints = build_outcome_constraints(list(problem.constraints))
 
         opt_config = build_optimization_config(
-            ax_objectives, problem, ax_outcome_constraints
+            settings.ax_objectives, problem, ax_outcome_constraints
         )
 
         client.set_optimization_config(opt_config)
@@ -412,7 +422,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         client: Client,
         problem: OptimizationProblem,
         trial_index: int,
-        parameters: Any,
+        parameters: Mapping[str, Any],
         metric_names: set[str],
     ) -> bool:
         design_space = problem.design_space
@@ -441,10 +451,19 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         for metric in metric_names:
             if metric in out_dict:
                 val = out_dict[metric]
-                if isinstance(val, (list, np.ndarray)) and len(val) == 1:
-                    res[metric] = float(val[0])
-                elif isinstance(val, (int, float)):
+                if isinstance(val, (int, float)):
                     res[metric] = float(val)
+                elif isinstance(val, (list, np.ndarray)):
+                    if len(val) == 1:
+                        res[metric] = float(val[0])
+                    else:
+                        logger.warning(
+                            "Multi-dimensional output for metric '%s' (size=%d); "
+                            "aggregating with np.max.",
+                            metric,
+                            len(val),
+                        )
+                        res[metric] = float(np.max(val))
 
         if not res:
             logger.error(
@@ -476,9 +495,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
             else:
                 raise ValueError("Pareto frontier is empty")
         else:
-            best_parameters, best_obj, trial_idx, arm_name = (
-                client.get_best_parameterization()
-            )
+            best_parameters, *_ = client.get_best_parameterization()
 
         x_opt = np.zeros(design_space.dimension)
         offset = 0
@@ -502,28 +519,36 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
     def _run(self, problem: EvaluationProblem) -> tuple[str, int]:
         """Executes the optimization algorithm."""
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=FutureWarning)
+            warnings.filterwarnings("ignore", category=FutureWarning, module=r"ax\.")
 
             if not isinstance(problem, OptimizationProblem):
                 raise TypeError(
                     f"Expected OptimizationProblem, got {type(problem).__name__}"
                 )
 
-            configured = self._configure_client(problem)
-            self._seed_database(configured.client, problem, problem.design_space)
+            assert isinstance(self._settings, AxSettings)
+            settings = self._settings
 
-            max_iter = getattr(self._settings, "max_iter", 10)
-            batch_size = getattr(self._settings, "batch_size", 1)
+            configured = self._configure_client(problem)
+            self._seed_database(
+                configured.client,
+                problem,
+                problem.design_space,
+                normalize=settings.normalize_design_space,
+            )
+
             budget_exhausted = False
 
             obj_names = _normalize_name_list(problem.objective.name)
             c_names = {c.name for c in problem.constraints}
             metric_names = set(obj_names) | c_names
 
-            for _ in range(max_iter):
+            for _ in range(settings.max_iter):
                 if budget_exhausted:
                     break
-                trials = configured.client.get_next_trials(max_trials=batch_size)
+                trials = configured.client.get_next_trials(
+                    max_trials=settings.batch_size
+                )
                 for trial_index, parameters in trials.items():
                     budget_exhausted = self._execute_trial(
                         configured.client,
@@ -537,4 +562,6 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
 
             self._extract_best_solution(configured.client, problem, configured.is_moo)
 
+        if budget_exhausted:
+            return "Optimization stopped early: evaluation budget exhausted.", 0
         return "Optimization completed successfully.", 0
