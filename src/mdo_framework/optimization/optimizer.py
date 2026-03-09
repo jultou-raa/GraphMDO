@@ -19,6 +19,21 @@ import mdo_framework.optimization.ax_algo_lib  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
+def _get_optimization_history(
+    scenario: Any | None, algo: Any | None = None
+) -> list[dict[str, dict[str, float]]] | Any:
+    """Returns explicit Ax trial history when available, else a safe scenario export."""
+    trial_history = getattr(algo, "trial_history", None)
+    if trial_history is not None:
+        return trial_history
+    if scenario is None:
+        return []
+    try:
+        return scenario.to_dataset()
+    except ValueError:
+        return []
+
+
 class Evaluator(Protocol):
     def evaluate(
         self,
@@ -186,7 +201,7 @@ class BayesianOptimizer:
                 logger.warning(f"Failed to post-process DOE: {pp_err}")
 
             return {
-                "history": scenario.formulation.optimization_problem.database.to_dict(),
+                "history": scenario.to_dataset(),
             }
         except Exception as e:
             logger.error(f"Exploration failed: {e}")
@@ -252,6 +267,7 @@ class BayesianOptimizer:
             ctype = "ineq" if c["op"] == "<=" else "eq"
             scenario.add_constraint(c["name"], constraint_type=ctype, value=c["bound"])
 
+        algo = None
         try:
             from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
 
@@ -260,7 +276,7 @@ class BayesianOptimizer:
             algo = AxOptimizationLibrary()
             algo.execute(
                 problem,
-                max_iter=n_steps + n_init,
+                max_iter=n_steps,
                 n_init=n_init,
                 use_bonsai=self.use_bonsai,
                 ax_parameters=self.parameters,
@@ -318,8 +334,7 @@ class BayesianOptimizer:
             return {
                 "best_parameters": best_params,
                 "best_objectives": best_objectives,
-                "history": [],
-                "serialized_client": "{}",
+                "history": _get_optimization_history(scenario, algo),
             }
         except Exception as e:
             import traceback
@@ -329,6 +344,8 @@ class BayesianOptimizer:
                 "error": f"Optimization failed: {str(e)}",
                 "best_parameters": None,
                 "best_objectives": None,
-                "history": [],
-                "serialized_client": "{}",
+                "history": _get_optimization_history(
+                    scenario if "scenario" in locals() else None,
+                    algo if "algo" in locals() else None,
+                ),
             }

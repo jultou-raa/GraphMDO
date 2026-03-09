@@ -78,14 +78,15 @@ def main():
         evaluator=evaluator,
         parameters=parameters,
         objectives=[{"name": "f_xy", "minimize": True}],
-        # constraints=[{"name": "c_xy", "op": "<=", "bound": 0.0}],
+        constraints=[{"name": "c_xy", "op": "<=", "bound": 0.0}],
     )
 
     try:
-        result = optimizer.optimize(n_steps=10, n_init=5)
+        result = optimizer.optimize(n_steps=5, n_init=5)
         print("Optimization Complete.")
         print("Best Result:", result["best_parameters"])
         print("Best Objectives:", result["best_objectives"])
+        print("Optimization History:", result["history"])
     except Exception as e:
         print(f"Optimization failed: {e}")
 

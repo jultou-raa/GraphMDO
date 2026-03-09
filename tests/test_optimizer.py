@@ -198,10 +198,12 @@ class TestOptimizer(unittest.TestCase):
             self.objectives,
             constraints=constraints,
         )
-        result = opt.optimize(n_steps=1, n_init=2)
+        result = opt.optimize(n_steps=2, n_init=2)
 
         self.assertIn("best_parameters", result)
-        self.assertEqual(len(result["history"]), 0)
+        self.assertEqual(
+            len(result["history"]), 3
+        )  # Initial trials + 1 optimization step
 
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_fidelity_parameter_emits_warning(self, mock_client_cls):

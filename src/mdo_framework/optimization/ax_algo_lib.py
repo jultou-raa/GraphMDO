@@ -402,6 +402,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
     def __init__(self, algo_name: str = "Ax_Bayesian", client_factory=None) -> None:
         super().__init__(algo_name=algo_name)
         self.client_factory = client_factory or Client
+        self.trial_history: list[dict[str, dict[str, Any]]] = []
 
     def _get_generation_strategy(
         self, use_bonsai: bool, n_init: int
@@ -502,6 +503,12 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                 else:
                     trial_idx = client.attach_trial(parameters=seed_params)
                 client.complete_trial(trial_index=trial_idx, raw_data=seed_results)
+                self.trial_history.append(
+                    {
+                        "parameters": dict(seed_params),
+                        "objectives": dict(seed_results),
+                    }
+                )
 
     def _configure_client(self, problem: OptimizationProblem) -> _ConfiguredClient:
         settings = _require_ax_settings(self._settings)
@@ -594,6 +601,13 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
             return False
 
         client.complete_trial(trial_index=trial_index, raw_data=res)
+        trial_parameters = dict(parameters)
+        self.trial_history.append(
+            {
+                "parameters": trial_parameters,
+                "objectives": dict(res),
+            }
+        )
         return False
 
     def _extract_best_solution(
@@ -632,10 +646,44 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
             )
         design_space.set_current_value(x_opt)
 
+    def _record_last_point(self, problem: OptimizationProblem) -> None:
+        """Appends the latest GEMSEO point when Ax produces no executable trial."""
+        try:
+            last_point = problem.history.last_point
+        except ValueError:
+            return
+
+        design_space = problem.design_space
+        parameters: dict[str, Any] = {}
+        offset = 0
+        for var_name in design_space.variable_names:
+            size = design_space.variable_sizes[var_name]
+            values = last_point.design[offset : offset + size]
+            parameters[var_name] = values[0] if size == 1 else values.tolist()
+            offset += size
+
+        objectives = {}
+        objective_names = _normalize_name_list(problem.objective.name)
+        objective_values = np.atleast_1d(last_point.objective).flatten()
+        for index, objective_name in enumerate(objective_names):
+            if index < len(objective_values):
+                objectives[objective_name] = float(objective_values[index])
+
+        for constraint_name, constraint_value in last_point.constraints.items():
+            objectives[constraint_name] = float(constraint_value)
+
+        self.trial_history.append(
+            {
+                "parameters": parameters,
+                "objectives": objectives,
+            }
+        )
+
     def _run(self, problem: EvaluationProblem) -> tuple[str, int]:
         """Executes the optimization algorithm."""
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=FutureWarning, module=r"ax\.")
+            self.trial_history = []
 
             if not isinstance(problem, OptimizationProblem):
                 raise TypeError(
@@ -661,10 +709,12 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
             for _ in range(settings.max_iter):
                 if budget_exhausted:
                     break
+                executed_trial = False
                 trials = configured.client.get_next_trials(
                     max_trials=settings.batch_size
                 )
                 for trial_index, parameters in trials.items():
+                    executed_trial = True
                     budget_exhausted = self._execute_trial(
                         configured.client,
                         problem,
@@ -675,6 +725,8 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                     )
                     if budget_exhausted:
                         break
+                if not executed_trial:
+                    self._record_last_point(problem)
 
             self._extract_best_solution(
                 configured.client,
