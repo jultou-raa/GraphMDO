@@ -650,12 +650,12 @@ class TestOptimizer(unittest.TestCase):
 
         # Line 433-435: ValueError exception in evaluate_functions
         prob.evaluate_functions = MagicMock(side_effect=ValueError("Test exception"))
-        res = algo._execute_trial(mock_client, prob, 0, {"x": 0.5}, ["obj"])
+        res = algo._execute_trial(mock_client, prob, 0, {"x": 0.5}, {"obj"})
         self.assertFalse(res)
 
         # Lines 443-444: Integer objective value
         prob.evaluate_functions = MagicMock(return_value=({"obj": 5}, None))
-        res = algo._execute_trial(mock_client, prob, 0, {"x": 0.5}, ["obj"])
+        res = algo._execute_trial(mock_client, prob, 0, {"x": 0.5}, {"obj"})
         self.assertFalse(res)
 
     def test_ax_algo_lib_extra_coverage(self):
@@ -731,11 +731,10 @@ class TestOptimizer(unittest.TestCase):
                 self.batch_size = 1
 
         algo._settings = DummySettingsMOO()
-        algo._is_moo = True
         mock_client = MagicMock()
         mock_client.get_pareto_frontier.return_value = []
         with self.assertRaisesRegex(ValueError, "Pareto frontier is empty"):
-            algo._extract_best_solution(mock_client, prob)
+            algo._extract_best_solution(mock_client, prob, True)
 
         # Lines 433-447: MaxIterReachedException handling in evaluate trial
         from gemseo.algos.stop_criteria import MaxIterReachedException
@@ -797,7 +796,7 @@ class TestOptimizer(unittest.TestCase):
         prob.evaluate_functions = MagicMock(side_effect=MaxIterReachedException())
         mock_client = MagicMock()
         algo = AxOptimizationLibrary()
-        res = algo._execute_trial(MagicMock(), prob, 0, {"x": 0.5}, ["obj"])
+        res = algo._execute_trial(MagicMock(), prob, 0, {"x": 0.5}, {"obj"})
         self.assertTrue(res)
 
         prob.evaluate_functions = MagicMock(side_effect=MaxIterReachedException())
@@ -807,7 +806,7 @@ class TestOptimizer(unittest.TestCase):
             0,
             "arm_0",
         )
-        algo._extract_best_solution(mock_client, prob)
+        algo._extract_best_solution(mock_client, prob, False)
 
         config = build_optimization_config(
             [{"name": "a", "minimize": True}, {"name": "b", "minimize": False}],

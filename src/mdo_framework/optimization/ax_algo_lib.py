@@ -7,7 +7,7 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import logging
 import traceback
 import warnings
-from typing import Any, TypedDict
+from typing import Any, NamedTuple, TypedDict
 
 import numpy as np
 from ax.adapter.registry import Generators as Models
@@ -24,6 +24,7 @@ from ax.core.types import ComparisonOp
 from ax.generation_strategy.generation_node import GenerationStep
 from ax.generation_strategy.generation_strategy import GenerationStrategy
 from botorch.acquisition.logei import qLogNoisyExpectedImprovement
+from gemseo.algos.design_space import DesignSpace
 from gemseo.algos.evaluation_problem import EvaluationProblem
 from gemseo.algos.opt.base_optimization_library import (
     BaseOptimizationLibrary,
@@ -57,13 +58,24 @@ class _AxObjectiveDictBase(TypedDict):
 
 class AxObjectiveDict(_AxObjectiveDictBase, total=False):
     minimize: bool
-    maximize_objective: bool
     threshold: float
 
 
 def _get_param_name(var_name: str, i: int, size: int) -> str:
     """Constructs the Ax parameter name for array elements."""
     return f"{var_name}_{i}" if size > 1 else var_name
+
+
+def _normalize_name_list(names: str | list[str]) -> list[str]:
+    """Ensures an objective name or list of names is always a list."""
+    return names if isinstance(names, list) else [names]
+
+
+class _ConfiguredClient(NamedTuple):
+    """Bundles a configured Ax Client with derived optimization metadata."""
+
+    client: Client
+    is_moo: bool
 
 
 class AxSettings(BaseOptimizerSettings):
@@ -117,7 +129,7 @@ def build_from_ax_parameters(
 
 
 def build_from_design_space(
-    design_space: Any, normalize: bool
+    design_space: DesignSpace, normalize: bool
 ) -> list[RangeParameterConfig]:
     if normalize:
         lb_full = np.concatenate(
@@ -153,22 +165,14 @@ def build_from_design_space(
             is_int = i < len(var_type_list) and var_type_list[i] is int
             # Normalized space is always float; integers are preserved only in physical space.
             p_type = "int" if (is_int and not normalize) else "float"
-            if p_type == "int":
-                ax_params.append(
-                    RangeParameterConfig(
-                        name=param_name,
-                        bounds=(int(l_b[i]), int(u_b[i])),
-                        parameter_type=p_type,
-                    )
+            cast_fn = int if p_type == "int" else float
+            ax_params.append(
+                RangeParameterConfig(
+                    name=param_name,
+                    bounds=(cast_fn(l_b[i]), cast_fn(u_b[i])),
+                    parameter_type=p_type,
                 )
-            else:
-                ax_params.append(
-                    RangeParameterConfig(
-                        name=param_name,
-                        bounds=(float(l_b[i]), float(u_b[i])),
-                        parameter_type=p_type,
-                    )
-                )
+            )
     return ax_params
 
 
@@ -229,7 +233,7 @@ def build_optimization_config(
 
 
 def build_outcome_constraints(
-    constraints: Any,
+    constraints: list[Any],
 ) -> list[OutcomeConstraint]:
     ax_outcome_constraints = []
     for c in constraints:
@@ -345,11 +349,9 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         return seed_results
 
     def _seed_database(
-        self, client: Client, problem: OptimizationProblem, design_space: Any
+        self, client: Client, problem: OptimizationProblem, design_space: DesignSpace
     ) -> None:
-        obj_names = problem.objective.name
-        if not isinstance(obj_names, list):
-            obj_names = [obj_names]
+        obj_names = _normalize_name_list(problem.objective.name)
 
         c_names = {c.name for c in problem.constraints}
         metric_names = set(obj_names) | c_names
@@ -366,7 +368,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                     trial_idx = client.attach_trial(parameters=seed_params)
                 client.complete_trial(trial_index=trial_idx, raw_data=seed_results)
 
-    def _configure_client(self, problem: OptimizationProblem) -> Client:
+    def _configure_client(self, problem: OptimizationProblem) -> _ConfiguredClient:
         n_init = getattr(self._settings, "n_init", 5)
         use_bonsai = getattr(self._settings, "use_bonsai", False)
         ax_objectives = getattr(self._settings, "ax_objectives", None)
@@ -392,7 +394,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
             parameter_constraints=ax_parameter_constraints,
         )
 
-        ax_outcome_constraints = build_outcome_constraints(problem.constraints)
+        ax_outcome_constraints = build_outcome_constraints(list(problem.constraints))
 
         opt_config = build_optimization_config(
             ax_objectives, problem, ax_outcome_constraints
@@ -402,8 +404,8 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         client.set_generation_strategy(gs)
         # Derive MOO flag from the optimization config type we built, to avoid
         # accessing the Client's private _experiment attribute.
-        self._is_moo = isinstance(opt_config, MultiObjectiveOptimizationConfig)
-        return client
+        is_moo = isinstance(opt_config, MultiObjectiveOptimizationConfig)
+        return _ConfiguredClient(client=client, is_moo=is_moo)
 
     def _execute_trial(
         self,
@@ -411,7 +413,7 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
         problem: OptimizationProblem,
         trial_index: int,
         parameters: Any,
-        obj_names: list[str],
+        metric_names: set[str],
     ) -> bool:
         design_space = problem.design_space
         x = np.zeros(design_space.dimension)
@@ -436,22 +438,30 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
             return False
 
         res = {}
-        for obj_name in obj_names:
-            if obj_name in out_dict:
-                obj_val = out_dict[obj_name]
-                if isinstance(obj_val, (list, np.ndarray)) and len(obj_val) == 1:
-                    res[obj_name] = float(obj_val[0])
-                elif isinstance(obj_val, (int, float)):
-                    res[obj_name] = float(obj_val)
+        for metric in metric_names:
+            if metric in out_dict:
+                val = out_dict[metric]
+                if isinstance(val, (list, np.ndarray)) and len(val) == 1:
+                    res[metric] = float(val[0])
+                elif isinstance(val, (int, float)):
+                    res[metric] = float(val)
+
+        if not res:
+            logger.error(
+                "No metric data extracted for trial %d; abandoning. "
+                "Check that objective/constraint names match the function output keys.",
+                trial_index,
+            )
+            client.mark_trial_abandoned(trial_index=trial_index)
+            return False
 
         client.complete_trial(trial_index=trial_index, raw_data=res)
         return False
 
     def _extract_best_solution(
-        self, client: Client, problem: OptimizationProblem
+        self, client: Client, problem: OptimizationProblem, is_moo: bool
     ) -> None:
         design_space = problem.design_space
-        is_moo = getattr(self, "_is_moo", False)
 
         if is_moo:
             pareto_front = client.get_pareto_frontier()
@@ -483,6 +493,10 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
             problem.evaluate_functions(x_opt, design_vector_is_normalized=False)
         except MaxIterReachedException:
             pass
+        except _RECOVERABLE_EVAL_ERRORS:
+            logger.warning(
+                "Could not evaluate the optimal point:\n%s", traceback.format_exc()
+            )
         design_space.set_current_value(x_opt)
 
     def _run(self, problem: EvaluationProblem) -> tuple[str, int]:
@@ -495,28 +509,32 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                     f"Expected OptimizationProblem, got {type(problem).__name__}"
                 )
 
-            client = self._configure_client(problem)
-            self._seed_database(client, problem, problem.design_space)
+            configured = self._configure_client(problem)
+            self._seed_database(configured.client, problem, problem.design_space)
 
             max_iter = getattr(self._settings, "max_iter", 10)
+            batch_size = getattr(self._settings, "batch_size", 1)
             budget_exhausted = False
 
-            obj_names = problem.objective.name
-            if not isinstance(obj_names, list):
-                obj_names = [obj_names]
+            obj_names = _normalize_name_list(problem.objective.name)
+            c_names = {c.name for c in problem.constraints}
+            metric_names = set(obj_names) | c_names
 
             for _ in range(max_iter):
                 if budget_exhausted:
                     break
-                batch_size = getattr(self._settings, "batch_size", 1)
-                trials = client.get_next_trials(max_trials=batch_size)
+                trials = configured.client.get_next_trials(max_trials=batch_size)
                 for trial_index, parameters in trials.items():
                     budget_exhausted = self._execute_trial(
-                        client, problem, trial_index, parameters, obj_names
+                        configured.client,
+                        problem,
+                        trial_index,
+                        parameters,
+                        metric_names,
                     )
                     if budget_exhausted:
                         break
 
-            self._extract_best_solution(client, problem)
+            self._extract_best_solution(configured.client, problem, configured.is_moo)
 
         return "Optimization completed successfully.", 0
