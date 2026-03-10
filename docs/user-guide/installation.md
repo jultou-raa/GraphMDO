@@ -15,7 +15,7 @@ We recommend using `uv` for dependency management. See [astral.sh/uv](https://as
 
     ```bash
     git clone https://github.com/jultou-raa/GraphMDO.git
-    cd graph-mdo
+    cd GraphMDO
     ```
 
 2.  **Install Dependencies**
@@ -37,7 +37,7 @@ docker run -p 6379:6379 -it falkordb/falkordb
 Alternatively, you can use the provided `docker-compose.yml` to spin up the entire stack.
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 This will launch:
@@ -45,3 +45,5 @@ This will launch:
 - Graph Service (Port 8001)
 - Execution Service (Port 8002)
 - Optimization Service (Port 8003)
+
+Note: in the current Compose file, the optimization service does not receive `GRAPH_SERVICE_URL`. To use `/optimize` from the containerized optimization service, add `GRAPH_SERVICE_URL=http://graph-service:8001` to the `optimization-service` environment in `docker-compose.yml`, or run the optimization service locally.

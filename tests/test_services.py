@@ -24,6 +24,10 @@ MockGraphManager = gm_patcher.start()
 mock_gm_instance = MockGraphManager.return_value
 
 # Now safe to import
+from mdo_framework.optimization.optimizer import (
+    OptimizationConfigurationError,
+    RemoteEvaluationTransportError,
+)
 from services.execution.main import app as execution_app
 from services.graph.main import app as graph_app
 from services.optimization.main import app as optimization_app
@@ -238,16 +242,18 @@ class TestExecutionService(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422)
 
-
     def test_execute_problem_missing_objective(self):
-        from services.execution.main import execute_problem
         from unittest.mock import MagicMock
+
+        from services.execution.main import execute_problem
 
         mock_prob = MagicMock()
         mock_prob.execute.return_value = {"known_obj": 1.0}
 
         # 'missing_obj' should trigger the `if val is None: results[obj] = 0.0` logic
-        results = execute_problem(mock_prob, inputs={"x": 1.0}, objectives=["known_obj", "missing_obj"])
+        results = execute_problem(
+            mock_prob, inputs={"x": 1.0}, objectives=["known_obj", "missing_obj"]
+        )
         self.assertEqual(results["missing_obj"], 0.0)
 
     def test_evaluate_transformation_failure(self):
@@ -411,6 +417,135 @@ class TestExecutionService(unittest.TestCase):
                 },
             )
 
+    def test_schema_envelope_dict_output(self):
+        from services.execution.main import SchemaEnvelope
+
+        # Covers line 109 dict objective mapping
+        env = SchemaEnvelope(
+            {
+                "variables": [{"name": "x"}],
+                "tools": [
+                    {"name": "tool", "outputs": [{"name": "obj1", "type": "float"}]}
+                ],
+            }
+        )
+        self.assertIn("obj1", env.known_objectives)
+
+    def test_to_float_integer(self):
+        from services.execution.main import to_float
+
+        # Covers line 86 casting from int
+        self.assertEqual(to_float(4), 4.0)
+
+    def test_evaluate_input_execution_error(self):
+        # Covers line 400 ValueError / KeyError inside execution
+        from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
+
+        with (
+            execution_app.container_context()
+            if hasattr(execution_app, "container_context")
+            else patch.dict(execution_app.state.__dict__, {})
+        ):
+            mock_client = AsyncMock()
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {
+                "tools": [
+                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
+                ],
+                "variables": [{"name": "x"}, {"name": "y"}],
+            }
+            mock_client.get.return_value = mock_resp
+            execution_app.state.schema_provider = SchemaProvider(mock_client)
+
+            with patch(
+                "services.execution.main.ProblemPool.discard_instance",
+                new_callable=AsyncMock,
+            ):
+                execution_app.state.problem_pool = ProblemPool(TOOL_REGISTRY, size=1)
+
+                with patch(
+                    "services.execution.main.execute_problem",
+                    side_effect=ValueError("Input Error"),
+                ):
+                    response = self.client.post(
+                        "/evaluate",
+                        json={"inputs": {"x": 1.0, "y": 1.0}, "objectives": ["f_xy"]},
+                    )
+                    self.assertEqual(response.status_code, 400)
+
+    def test_schema_provider_lock_timeout_fallback(self):
+        import asyncio
+
+        from services.execution.main import SchemaEnvelope, SchemaProvider
+
+        mock_client = AsyncMock()
+        provider = SchemaProvider(mock_client)
+        provider.envelope = SchemaEnvelope({"variables": [], "tools": []})
+        provider.expiry = 1e9  # Not expired initially
+
+        async def test_run():
+            await provider.lock.acquire()  # block the lock
+            res = await provider.get_schema()
+            self.assertEqual(res, provider.envelope)
+            provider.lock.release()
+
+        # monkeypatch asyncio.timeout
+        with patch("asyncio.timeout") as mock_timeout:
+            mock_timeout.side_effect = TimeoutError("Timed out")
+            asyncio.run(test_run())
+
+    def test_schema_provider_httpx_errors_fallback(self):
+        import asyncio
+
+        import httpx
+
+        from services.execution.main import SchemaEnvelope, SchemaProvider
+
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = httpx.RequestError("Network error")
+        provider = SchemaProvider(mock_client)
+        provider.envelope = SchemaEnvelope({"variables": [], "tools": []})
+        provider.expiry = 0  # force fetch
+
+        async def test_run():
+            res = await provider.get_schema()
+            self.assertEqual(res, provider.envelope)
+
+        asyncio.run(test_run())
+
+    def test_schema_provider_invalid_data_fallback(self):
+        import asyncio
+
+        from services.execution.main import SchemaEnvelope, SchemaProvider
+
+        mock_client = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.json.side_effect = ValueError("Bad JSON")
+        mock_client.get.return_value = mock_resp
+
+        provider = SchemaProvider(mock_client)
+        provider.envelope = SchemaEnvelope({"variables": [], "tools": []})
+        provider.expiry = 0  # force fetch
+
+        async def test_run():
+            res = await provider.get_schema()
+            self.assertEqual(res, provider.envelope)
+
+        asyncio.run(test_run())
+
+    def test_lifespan_initialization(self):
+        import asyncio
+
+        from services.execution.main import lifespan
+
+        async def run_lifespan():
+            async with lifespan(execution_app):
+                self.assertIsNotNone(execution_app.state.schema_provider)
+                self.assertIsNotNone(execution_app.state.problem_pool)
+
+        asyncio.run(run_lifespan())
+
 
 class TestProblemPool(unittest.TestCase):
     def setUp(self):
@@ -553,6 +688,31 @@ class TestProblemPool(unittest.TestCase):
 
             await self.pool.release_instance(mock_inst, "active_hash")
             self.assertFalse(self.pool.pool.empty())
+
+        asyncio.run(run_test())
+
+    def test_problem_pool_teardown_empty_exception(self):
+        import asyncio
+
+        async def run_test():
+            self.pool.pool.get_nowait = MagicMock(side_effect=asyncio.QueueEmpty)
+            self.pool.pool.empty = MagicMock(return_value=False)
+
+            # This should cleanly break instead of crashing
+            await self.pool.teardown()
+
+        asyncio.run(run_test())
+
+    def test_problem_pool_replenish_one_exception(self):
+        import asyncio
+
+        async def run_test():
+            with patch(
+                "services.execution.main.build_and_init",
+                side_effect=Exception("Failed Init"),
+            ):
+                # This should catch the exception and log instead of crashing
+                await self.pool._replenish_one("hash1", {"tools": []})
 
         asyncio.run(run_test())
 
@@ -981,6 +1141,50 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
             response = client.post("/optimize", json=payload)
             self.assertEqual(response.status_code, 500)
             self.assertIn("Optimization failed", response.json()["detail"])
+
+    @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
+    async def test_optimize_exception_mapping(self, mock_resolve):
+        mock_client = AsyncMock()
+        optimization_app.state.client = mock_client
+        client = TestClient(optimization_app)
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "variables": [
+                {
+                    "name": "x",
+                    "param_type": "range",
+                    "lower": 0.0,
+                    "upper": 1.0,
+                    "value_type": "float",
+                },
+            ],
+            "tools": [{"name": "ToolA", "inputs": ["x"], "outputs": ["f_xy"]}],
+        }
+        mock_client.get.return_value = mock_resp
+        mock_resolve.return_value = (["x"], [])
+
+        payload = {
+            "objectives": [{"name": "f_xy"}],
+            "n_steps": 1,
+            "n_init": 1,
+        }
+
+        with patch(
+            "mdo_framework.optimization.optimizer.BayesianOptimizer.optimize",
+            side_effect=OptimizationConfigurationError("invalid optimization config"),
+        ):
+            response = client.post("/optimize", json=payload)
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("invalid optimization config", response.json()["detail"])
+
+        with patch(
+            "mdo_framework.optimization.optimizer.BayesianOptimizer.optimize",
+            side_effect=RemoteEvaluationTransportError("execution service unavailable"),
+        ):
+            response = client.post("/optimize", json=payload)
+            self.assertEqual(response.status_code, 502)
+            self.assertIn("execution service unavailable", response.json()["detail"])
 
 
 if __name__ == "__main__":

@@ -64,10 +64,11 @@ def build_and_init(
 
 def execute_problem(
     prob,
-    inputs: dict[str, float],
+    inputs: dict[str, bool | int | float | str],
     objectives: list[str],
 ) -> dict[str, Any]:
     import numpy as np
+
     input_data = {name: np.atleast_1d(val) for name, val in inputs.items()}
     out_data = prob.execute(input_data)
     results = {}
@@ -90,6 +91,7 @@ def to_float(val: Any) -> float:
 # --- Tool Registry ---
 ToolRegistry: TypeAlias = dict[str, Callable[..., Any]]
 TOOL_REGISTRY: ToolRegistry = {"Paraboloid": paraboloid_func}
+InputScalar: TypeAlias = bool | int | float | str
 
 
 # --- Domain Models ---
@@ -194,7 +196,7 @@ class SchemaProvider:
 
 
 class ProblemPool:
-    """Manages a pool of OpenMDAO Problem instances for a given schema."""
+    """Manages a pool of GEMSEO OptimizationProblem instances for a given schema."""
 
     def __init__(self, registry: ToolRegistry, size: int = POOL_SIZE):
         self.registry = registry
@@ -311,12 +313,12 @@ async def get_problem_pool(request: Request) -> ProblemPool:
 
 # --- Request Models ---
 class EvaluateRequest(BaseModel):
-    inputs: dict[str, float]
+    inputs: dict[str, InputScalar]
     objectives: list[str] = Field(..., min_length=1)
 
     @field_validator("inputs")
     @classmethod
-    def validate_inputs(cls, v: dict[str, float]) -> dict[str, float]:
+    def validate_inputs(cls, v: dict[str, InputScalar]) -> dict[str, InputScalar]:
         if not v:
             raise ValueError("At least one input is required.")
         if len(v) > 100:

@@ -6,8 +6,8 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 from typing import Any
 
-from gemseo.core.discipline import Discipline
 import numpy as np
+from gemseo.core.discipline import Discipline
 
 
 class LocalEvaluator:
@@ -35,8 +35,11 @@ class LocalEvaluator:
         results = {}
         for obj in objectives:
             val = output_data.get(obj)
-            if val is not None:
-                results[obj] = float(val[0]) if isinstance(val, np.ndarray) and val.size > 0 else float(val)
-            else:
-                results[obj] = 0.0 # Or raise error depending on context
+            if val is None:
+                raise KeyError(f"Missing objective or constraint output: {obj}")
+            results[obj] = (
+                float(val[0])
+                if isinstance(val, np.ndarray) and val.size > 0
+                else float(val)
+            )
         return results

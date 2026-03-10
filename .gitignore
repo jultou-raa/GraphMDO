@@ -201,12 +201,17 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# VS Code settings
+.vscode/
+.agents/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# OpenMDAO Test Artifacts
+# GEMSEO Test Artifacts
 pytest*_out/
-*.openmdao_out
 reports/
+xdsm.html
+opt_history*.png

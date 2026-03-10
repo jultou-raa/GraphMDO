@@ -30,10 +30,10 @@ def main():
 
     # 2. Populate Graph (Paraboloid Problem)
     # Variables
-    gm.add_variable("x", value=0.0, lower=-10.0, upper=10.0)
-    gm.add_variable("y", value=0.0, lower=-10.0, upper=10.0)
-    gm.add_variable("f_xy", value=0.0)
-    gm.add_variable("c_xy", value=0.0)
+    gm.add_variable("x", lower=-10.0, upper=10.0)
+    gm.add_variable("y", lower=-10.0, upper=10.0)
+    gm.add_variable("f_xy")
+    gm.add_variable("c_xy")
 
     # Tool
     gm.add_tool("Paraboloid")
@@ -51,8 +51,8 @@ def main():
     inputs = gm.get_tool_inputs("Paraboloid")
     print(f"Paraboloid Inputs: {inputs}")
 
-    # 3. Translate to OpenMDAO
-    print("Translating Graph to OpenMDAO Problem...")
+    # 3. Translate to GEMSEO
+    print("Translating Graph to GEMSEO OptimizationProblem...")
     builder = GraphProblemBuilder(gm.get_graph_schema())
 
     try:
@@ -78,13 +78,15 @@ def main():
         evaluator=evaluator,
         parameters=parameters,
         objectives=[{"name": "f_xy", "minimize": True}],
+        constraints=[{"name": "c_xy", "op": "<=", "bound": 0.0}],
     )
 
     try:
-        result = optimizer.optimize(n_steps=10, n_init=5)
+        result = optimizer.optimize(n_steps=5, n_init=5)
         print("Optimization Complete.")
         print("Best Result:", result["best_parameters"])
         print("Best Objectives:", result["best_objectives"])
+        print("Optimization History:", result["history"])
     except Exception as e:
         print(f"Optimization failed: {e}")
 

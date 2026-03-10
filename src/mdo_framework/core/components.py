@@ -6,14 +6,21 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 from collections.abc import Callable
 
-from gemseo.core.discipline import Discipline
 import numpy as np
+from gemseo.core.discipline import Discipline
 
 
 class ToolComponent(Discipline):
     """Generic GEMSEO discipline that wraps a Python function."""
 
-    def __init__(self, name: str, func: Callable, inputs: list[str], outputs: list[str], derivatives: bool = False):
+    def __init__(
+        self,
+        name: str,
+        func: Callable,
+        inputs: list[str],
+        outputs: list[str],
+        derivatives: bool = False,
+    ):
         """Initializes the generic GEMSEO tool component.
 
         Args:
@@ -34,7 +41,9 @@ class ToolComponent(Discipline):
         self.output_grammar.update_from_names(self._outputs_list)
 
         # GEMSEO expects default values to be set in default_inputs if they exist
-        self.default_inputs = {in_name: np.array([0.0]) for in_name in self._inputs_list}
+        self.default_inputs = {
+            in_name: np.array([0.0]) for in_name in self._inputs_list
+        }
 
     def _run(self, **kwargs) -> None:
         """Executes the wrapped function using data from self.local_data and stores results.
@@ -42,17 +51,18 @@ class ToolComponent(Discipline):
         Expects the wrapped function to return a dictionary mapping output names
         to their computed values, or a single value for single outputs, or a tuple.
         """
-        # Prepare inputs as a dictionary (GEMSEO stores arrays in local_data)
-        input_vals = {name: self.local_data[name] for name in self._inputs_list}
+        # Prepare inputs as scalars: GEMSEO stores np.ndarray([v]) in local_data,
+        # but wrapped functions typically expect plain floats.
+        input_vals = {}
+        for name in self._inputs_list:
+            val = self.local_data[name]
+            input_vals[name] = (
+                val.item() if isinstance(val, np.ndarray) and val.size == 1 else val
+            )
 
-        # Execute the function
-        try:
-            result = self.func(**input_vals)
-        except TypeError:
-            # Fallback if function expects positional arguments (simple wrappers)
-            # Unpack the arrays if they are single elements and the function expects scalars
-            positional_args = [val[0] if isinstance(val, np.ndarray) and val.size == 1 else val for val in input_vals.values()]
-            result = self.func(*positional_args)
+        # Always use keyword arguments to guarantee correct mapping
+        # regardless of the order in _inputs_list.
+        result = self.func(**input_vals)
 
         # Map results to outputs inside self.local_data
         if len(self._outputs_list) == 1:
@@ -66,7 +76,9 @@ class ToolComponent(Discipline):
             for i, name in enumerate(self._outputs_list):
                 self.local_data[name] = np.atleast_1d(result[i])
 
-    def _compute_jacobian(self, inputs: list[str] = None, outputs: list[str] = None) -> None:
+    def _compute_jacobian(
+        self, inputs: list[str] = None, outputs: list[str] = None
+    ) -> None:
         """Computes the analytical derivatives if provided."""
         if self._derivatives:
             # Placeholder for exact jacobian

@@ -10,7 +10,7 @@ We welcome contributions!
 2.  **Clone the Repository**:
     ```bash
     git clone https://github.com/jultou-raa/GraphMDO.git
-    cd graph-mdo
+    cd GraphMDO
     ```
 
 3.  **Install Dependencies (including dev)**:

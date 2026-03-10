@@ -7,21 +7,109 @@
 [![Deploy Documentation](https://github.com/jultou-raa/GraphMDO/actions/workflows/docs.yml/badge.svg)](https://github.com/jultou-raa/GraphMDO/actions/workflows/docs.yml)
 [![codecov](https://codecov.io/gh/jultou-raa/GraphMDO/graph/badge.svg?token=f2150ayDNv)](https://codecov.io/gh/jultou-raa/GraphMDO)
 
-GraphMDO bridges data engineering and MDO. It extracts topological data (solvers, variables, fidelity levels) to form an oriented graph, specifically utilizing GEMSEO for semantic formulation and execution. Execution is handled natively by GEMSEO and the Surrogate Modeling Toolbox (SMT), driven by constrained Bayesian optimization (ax-platform) or evolutionary algorithms (pymoo). The primary operational goal is to isolate and maximize a single target performance metric while strictly holding all other performance metrics constant.
+GraphMDO bridges data engineering and MDO. It extracts topological data (solvers, variables, fidelity levels) to form an oriented graph, specifically utilizing GEMSEO for semantic formulation and execution. Execution is handled natively by GEMSEO and the Surrogate Modeling Toolbox (SMT), with optimization workflows currently centered on constrained Bayesian optimization (ax-platform) and DOE exploration through GEMSEO. The framework supports single- and multi-objective optimization over graph-derived design variables with explicit inequality constraints.
 
 ## Key Features
 
 *   **Native Graph Formulation**: Uses [FalkorDB](https://falkordb.com/) to store problem definitions (variables, tools, dependencies) as a property graph.
 *   **Dynamic Problem Construction**: Automatically translates the graph topology into an executable [GEMSEO](https://gemseo.readthedocs.io/) MDO formulation.
 *   **Multi-Fidelity Surrogates**: Integrates [SMT](https://smt.readthedocs.io/en/latest/) for Co-Kriging and other surrogate models.
-*   **Constrained Bayesian Optimization**: Leverages [Ax Platform](https://ax.dev/) for robust optimization, easily managing GEMSEO multi-objective targets, fidelity, and discrete/continuous parameters.
+*   **Constrained Bayesian Optimization**: Leverages [Ax Platform](https://ax.dev/) for robust optimization, supporting GEMSEO objectives, inequality constraints, and mixed discrete/continuous parameters.
 
 ## Project Architecture
 
-1.  **FalkorDB**: Stores the "Fundamental Problem Graph" (FPG).
-2.  **Graph Manager**: Python API to manipulate the graph structure.
-3.  **Translator**: Converts the graph into a GEMSEO Problem.
-4.  **Optimizer**: Drivers (Ax, Pymoo) that execute the GEMSEO problem holding constraints constant.
+The framework is divided into four sequential phases, each corresponding to a layer of abstraction:
+
+1. **Graph Layer** — FalkorDB stores the *Fundamental Problem Graph* (FPG): variables, tools, and directed connections.
+2. **Core Layer** — Python modules translate the graph schema into executable GEMSEO constructs (disciplines, design space, topology).
+3. **Execution Service** — A FastAPI microservice that manages a pool of GEMSEO `OptimizationProblem` instances and exposes an HTTP evaluation endpoint.
+4. **Optimization Layer** — Bayesian (Ax Platform) or DOE (GEMSEO Sobol) drivers run over the GEMSEO MDO scenario.
+
+```mermaid
+flowchart TD
+    subgraph USER["👤 User"]
+        U1["Define Variables\n& Tools"]
+        U2["Provide Tool\nCallables / Registry"]
+        U3["Read Results"]
+    end
+
+    subgraph GRAPH["🗄️ Graph Layer — FalkorDB"]
+        G1["GraphManager\n(graph_manager.py)"]
+        G2[("FalkorDB\nProperty Graph\nFPG")]
+        G3["FalkorDB Client\n(client.py)"]
+        G1 -- "add_variable / add_tool\nconnect_input_to_tool" --> G2
+        G3 -- "Cypher queries" --> G2
+        G1 -- uses --> G3
+    end
+
+    subgraph CORE["⚙️ Core Layer — mdo_framework.core"]
+        C1["TopologicalAnalyzer\n(topology.py)\nresolve_dependencies()"]
+        C2["GraphProblemBuilder\n(translator.py)\nbuild_problem()"]
+        C3["GemseoComponent\n(components.py)\nGEMSEO Discipline wrapper"]
+        C4["SurrogateComponent\n(surrogates.py)\nSMT Co-Kriging"]
+        C5["LocalEvaluator\n(evaluators.py)"]
+        C2 --> C3
+        C2 --> C4
+        C3 --> C5
+    end
+
+    subgraph GEMSEO["📐 GEMSEO MDO Engine"]
+        GS1["DesignSpace"]
+        GS2["MDOScenario / DOEScenario"]
+        GS3["OptimizationProblem"]
+        GS2 --> GS3
+        GS1 --> GS2
+    end
+
+    subgraph OPT["🔬 Optimization Layer — mdo_framework.optimization"]
+        O1["BayesianOptimizer\n(optimizer.py)"]
+        O2["AxOptimizationLibrary\n(ax_algo_lib.py)\nCustom GEMSEO Algorithm"]
+        O3["Ax Client\n(ax-platform)"]
+        O4["DOE Explore\nSobol sampler"]
+        O1 --> O2
+        O1 --> O4
+        O2 --> O3
+        O3 -- "suggest_next_trials()" --> O2
+        O2 -- "complete_trial() / mark_failed()" --> O3
+    end
+
+    subgraph SVC["🌐 Execution Service — services.execution"]
+        S1["FastAPI App\n(main.py)"]
+        S2["SchemaProvider\n(schema cache + TTL)"]
+        S3["ProblemPool\n(GEMSEO problem pool)"]
+        S4["/evaluate endpoint"]
+        S5["/health endpoint"]
+        S1 --> S2
+        S1 --> S3
+        S1 --> S4
+        S1 --> S5
+        S4 --> S3
+    end
+
+    %% Cross-layer data flow
+    U1 --> G1
+    U2 --> C2
+    G2 -- "get_graph_schema()" --> C1
+    G2 -- "get_graph_schema()" --> C2
+    C1 -- "design parameters\n& bounds" --> O1
+    C5 --> GS3
+    GS1 --> O1
+    GS3 --> O2
+    O2 -- "evaluate_functions(x)" --> GS3
+    O3 -- "best_parameterization" --> O1
+    O1 --> U3
+
+    %% Remote path
+    O1 -. "RemoteEvaluator\n(HTTP /evaluate)" .-> S4
+    S3 -. "GEMSEO problem\ninstance" .-> S4
+
+    style USER fill:#1e293b,stroke:#64748b,color:#f1f5f9
+    style GRAPH fill:#0f172a,stroke:#3b82f6,color:#bfdbfe
+    style CORE fill:#0f172a,stroke:#8b5cf6,color:#ddd6fe
+    style GEMSEO fill:#0f172a,stroke:#06b6d4,color:#a5f3fc
+    style OPT fill:#0f172a,stroke:#f59e0b,color:#fef3c7
+    style SVC fill:#0f172a,stroke:#10b981,color:#a7f3d0
+```
 
 ## Installation
 
@@ -108,6 +196,7 @@ optimizer = BayesianOptimizer(
 
 result = optimizer.optimize(n_steps=10)
 print(f"Best Result: {result['best_objectives']} at {result['best_parameters']}")
+print(f"Trial History: {result['history']}")
 ```
 
 ### 3. Running Tests

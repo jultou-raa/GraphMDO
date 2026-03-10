@@ -6,9 +6,10 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import unittest
 
+import numpy as np
+
 from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.core.translator import GraphProblemBuilder
-import numpy as np
 from mdo_framework.optimization.optimizer import BayesianOptimizer
 
 
