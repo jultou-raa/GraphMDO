@@ -7,6 +7,7 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 from collections.abc import Callable
 from typing import Any
 
+import numpy as np
 from gemseo.mda.factory import MDAFactory
 
 from mdo_framework.core.components import ToolComponent
@@ -64,7 +65,7 @@ class GraphProblemBuilder:
         for var in variables:
             val = var.get("value")
             if val is not None:
-                self.default_inputs[var["name"]] = __import__("numpy").atleast_1d(val)
+                self.default_inputs[var["name"]] = np.atleast_1d(val)
 
         for var_name, var_val in self.default_inputs.items():
             if var_name in mda.input_grammar:
