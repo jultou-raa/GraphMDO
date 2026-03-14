@@ -71,14 +71,9 @@ def execute_problem(
 
     input_data = {name: np.atleast_1d(val) for name, val in inputs.items()}
     out_data = prob.execute(input_data)
-    results = {}
-    for obj in objectives:
-        val = out_data.get(obj)
-        if val is None:
-            results[obj] = 0.0
-        else:
-            results[obj] = val
-    return results
+    return {
+        obj: 0.0 if (val := out_data.get(obj)) is None else val for obj in objectives
+    }
 
 
 def to_float(val: Any) -> float:
