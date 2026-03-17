@@ -139,9 +139,14 @@ def _validate_custom_ax_parameters(
         )
 
     actual_names = [parameter["name"] for parameter in ax_parameters]
-    duplicate_names = sorted(
-        {name for name in actual_names if actual_names.count(name) > 1}
-    )
+    seen = set()
+    duplicates = set()
+    for name in actual_names:
+        if name in seen:
+            duplicates.add(name)
+        else:
+            seen.add(name)
+    duplicate_names = sorted(duplicates)
     if duplicate_names:
         raise ValueError(
             "Duplicate Ax parameter names are not supported: "
