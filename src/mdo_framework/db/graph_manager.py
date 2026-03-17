@@ -10,6 +10,10 @@ from mdo_framework.db.client import FalkorDBClient
 
 
 class GraphManager:
+    # Cache for generated Cypher queries to avoid redundant string concatenation
+    # and ensure kind-based templates are only built once after validation.
+    _query_cache: dict[str, str] = {}
+
     def __init__(self):
         self.client = FalkorDBClient()
         self.graph = self.client.get_graph()
@@ -27,23 +31,28 @@ class GraphManager:
             name: The unique name of the node.
             **kwargs: Additional metadata properties to store on the node.
         """
+        if kind not in self._query_cache:
+            # Strictly validate the label format to prevent Cypher injection.
+            # Labels should only contain alphanumeric characters.
+            if not kind.isalnum():
+                raise ValueError(f"Invalid node kind: {kind}")
+
+            # Use backticks to escape the label for syntax-level isolation,
+            # providing a secondary layer of protection against injection.
+            self._query_cache[kind] = (
+                "\n"
+                f"        MERGE (n:`{kind}` {{name: $name}})\n"
+                "        SET n += $props\n"
+                "        "
+            )
+
         props = {"name": name}
         props.update(kwargs)
 
         # Remove None values so we don't store them if we don't want to
         props = {k: v for k, v in props.items() if v is not None}
 
-        # Dynamically build the query with the specific label.
-        # Ensure 'kind' only contains letters to prevent Cypher injection issues.
-        if not kind.isalpha():
-            raise ValueError(f"Invalid node kind: {kind}")
-
-        query = (
-            "\n"
-            "        MERGE (n:" + kind + " {name: $name})\n"
-            "        SET n += $props\n"
-            "        "
-        )
+        query = self._query_cache[kind]
         self.graph.query(query, params={"name": name, "props": props})
 
     def add_variable(
