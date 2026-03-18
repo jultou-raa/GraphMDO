@@ -12,7 +12,7 @@ import sys
 mock_falkordb = MagicMock()
 sys.modules["falkordb"] = mock_falkordb
 
-from mdo_framework.db.graph_manager import GraphManager
+from mdo_framework.db.graph_manager import GraphManager  # noqa: E402
 
 
 class TestGraphManager(unittest.TestCase):
