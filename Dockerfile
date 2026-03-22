@@ -29,6 +29,9 @@ RUN uv sync --frozen
 # Stage 2: Final runtime stage
 FROM python:3.12-slim
 
+# Update OS packages to fix vulnerabilities
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 # Security: Ensure uv/uvx are NOT present in the final image
 RUN rm -f /usr/bin/uv /usr/bin/uvx /bin/uv /bin/uvx
 
