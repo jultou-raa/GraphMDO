@@ -1,5 +1,5 @@
 # Stage 1: Build stage
-FROM python:3.12-slim AS builder
+FROM python:3.13-slim AS builder
 
 # Grab uv directly from astral's image
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/
@@ -27,7 +27,10 @@ RUN uv sync --frozen
 
 
 # Stage 2: Final runtime stage
-FROM python:3.12-slim
+FROM python:3.13-slim
+
+# Update OS packages to fix vulnerabilities
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 # Security: Ensure uv/uvx are NOT present in the final image
 RUN rm -f /usr/bin/uv /usr/bin/uvx /bin/uv /bin/uvx

@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ "main" ]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: Build
@@ -33,12 +36,20 @@ jobs:
         run: |
           docker build -t docker.io/my-organization/my-app:${{ github.sha }} .
 
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+      - name: Scan image for vulnerabilities
+        uses: anchore/scan-action@v3
+        id: scan
         with:
-          image-ref: 'docker.io/my-organization/my-app:${{ github.sha }}'
-          format: 'table'
-          exit-code: '1'
-          ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH'
+          image: 'docker.io/my-organization/my-app:${{ github.sha }}'
+          fail-build: true
+          severity-cutoff: high
+          output-format: sarif
+          only-fixed: true
+        env:
+          GRYPE_DB_MAX_ALLOWED_BUILT_AGE: "2160h"
+
+      - name: Upload vulnerability report
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: ${{ steps.scan.outputs.sarif }}
