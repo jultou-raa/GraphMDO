@@ -6,12 +6,13 @@ on:
   pull_request:
     branches: [ "main" ]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
@@ -43,6 +44,7 @@ jobs:
           fail-build: true
           severity-cutoff: high
           output-format: sarif
+          only-fixed: true
         env:
           GRYPE_DB_MAX_ALLOWED_BUILT_AGE: "2160h"
 
