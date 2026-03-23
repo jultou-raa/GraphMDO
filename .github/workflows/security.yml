@@ -13,11 +13,13 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
-          # This might take a few minutes, but it frees up ~30GB
           tool-cache: false
           android: true
           dotnet: true
