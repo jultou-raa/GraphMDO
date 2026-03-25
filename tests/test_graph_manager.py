@@ -6,8 +6,13 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import unittest
 from unittest.mock import MagicMock, patch
+import sys
 
-from mdo_framework.db.graph_manager import GraphManager
+# Mock falkordb before importing GraphManager
+mock_falkordb = MagicMock()
+sys.modules["falkordb"] = mock_falkordb
+
+from mdo_framework.db.graph_manager import GraphManager  # noqa: E402
 
 
 class TestGraphManager(unittest.TestCase):
@@ -22,7 +27,7 @@ class TestGraphManager(unittest.TestCase):
 
         mock_graph.query.assert_called_once()
         args, _ = mock_graph.query.call_args
-        self.assertIn("MERGE (n:Variable {name: $name})", args[0])
+        self.assertIn("MERGE (n:`Variable` {name: $name})", args[0])
         self.assertIn("SET n += $props", args[0])
         params = mock_graph.query.call_args[1].get("params")
         self.assertEqual(params["props"]["value"], 1.0)
@@ -38,7 +43,7 @@ class TestGraphManager(unittest.TestCase):
 
         mock_graph.query.assert_called_once()
         args, _ = mock_graph.query.call_args
-        self.assertIn("MERGE (n:Tool {name: $name})", args[0])
+        self.assertIn("MERGE (n:`Tool` {name: $name})", args[0])
 
     @patch("mdo_framework.db.graph_manager.FalkorDBClient")
     def test_get_tools(self, mock_client_cls):
