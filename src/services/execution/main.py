@@ -20,7 +20,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
-from mdo_framework.core.translator import GraphProblemBuilder
+from mdo_framework.core.topology import build_variable_specs
+from mdo_framework.core.translator import GraphProblemBuilder, encode_tool_inputs
 
 # Configure logging
 logger = logging.getLogger("uvicorn.error")
@@ -66,10 +67,10 @@ def execute_problem(
     prob,
     inputs: dict[str, bool | int | float | str],
     objectives: list[str],
+    variable_specs: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    import numpy as np
-
-    input_data = {name: np.atleast_1d(val) for name, val in inputs.items()}
+    """Executes the problem from user-facing inputs (choices given by value)."""
+    input_data = encode_tool_inputs(inputs, variable_specs or {})
     out_data = prob.execute(input_data)
     return {
         obj: 0.0 if (val := out_data.get(obj)) is None else val for obj in objectives
@@ -98,6 +99,7 @@ class SchemaEnvelope:
         try:
             variables = raw_data.get("variables", [])
             self.known_vars = {v["name"] for v in variables}
+            self.variable_specs = build_variable_specs(raw_data)
 
             self.known_objectives: set[str] = set()
             for tool in raw_data.get("tools", []):
@@ -375,6 +377,7 @@ async def evaluate(
                 instance,
                 req.inputs,
                 req.objectives,
+                envelope.variable_specs,
             )
             execution_succeeded = True
 

@@ -4,10 +4,35 @@ License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from typing import Any
 
 import numpy as np
 from gemseo.core.discipline import Discipline
+
+from mdo_framework.optimization.parameter_codec import (
+    ParameterDefinition,
+    index_to_value,
+)
+
+
+def to_tool_value(spec: ParameterDefinition | None, raw: Any) -> Any:
+    """Converts a GEMSEO input value into the value declared for the tool.
+
+    Choice variables travel through GEMSEO as indices and are decoded to the
+    declared choice; integer variables are delivered as ``int``. Vectors and
+    variables without a spec are passed through (scalars unwrapped).
+    """
+    if isinstance(raw, np.ndarray) and raw.size != 1:
+        return raw
+    value = raw.item() if isinstance(raw, (np.ndarray, np.generic)) else raw
+    if spec is None:
+        return value
+    if spec.get("type") == "choice":
+        return index_to_value(spec, value)
+    if spec.get("value_type") == "int" and not isinstance(value, bool):
+        return int(round(float(value)))
+    return value
 
 
 class ToolComponent(Discipline):
@@ -20,6 +45,7 @@ class ToolComponent(Discipline):
         inputs: list[str],
         outputs: list[str],
         derivatives: bool = False,
+        specs: Mapping[str, ParameterDefinition] | None = None,
     ):
         """Initializes the generic GEMSEO tool component.
 
@@ -29,12 +55,15 @@ class ToolComponent(Discipline):
             inputs: List of input variable names.
             outputs: List of output variable names.
             derivatives: Whether the function provides analytical derivatives (default False).
+            specs: Optional parameter definitions per input name, used to decode
+                choice indices and integers before calling ``func``.
         """
         super().__init__(name=name)
         self.func = func
         self._inputs_list = inputs
         self._outputs_list = outputs
         self._derivatives = derivatives
+        self._specs = dict(specs or {})
 
         # GEMSEO Grammars require us to define input/output names
         self.input_grammar.update_from_names(self._inputs_list)
@@ -51,14 +80,10 @@ class ToolComponent(Discipline):
         Expects the wrapped function to return a dictionary mapping output names
         to their computed values, or a single value for single outputs, or a tuple.
         """
-        # Prepare inputs as scalars: GEMSEO stores np.ndarray([v]) in local_data,
-        # but wrapped functions typically expect plain floats.
-        input_vals = {}
-        for name in self._inputs_list:
-            val = self.local_data[name]
-            input_vals[name] = (
-                val.item() if isinstance(val, np.ndarray) and val.size == 1 else val
-            )
+        input_vals = {
+            name: to_tool_value(self._specs.get(name), self.local_data[name])
+            for name in self._inputs_list
+        }
 
         # Always use keyword arguments to guarantee correct mapping
         # regardless of the order in _inputs_list.

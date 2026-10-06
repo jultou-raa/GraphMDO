@@ -82,28 +82,37 @@ class TopologicalAnalyzer:
             var_data = self.variables.get(var_name)
             if not var_data:
                 continue
-
-            param_type = var_data.get("param_type", "continuous")
-            if param_type == "choice":
-                parameters.append(
-                    {
-                        "name": var_name,
-                        "type": "choice",
-                        "values": var_data.get("choices", []),
-                        "value_type": var_data.get("value_type", "float"),
-                    },
-                )
-            else:
-                parameters.append(
-                    {
-                        "name": var_name,
-                        "type": "range",
-                        "bounds": [
-                            var_data.get("lower", 0.0),
-                            var_data.get("upper", 1.0),
-                        ],
-                        "value_type": var_data.get("value_type", "float"),
-                    },
-                )
+            parameters.append(variable_to_parameter(var_data))
 
         return parameters
+
+
+def variable_to_parameter(var_data: dict[str, Any]) -> dict[str, Any]:
+    """Converts a graph-schema variable into a parameter definition.
+
+    The definition is shared by the optimizer (Ax/GEMSEO design space) and the
+    tool boundary, so both decode choice indices and integers identically.
+    """
+    name = var_data["name"]
+    value_type = var_data.get("value_type", "float")
+    if var_data.get("param_type", "continuous") == "choice":
+        return {
+            "name": name,
+            "type": "choice",
+            "values": var_data.get("choices", []),
+            "value_type": value_type,
+        }
+    return {
+        "name": name,
+        "type": "range",
+        "bounds": [var_data.get("lower", 0.0), var_data.get("upper", 1.0)],
+        "value_type": value_type,
+    }
+
+
+def build_variable_specs(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Maps every schema variable name to its parameter definition."""
+    return {
+        var_data["name"]: variable_to_parameter(var_data)
+        for var_data in schema.get("variables", [])
+    }

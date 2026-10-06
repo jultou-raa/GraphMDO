@@ -9,16 +9,27 @@ from typing import Any
 import numpy as np
 from gemseo.core.discipline import Discipline
 
+from mdo_framework.core.translator import encode_tool_inputs
+from mdo_framework.optimization.parameter_codec import ParameterDefinition
+
 
 class LocalEvaluator:
     """Evaluates the design parameters locally using a GEMSEO MDA instance.
 
     Args:
         problem: An instantiated GEMSEO MDA (or Discipline) object.
+        variable_specs: Optional parameter definitions per variable name
+            (``GraphProblemBuilder.variable_specs``). Required to pass declared
+            choice values to ``evaluate``; they are converted to GEMSEO indices.
     """
 
-    def __init__(self, problem: Discipline):
+    def __init__(
+        self,
+        problem: Discipline,
+        variable_specs: dict[str, ParameterDefinition] | None = None,
+    ):
         self.problem = problem
+        self.variable_specs = variable_specs or {}
 
     def evaluate(
         self,
@@ -26,7 +37,7 @@ class LocalEvaluator:
         objectives: list[str],
     ) -> dict[str, float]:
         # GEMSEO uses a dictionary with string keys and numpy array values for local_data
-        input_data = {name: np.atleast_1d(val) for name, val in parameters.items()}
+        input_data = encode_tool_inputs(parameters, self.variable_specs)
 
         # We need to provide all required inputs for the MDA, not just parameters.
         # This will be passed and merged internally by execute.
