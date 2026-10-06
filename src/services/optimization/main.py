@@ -12,8 +12,9 @@ from typing import Any, Literal
 import httpx
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from mdo_framework.optimization.ax_algo_lib import AxObjectiveDict
 from mdo_framework.optimization.optimizer import (
     BayesianOptimizer,
     OptimizationConfigurationError,
@@ -58,27 +59,51 @@ GRAPH_SERVICE_URL = os.getenv("GRAPH_SERVICE_URL", "http://localhost:8001")
 
 
 class ObjectiveConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     minimize: bool = True
-    fidelity: str | None = (
-        None  # indicates this objective depends on a fidelity parameter
+    threshold: float | None = Field(
+        default=None,
+        description="Reference point for this objective in multi-objective runs.",
     )
+
+    def to_ax(self) -> AxObjectiveDict:
+        """Projects the request onto the Ax objective contract."""
+        objective: AxObjectiveDict = {"name": self.name, "minimize": self.minimize}
+        if self.threshold is not None:
+            objective["threshold"] = self.threshold
+        return objective
 
 
 class ConstraintConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     bound: float
     op: Literal["<=", ">="] = "<="
 
 
 class OptimizeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     objectives: list[ObjectiveConfig]
     constraints: list[ConstraintConfig] | None = None
-    fidelity_parameter: str | None = None  # Name of the parameter determining fidelity
+    fidelity_parameter: str | None = Field(
+        default=None,
+        description="Reserved for multi-fidelity optimization; not supported yet.",
+    )
     parameter_constraints: list[str] | None = None
     n_steps: int = 5
     n_init: int = 5
     use_bonsai: bool = False
+
+    @field_validator("fidelity_parameter")
+    @classmethod
+    def reject_fidelity_parameter(cls, value: str | None) -> str | None:
+        if value is not None:
+            raise ValueError("Multi-fidelity optimization is not supported yet.")
+        return value
 
 
 @app.post("/optimize")
@@ -127,24 +152,22 @@ async def optimize(req: OptimizeRequest, request: Request):
     # 4. Setup Evaluator
     evaluator = RemoteEvaluator(EXECUTION_SERVICE_URL)
 
-    # 5. Setup Optimizer
+    # 5. Setup and run the optimizer
     try:
         constraints = (
             [c.model_dump() for c in req.constraints] if req.constraints else None
         )
-
-        optimizer = BayesianOptimizer(
-            evaluator=evaluator,
-            parameters=parameters,
-            objectives=[o.model_dump() for o in req.objectives],
-            constraints=constraints,
-            fidelity_parameter=req.fidelity_parameter,
-            use_bonsai=req.use_bonsai,
-            parameter_constraints=req.parameter_constraints,
-        )
-
-        # 6. Run Optimization (offload to thread to avoid blocking the event loop)
         try:
+            optimizer = BayesianOptimizer(
+                evaluator=evaluator,
+                parameters=parameters,
+                objectives=[o.to_ax() for o in req.objectives],
+                constraints=constraints,
+                use_bonsai=req.use_bonsai,
+                parameter_constraints=req.parameter_constraints,
+            )
+
+            # Offload to a thread to avoid blocking the event loop
             result = await asyncio.to_thread(
                 optimizer.optimize,
                 n_steps=req.n_steps,

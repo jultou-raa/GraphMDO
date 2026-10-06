@@ -14,7 +14,7 @@ from gemseo import create_scenario
 from gemseo.algos.design_space import DesignSpace
 from gemseo.core.discipline import Discipline
 
-import mdo_framework.optimization.ax_algo_lib  # noqa: F401
+from mdo_framework.optimization.ax_algo_lib import AxObjectiveDict
 from mdo_framework.optimization.parameter_codec import (
     ParameterDefinitionError,
     ParameterValueError,
@@ -30,6 +30,9 @@ from mdo_framework.optimization.parameter_codec import (
 logger = logging.getLogger(__name__)
 
 ScalarValue: TypeAlias = bool | int | float | str
+AX_OBJECTIVE_KEYS = frozenset(
+    AxObjectiveDict.__required_keys__ | AxObjectiveDict.__optional_keys__
+)
 
 
 class OptimizationConfigurationError(ValueError):
@@ -46,6 +49,22 @@ class RemoteEvaluationTransportError(RuntimeError):
 
 class RemoteEvaluationContractError(TypeError):
     """Raised when the execution service response breaks the expected contract."""
+
+
+def _validate_objectives(objectives: list[dict[str, Any]]) -> None:
+    """Rejects objective keys the Ax backend does not understand."""
+    if not objectives:
+        raise OptimizationConfigurationError("At least one objective is required.")
+    for objective in objectives:
+        if "name" not in objective:
+            raise OptimizationConfigurationError(
+                f"Objective {objective!r} is missing the required 'name' key."
+            )
+        if unknown := set(objective) - AX_OBJECTIVE_KEYS:
+            raise OptimizationConfigurationError(
+                f"Objective {objective['name']!r} has unsupported keys: "
+                f"{sorted(unknown)}. Supported keys: {sorted(AX_OBJECTIVE_KEYS)}."
+            )
 
 
 def _get_optimization_history(
@@ -349,6 +368,7 @@ class BayesianOptimizer:
         use_bonsai: bool = False,
         parameter_constraints: list[str] | None = None,
     ) -> None:
+        _validate_objectives(objectives)
         self.evaluator = evaluator
         self.parameters = parameters
         self.objectives = objectives

@@ -4,10 +4,15 @@ License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
+import os
 import shutil
 from pathlib import Path
 
 import pytest
+
+# GEMSEO renders plots from worker threads during service tests; the default Tk
+# backend aborts the interpreter on Windows ("Tcl_AsyncDelete") in that case.
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)

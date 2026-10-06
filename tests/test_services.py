@@ -777,7 +777,6 @@ class TestOptimizationService(unittest.TestCase):
             "n_steps": 1,
             "n_init": 1,
             "use_bonsai": True,
-            "fidelity_parameter": "f1",
         }
 
         response = self.client.post("/optimize", json=payload)
@@ -1007,10 +1006,6 @@ class TestOptimizationService(unittest.TestCase):
         }
 
         payload = {
-            "parameters": [
-                {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
-                {"name": "y", "type": "range", "bounds": [0.0, 1.0]},
-            ],
             "objectives": [{"name": "f_xy"}],
             "constraints": [{"name": "g_xy", "op": "<=", "bound": 0.0}],
             "n_steps": 1,
