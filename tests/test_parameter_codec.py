@@ -15,6 +15,8 @@ from mdo_framework.optimization.parameter_codec import (
     coerce_scalar,
     decode_parameter_value,
     encode_parameter_value,
+    index_to_value,
+    value_to_index,
 )
 
 
@@ -37,6 +39,46 @@ class TestParameterCodec(unittest.TestCase):
                 encoded_value = encode_parameter_value(parameter, input_value)
                 decoded_value = decode_parameter_value(parameter, encoded_value)
                 self.assertEqual(decoded_value, expected_value)
+
+    def test_choice_index_round_trip_for_ambiguous_lists(self):
+        choice_lists = [
+            [1, 2, 3],
+            [2, 4, 6],
+            [0, 1],
+            [0.5, 2.0, 8.0],
+            ["a", "b"],
+            [True, False],
+        ]
+        for choices in choice_lists:
+            parameter = {"name": "c", "type": "choice", "values": choices}
+            for index, value in enumerate(choices):
+                with self.subTest(choices=choices, value=value):
+                    self.assertEqual(value_to_index(parameter, value), index)
+                    decoded = index_to_value(parameter, float(index))
+                    self.assertEqual(decoded, value)
+                    self.assertIs(type(decoded), type(value))
+                    self.assertEqual(index_to_value(parameter, index), choices[index])
+                    round_trip = decode_parameter_value(
+                        parameter, encode_parameter_value(parameter, value)
+                    )
+                    self.assertEqual(round_trip, value)
+                    self.assertIs(type(round_trip), type(value))
+                    self.assertEqual(
+                        decode_parameter_value(parameter, float(index)), value
+                    )
+
+    def test_value_to_index_rejects_undeclared_values(self):
+        cases = [
+            ({"name": "c", "type": "choice", "values": [1, 2, 3]}, 2.5),
+            ({"name": "c", "type": "choice", "values": ["a", "b"]}, "c"),
+            ({"name": "c", "type": "choice", "values": [1, 2, 3]}, 0),
+        ]
+        for parameter, value in cases:
+            with self.subTest(value=value):
+                with self.assertRaises(ParameterValueError):
+                    value_to_index(parameter, value)
+                with self.assertRaises(ParameterValueError):
+                    encode_parameter_value(parameter, value)
 
     def test_helper_functions(self):
         scalar_cases = [

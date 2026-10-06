@@ -63,34 +63,51 @@ def _find_choice_index(choices: list[Any], value: Any) -> int | None:
     return None
 
 
+def index_to_value(parameter: ParameterDefinition, raw_index: Any) -> ScalarValue:
+    """Map a GEMSEO design-space index to the declared choice value."""
+    choices = _get_choice_values(parameter)
+    index_value = coerce_scalar(raw_index)
+    if isinstance(index_value, bool):
+        raise ParameterValueError(
+            f"Cannot decode choice parameter {parameter['name']} "
+            f"from index {index_value!r}."
+        )
+    try:
+        index = int(round(float(index_value)))
+    except (TypeError, ValueError) as exc:
+        raise ParameterValueError(
+            f"Cannot decode choice parameter {parameter['name']} "
+            f"from index {index_value!r}."
+        ) from exc
+    if not 0 <= index < len(choices):
+        raise ParameterValueError(
+            f"Choice index {index} is out of bounds for parameter {parameter['name']}."
+        )
+    return choices[index]
+
+
+def value_to_index(parameter: ParameterDefinition, value: Any) -> int:
+    """Map a declared choice value to its GEMSEO design-space index."""
+    choices = _get_choice_values(parameter)
+    index = _find_choice_index(choices, coerce_scalar(value))
+    if index is None:
+        raise ParameterValueError(
+            f"{value!r} is not a declared choice of parameter {parameter['name']}."
+        )
+    return index
+
+
 def encode_parameter_value(
     parameter: ParameterDefinition | None,
     raw_value: Any,
 ) -> float:
+    """Encode a user-facing value (as proposed by Ax) into the GEMSEO design space."""
     value = coerce_scalar(raw_value)
     if parameter is None:
         return float(value)
 
     if parameter["type"] == "choice":
-        choices = _get_choice_values(parameter)
-        if len(choices) == 1:
-            return 0.0
-
-        choice_index = _find_choice_index(choices, value)
-        if choice_index is not None:
-            return float(choice_index)
-
-        if isinstance(value, bool):
-            raise ParameterValueError(
-                f"Cannot encode choice parameter {parameter['name']} from value {value!r}."
-            )
-
-        try:
-            return float(value)
-        except (TypeError, ValueError) as exc:
-            raise ParameterValueError(
-                f"Cannot encode choice parameter {parameter['name']} from value {value!r}."
-            ) from exc
+        return float(value_to_index(parameter, value))
 
     if parameter.get("value_type") == "int" and not isinstance(value, bool):
         return float(int(round(float(value))))
@@ -102,32 +119,16 @@ def decode_parameter_value(
     parameter: ParameterDefinition | None,
     raw_value: Any,
 ) -> ScalarValue | Any:
+    """Decode a GEMSEO design-space value into the user-facing value.
+
+    Choice parameters are always stored as indices in the design space.
+    """
     value = coerce_scalar(raw_value)
     if parameter is None:
         return value
 
     if parameter["type"] == "choice":
-        choices = _get_choice_values(parameter)
-        choice_index = _find_choice_index(choices, value)
-        if choice_index is not None:
-            return choices[choice_index]
-
-        if isinstance(value, bool):
-            raise ParameterValueError(
-                f"Cannot decode choice parameter {parameter['name']} from value {value!r}."
-            )
-
-        try:
-            index = int(round(float(value)))
-        except (TypeError, ValueError) as exc:
-            raise ParameterValueError(
-                f"Cannot decode choice parameter {parameter['name']} from value {value!r}."
-            ) from exc
-        if not 0 <= index < len(choices):
-            raise ParameterValueError(
-                f"Choice index {index} is out of bounds for parameter {parameter['name']}."
-            )
-        return choices[index]
+        return index_to_value(parameter, value)
 
     if parameter.get("value_type") == "int" and not isinstance(value, bool):
         return int(round(float(value)))
