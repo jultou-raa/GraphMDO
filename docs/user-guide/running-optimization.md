@@ -8,11 +8,13 @@ The microservices architecture decouples the graph management, execution, and op
 
 ### 1. Start Services
 
-Ensure all services are running:
+Start the stack and wait until every service reports healthy:
 
 ```bash
-docker compose up -d
+docker compose up -d --build --wait
 ```
+
+The Compose file already wires `GRAPH_SERVICE_URL` and `EXECUTION_SERVICE_URL`, and each service waits for its dependencies' `/health` endpoints before starting.
 
 ### 2. Define Problem (Graph Service)
 
@@ -72,5 +74,3 @@ You will receive a JSON response containing:
 Some deployments may also include optional metadata such as `serialized_client`.
 
 If the request cannot be mapped to independent design variables from the graph, the service returns `400`. Upstream graph or execution failures are returned as `502`.
-
-If you run the full stack with the current `docker-compose.yml`, also ensure the optimization service can resolve the graph service through `GRAPH_SERVICE_URL=http://graph-service:8001`.

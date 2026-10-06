@@ -7,8 +7,10 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 from typing import Any
 
 from fastapi import Depends, FastAPI
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
+from mdo_framework.db.client import FalkorDBClient
 from mdo_framework.db.graph_manager import GraphManager
 
 app = FastAPI(title="Graph Service")
@@ -113,3 +115,21 @@ def connect_output(
 @app.get("/schema", response_model=SchemaResponse)
 def get_schema(gm: GraphManager = Depends(get_graph_manager)):
     return gm.get_graph_schema()
+
+
+def ping_database() -> None:
+    """Raise if FalkorDB does not answer a PING."""
+    FalkorDBClient().client.connection.ping()
+
+
+@app.get("/health")
+def health():
+    """Report 200 when FalkorDB answers, 503 otherwise."""
+    try:
+        ping_database()
+    except Exception as e:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "degraded", "falkordb": str(e)},
+        )
+    return {"status": "ok", "falkordb": "ok"}

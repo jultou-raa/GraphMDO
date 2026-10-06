@@ -1,5 +1,5 @@
 # Stage 1: Build stage
-FROM python:3.13-slim AS builder
+FROM python:3.12-slim AS builder
 
 # Grab uv directly from astral's image
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/
@@ -17,17 +17,17 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 
 # Install dependencies into a virtual environment
-RUN uv sync --frozen --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy your source code
 COPY src/ src/
 
 # Install the project itself
-RUN uv sync --frozen
+RUN uv sync --frozen --no-dev
 
 
 # Stage 2: Final runtime stage
-FROM python:3.13-slim
+FROM python:3.12-slim
 
 # Update OS packages to fix vulnerabilities
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
@@ -49,5 +49,8 @@ COPY --from=builder --chown=appuser:appuser /app/src /app/src
 # Set environment variables to use the virtual environment
 ENV PATH="/app/.venv/bin:$PATH"
 
+# Graph, execution and optimization services (see docker-compose.yml)
+EXPOSE 8001 8002 8003
+
 # Default command
-CMD ["uvicorn", "services.graph.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "services.graph.main:app", "--host", "0.0.0.0", "--port", "8001"]
