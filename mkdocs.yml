@@ -43,4 +43,6 @@ nav:
       - Client: api/db/client.md
     - Optimization:
       - Optimizer: api/optimization/optimizer.md
-  - Developer Guide: dev-guide/contributing.md
+  - Developer Guide:
+    - Contributing: dev-guide/contributing.md
+    - Releasing: dev-guide/releasing.md
