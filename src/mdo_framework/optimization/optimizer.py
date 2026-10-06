@@ -475,8 +475,26 @@ class BayesianOptimizer:
             logger.error(f"Exploration failed: {e}")
             raise OptimizationExecutionError(f"Exploration failed: {str(e)}") from e
 
-    def optimize(self, n_steps: int = 5, n_init: int = 5) -> dict[str, Any]:
-        """Runs the optimization loop using GEMSEO MDOScenario."""
+    def optimize(self, n_steps: int = 10, n_init: int = 5) -> dict[str, Any]:
+        """Runs Bayesian optimization using a GEMSEO MDOScenario.
+
+        Args:
+            n_steps: Bayesian (BoTorch) iterations, at least 1.
+            n_init: Initial Sobol trials, at least 1. The start point x0 is
+                evaluated in addition to these trials.
+
+        The tools are called at most ``1 + n_init + n_steps`` times. Fewer calls
+        happen only when Ax stops proposing new designs, e.g. in an exhausted
+        discrete space.
+
+        Raises:
+            OptimizationConfigurationError: If ``n_steps`` or ``n_init`` is < 1.
+        """
+        for budget_name, budget in (("n_steps", n_steps), ("n_init", n_init)):
+            if budget < 1:
+                raise OptimizationConfigurationError(
+                    f"{budget_name} must be >= 1, got {budget}."
+                )
         if self.fidelity_parameter is not None:
             warnings.warn("fidelity_parameter is ignored.")
         discipline, design_space, objective_names = self._prepare_scenario_context()
@@ -504,7 +522,7 @@ class BayesianOptimizer:
             algo = AxOptimizationLibrary()
             algo.execute(
                 problem,
-                max_iter=n_steps,
+                max_iter=1 + n_init + n_steps,
                 n_init=n_init,
                 use_bonsai=self.use_bonsai,
                 ax_parameters=self.parameters,

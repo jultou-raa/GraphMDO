@@ -35,7 +35,10 @@ class TestIntegration(unittest.TestCase):
         # 2. Translate
         builder = GraphProblemBuilder(schema)
 
+        calls = []
+
         def paraboloid_func(x, y):
+            calls.append((x, y))
             return (x - 3.0) ** 2 + x * y + (y + 4.0) ** 2 - 3.0
 
         tool_registry = {"Paraboloid": paraboloid_func}
@@ -61,11 +64,14 @@ class TestIntegration(unittest.TestCase):
             objectives=[{"name": "f_xy"}],
         )
 
+        calls.clear()
         try:
             result = optimizer.optimize(n_steps=1, n_init=2)
             self.assertIn("best_objectives", result)
         except Exception as e:
             self.fail(f"Optimization failed: {e}")
+        # x0 + n_init Sobol + n_steps BoTorch
+        self.assertEqual(len(calls), 1 + 2 + 1)
 
 
 if __name__ == "__main__":

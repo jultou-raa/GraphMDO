@@ -94,8 +94,19 @@ class OptimizeRequest(BaseModel):
         description="Reserved for multi-fidelity optimization; not supported yet.",
     )
     parameter_constraints: list[str] | None = None
-    n_steps: int = 5
-    n_init: int = 5
+    n_steps: int = Field(
+        default=10,
+        ge=1,
+        description="Bayesian (BoTorch) iterations after the initial design.",
+    )
+    n_init: int = Field(
+        default=5,
+        ge=1,
+        description=(
+            "Initial Sobol trials. The start point x0 is evaluated in addition, "
+            "so tools are called at most 1 + n_init + n_steps times."
+        ),
+    )
     use_bonsai: bool = False
 
     @field_validator("fidelity_parameter")

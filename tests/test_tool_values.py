@@ -109,8 +109,14 @@ def test_remote_discipline_delivers_declared_numeric_choices():
 
     received_c = [p["c"] for p in service.received]
     assert set(received_c) <= {1, 2, 3}
-    history_c = [trial["parameters"]["c"] for trial in result["history"]]
-    assert history_c == received_c[-len(history_c) :]
+    # Ax may re-propose evaluated designs (GEMSEO cache hits, no service call),
+    # so every history entry must match some design the service received.
+    for trial in result["history"]:
+        assert any(
+            p["c"] == trial["parameters"]["c"]
+            and p["z"] == pytest.approx(trial["parameters"]["z"])
+            for p in service.received
+        )
     assert result["best_parameters"]["c"] in {1, 2, 3}
     expected_f = (result["best_parameters"]["c"] - 3) ** 2 + result["best_parameters"][
         "z"

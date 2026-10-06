@@ -51,9 +51,17 @@ curl -X POST http://localhost:8003/optimize \
            "objectives": [
                {"name": "f_xy", "minimize": true}
            ],
+           "n_init": 5,
            "n_steps": 10
          }'
 ```
+
+The evaluation budget is explicit:
+
+- `n_init` (default `5`, at least `1`): initial Sobol trials that explore the design space.
+- `n_steps` (default `10`, at least `1`): Bayesian (BoTorch) iterations after the initial design.
+
+The start point (the centre of the design space) is evaluated first, so the tools are called at most `1 + n_init + n_steps` times. Fewer calls happen only when Ax stops proposing new designs, for example once a small discrete space is exhausted. Values below `1` are rejected with `422`.
 
 You will receive a JSON response containing:
 

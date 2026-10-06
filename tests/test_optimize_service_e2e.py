@@ -104,6 +104,8 @@ def test_documented_payload_runs_real_optimization(services, monkeypatch):
         ({"objectives": [{"name": "f_xy", "minimise": False}]}, "minimise"),
         ({**DOCUMENTED_PAYLOAD, "n_iterations": 3}, "n_iterations"),
         ({**DOCUMENTED_PAYLOAD, "fidelity_parameter": "f1"}, "fidelity_parameter"),
+        ({**DOCUMENTED_PAYLOAD, "n_steps": 0}, "n_steps"),
+        ({**DOCUMENTED_PAYLOAD, "n_init": 0}, "n_init"),
     ],
 )
 def test_unsupported_fields_are_rejected_with_422(services, payload, field):
