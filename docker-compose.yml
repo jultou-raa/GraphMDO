@@ -5,37 +5,66 @@ services:
       - "6379:6379"
     volumes:
       - falkordb_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   graph-service:
     build: .
-    command: uv run uvicorn services.graph.main:app --host 0.0.0.0 --port 8001
+    command: ["uvicorn", "services.graph.main:app", "--host", "0.0.0.0", "--port", "8001"]
     ports:
       - "8001:8001"
     environment:
       - FALKORDB_HOST=falkordb
       - FALKORDB_PORT=6379
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=5)"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
     depends_on:
-      - falkordb
+      falkordb:
+        condition: service_healthy
 
   execution-service:
     build: .
-    command: uv run uvicorn services.execution.main:app --host 0.0.0.0 --port 8002
+    command: ["uvicorn", "services.execution.main:app", "--host", "0.0.0.0", "--port", "8002"]
     ports:
       - "8002:8002"
     environment:
       - GRAPH_SERVICE_URL=http://graph-service:8001
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=5)"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
     depends_on:
-      - graph-service
+      graph-service:
+        condition: service_healthy
 
   optimization-service:
     build: .
-    command: uv run uvicorn services.optimization.main:app --host 0.0.0.0 --port 8003
+    command: ["uvicorn", "services.optimization.main:app", "--host", "0.0.0.0", "--port", "8003"]
     ports:
       - "8003:8003"
     environment:
+      - GRAPH_SERVICE_URL=http://graph-service:8001
       - EXECUTION_SERVICE_URL=http://execution-service:8002
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health', timeout=5)"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
     depends_on:
-      - execution-service
+      graph-service:
+        condition: service_healthy
+      execution-service:
+        condition: service_healthy
 
 volumes:
   falkordb_data:

@@ -15,6 +15,7 @@ from gemseo.algos.stop_criteria import MaxIterReachedException
 from gemseo.core.mdo_functions.mdo_function import MDOFunction
 
 from mdo_framework.optimization.ax_algo_lib import (
+    BUDGET_REACHED_MESSAGE,
     AxOptimizationLibrary,
     AxSettings,
     _get_choice_parameter_type,
@@ -459,7 +460,5 @@ class TestAxOptimizationLibrary(unittest.TestCase):
             ax_objectives=[{"name": "obj", "minimize": True}],
         )
         message, status = algo._run(budget_problem)
-        self.assertEqual(
-            message, "Optimization stopped early: evaluation budget exhausted."
-        )
+        self.assertEqual(message, BUDGET_REACHED_MESSAGE)
         self.assertEqual(status, 0)

@@ -58,6 +58,30 @@ class TestGraphService(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"tools": [], "variables": []})
 
+    def test_health_ok_when_falkordb_answers(self):
+        with patch("services.graph.main.ping_database") as ping:
+            response = self.client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "ok", "falkordb": "ok"})
+        ping.assert_called_once()
+
+    def test_health_degraded_when_falkordb_is_unreachable(self):
+        with patch(
+            "services.graph.main.ping_database",
+            side_effect=ConnectionError("Connection refused"),
+        ):
+            response = self.client.get("/health")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["status"], "degraded")
+        self.assertIn("Connection refused", response.json()["falkordb"])
+
+    def test_ping_database_pings_falkordb_connection(self):
+        with patch("services.graph.main.FalkorDBClient") as client_cls:
+            from services.graph.main import ping_database
+
+            ping_database()
+        client_cls.return_value.client.connection.ping.assert_called_once()
+
     def test_clear_graph(self):
         response = self.client.post("/clear")
         self.assertEqual(response.status_code, 200)
@@ -328,6 +352,21 @@ class TestExecutionService(unittest.TestCase):
                         "An internal execution error occurred.",
                     )
                     mock_discard.assert_called_once()
+
+    def test_health_ok_when_graph_service_is_healthy(self):
+        from services.execution.main import SchemaProvider
+
+        with patch.dict(execution_app.state.__dict__, {}):
+            mock_client = AsyncMock()
+            mock_client.get.return_value = MagicMock(
+                raise_for_status=MagicMock(return_value=None)
+            )
+            execution_app.state.schema_provider = SchemaProvider(mock_client)
+
+            response = self.client.get("/health")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["graph_service"], "ok")
+            self.assertTrue(mock_client.get.call_args.args[0].endswith("/health"))
 
     def test_health_degraded(self):
         from services.execution.main import SchemaProvider
@@ -777,7 +816,6 @@ class TestOptimizationService(unittest.TestCase):
             "n_steps": 1,
             "n_init": 1,
             "use_bonsai": True,
-            "fidelity_parameter": "f1",
         }
 
         response = self.client.post("/optimize", json=payload)
@@ -1007,10 +1045,6 @@ class TestOptimizationService(unittest.TestCase):
         }
 
         payload = {
-            "parameters": [
-                {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
-                {"name": "y", "type": "range", "bounds": [0.0, 1.0]},
-            ],
             "objectives": [{"name": "f_xy"}],
             "constraints": [{"name": "g_xy", "op": "<=", "bound": 0.0}],
             "n_steps": 1,

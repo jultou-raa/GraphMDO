@@ -14,7 +14,7 @@ from gemseo import create_scenario
 from gemseo.algos.design_space import DesignSpace
 from gemseo.core.discipline import Discipline
 
-import mdo_framework.optimization.ax_algo_lib  # noqa: F401
+from mdo_framework.optimization.ax_algo_lib import AxObjectiveDict
 from mdo_framework.optimization.parameter_codec import (
     ParameterDefinitionError,
     ParameterValueError,
@@ -30,6 +30,9 @@ from mdo_framework.optimization.parameter_codec import (
 logger = logging.getLogger(__name__)
 
 ScalarValue: TypeAlias = bool | int | float | str
+AX_OBJECTIVE_KEYS = frozenset(
+    AxObjectiveDict.__required_keys__ | AxObjectiveDict.__optional_keys__
+)
 
 
 class OptimizationConfigurationError(ValueError):
@@ -46,6 +49,22 @@ class RemoteEvaluationTransportError(RuntimeError):
 
 class RemoteEvaluationContractError(TypeError):
     """Raised when the execution service response breaks the expected contract."""
+
+
+def _validate_objectives(objectives: list[dict[str, Any]]) -> None:
+    """Rejects objective keys the Ax backend does not understand."""
+    if not objectives:
+        raise OptimizationConfigurationError("At least one objective is required.")
+    for objective in objectives:
+        if "name" not in objective:
+            raise OptimizationConfigurationError(
+                f"Objective {objective!r} is missing the required 'name' key."
+            )
+        if unknown := set(objective) - AX_OBJECTIVE_KEYS:
+            raise OptimizationConfigurationError(
+                f"Objective {objective['name']!r} has unsupported keys: "
+                f"{sorted(unknown)}. Supported keys: {sorted(AX_OBJECTIVE_KEYS)}."
+            )
 
 
 def _get_optimization_history(
@@ -349,6 +368,7 @@ class BayesianOptimizer:
         use_bonsai: bool = False,
         parameter_constraints: list[str] | None = None,
     ) -> None:
+        _validate_objectives(objectives)
         self.evaluator = evaluator
         self.parameters = parameters
         self.objectives = objectives
@@ -455,8 +475,26 @@ class BayesianOptimizer:
             logger.error(f"Exploration failed: {e}")
             raise OptimizationExecutionError(f"Exploration failed: {str(e)}") from e
 
-    def optimize(self, n_steps: int = 5, n_init: int = 5) -> dict[str, Any]:
-        """Runs the optimization loop using GEMSEO MDOScenario."""
+    def optimize(self, n_steps: int = 10, n_init: int = 5) -> dict[str, Any]:
+        """Runs Bayesian optimization using a GEMSEO MDOScenario.
+
+        Args:
+            n_steps: Bayesian (BoTorch) iterations, at least 1.
+            n_init: Initial Sobol trials, at least 1. The start point x0 is
+                evaluated in addition to these trials.
+
+        The tools are called at most ``1 + n_init + n_steps`` times. Fewer calls
+        happen only when Ax stops proposing new designs, e.g. in an exhausted
+        discrete space.
+
+        Raises:
+            OptimizationConfigurationError: If ``n_steps`` or ``n_init`` is < 1.
+        """
+        for budget_name, budget in (("n_steps", n_steps), ("n_init", n_init)):
+            if budget < 1:
+                raise OptimizationConfigurationError(
+                    f"{budget_name} must be >= 1, got {budget}."
+                )
         if self.fidelity_parameter is not None:
             warnings.warn("fidelity_parameter is ignored.")
         discipline, design_space, objective_names = self._prepare_scenario_context()
@@ -484,7 +522,7 @@ class BayesianOptimizer:
             algo = AxOptimizationLibrary()
             algo.execute(
                 problem,
-                max_iter=n_steps,
+                max_iter=1 + n_init + n_steps,
                 n_init=n_init,
                 use_bonsai=self.use_bonsai,
                 ax_parameters=self.parameters,

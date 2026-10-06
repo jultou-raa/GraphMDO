@@ -79,7 +79,8 @@ optimizer = BayesianOptimizer(
 )
 
 # 5. Execute Optimization
-result = optimizer.optimize(n_steps=10)
+# x0 + 5 Sobol trials (n_init) + 10 Bayesian iterations (n_steps) = 16 evaluations
+result = optimizer.optimize(n_steps=10, n_init=5)
 print(f"Best Result: {result['best_objectives']} at {result['best_parameters']}")
 ```
 

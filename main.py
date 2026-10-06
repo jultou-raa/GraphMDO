@@ -72,7 +72,7 @@ def main():
     design_vars, _ = analyzer.resolve_dependencies(["f_xy"])
     parameters = analyzer.extract_parameters(design_vars)
 
-    evaluator = LocalEvaluator(prob)
+    evaluator = LocalEvaluator(prob, builder.variable_specs)
 
     optimizer = BayesianOptimizer(
         evaluator=evaluator,

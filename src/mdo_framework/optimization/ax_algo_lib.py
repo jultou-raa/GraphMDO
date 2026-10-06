@@ -26,6 +26,7 @@ from ax.generation_strategy.generation_node import GenerationStep
 from ax.generation_strategy.generation_strategy import GenerationStrategy
 from botorch.acquisition.logei import qLogNoisyExpectedImprovement
 from gemseo.algos.design_space import DesignSpace
+from gemseo.algos.evaluation_counter import EvaluationCounter
 from gemseo.algos.evaluation_problem import EvaluationProblem
 from gemseo.algos.opt.base_optimization_library import (
     BaseOptimizationLibrary,
@@ -46,6 +47,12 @@ logger = logging.getLogger(__name__)
 # Exceptions that indicate a recoverable evaluation failure.
 # Unknown exceptions (e.g., MemoryError, SystemExit) should still propagate.
 _RECOVERABLE_EVAL_ERRORS = (ValueError, RuntimeError, ArithmeticError)
+
+# Consecutive Ax generations allowed to propose no new design (cache hits or
+# empty batches) before the loop stops, e.g. once a discrete space is exhausted.
+MAX_STALLED_GENERATIONS = 5
+BUDGET_REACHED_MESSAGE = "Optimization completed: evaluation budget reached."
+STALLED_MESSAGE_PREFIX = "Optimization stopped: no new design proposed"
 
 
 class _AxParameterDictBase(TypedDict):
@@ -212,10 +219,24 @@ class _ConfiguredClient(NamedTuple):
     is_moo: bool
 
 
-class AxSettings(BaseOptimizerSettings):
-    """Settings for Ax optimization."""
+def _evaluations_done(counter: EvaluationCounter) -> int:
+    """Returns the new evaluations GEMSEO has performed, x0 included.
 
-    max_iter: int = 10
+    GEMSEO enables the counter on the first new evaluation and increments it
+    only when the next new evaluation starts, so ``current`` lags by one.
+    """
+    return counter.current + 1 if counter.enabled else counter.current
+
+
+class AxSettings(BaseOptimizerSettings):
+    """Settings for Ax optimization.
+
+    ``max_iter`` keeps GEMSEO's meaning: the total number of new evaluations,
+    including the start point x0. ``n_init`` is the number of Sobol trials;
+    the remaining budget goes to BoTorch.
+    """
+
+    max_iter: int = 16
     batch_size: int = 1
     n_init: int = 5
     use_bonsai: bool = False
@@ -763,22 +784,23 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                 ax_parameters=settings.ax_parameters,
             )
 
-            budget_exhausted = False
-
             obj_names = _normalize_name_list(problem.objective.name)
             c_names = {c.name for c in problem.constraints}
             metric_names = set(obj_names) | c_names
 
-            for _ in range(settings.max_iter):
-                if budget_exhausted:
-                    break
-                executed_trial = False
+            counter = problem.evaluation_counter
+            maximum = counter.maximum or settings.max_iter
+            stalls = 0
+            while (
+                _evaluations_done(counter) < maximum
+                and stalls < MAX_STALLED_GENERATIONS
+            ):
+                before = _evaluations_done(counter)
                 trials = configured.client.get_next_trials(
-                    max_trials=settings.batch_size
+                    max_trials=min(settings.batch_size, maximum - before)
                 )
                 for trial_index, parameters in trials.items():
-                    executed_trial = True
-                    budget_exhausted = self._execute_trial(
+                    if self._execute_trial(
                         configured.client,
                         problem,
                         trial_index,
@@ -786,11 +808,12 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                         metric_names,
                         normalize=settings.normalize_design_space,
                         ax_parameters=settings.ax_parameters,
-                    )
-                    if budget_exhausted:
+                    ):
+                        maximum = _evaluations_done(counter)
                         break
-                if not executed_trial:
+                if not trials:
                     self._record_last_point(problem, settings.ax_parameters)
+                stalls = stalls + 1 if _evaluations_done(counter) == before else 0
 
             self._extract_best_solution(
                 configured.client,
@@ -800,6 +823,12 @@ class AxOptimizationLibrary(BaseOptimizationLibrary):
                 ax_parameters=settings.ax_parameters,
             )
 
-        if budget_exhausted:
-            return "Optimization stopped early: evaluation budget exhausted.", 0
-        return "Optimization completed successfully.", 0
+        if stalls >= MAX_STALLED_GENERATIONS:
+            message = (
+                f"{STALLED_MESSAGE_PREFIX} in {stalls} consecutive generations "
+                f"after {_evaluations_done(counter)} of {maximum} evaluations "
+                "(design space likely exhausted)."
+            )
+            logger.warning(message)
+            return message, 0
+        return BUDGET_REACHED_MESSAGE, 0

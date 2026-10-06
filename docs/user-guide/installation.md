@@ -37,7 +37,7 @@ docker run -p 6379:6379 -it falkordb/falkordb
 Alternatively, you can use the provided `docker-compose.yml` to spin up the entire stack.
 
 ```bash
-docker compose up -d
+docker compose up -d --build --wait
 ```
 
 This will launch:
@@ -46,4 +46,4 @@ This will launch:
 - Execution Service (Port 8002)
 - Optimization Service (Port 8003)
 
-Note: in the current Compose file, the optimization service does not receive `GRAPH_SERVICE_URL`. To use `/optimize` from the containerized optimization service, add `GRAPH_SERVICE_URL=http://graph-service:8001` to the `optimization-service` environment in `docker-compose.yml`, or run the optimization service locally.
+Every service has a healthcheck on its `/health` endpoint and starts only after its dependencies are healthy, so `--wait` returns once the stack is ready. Service URLs (`GRAPH_SERVICE_URL`, `EXECUTION_SERVICE_URL`) are already set in `docker-compose.yml`. The runtime image contains only production dependencies.

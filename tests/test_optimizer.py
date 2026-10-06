@@ -12,6 +12,7 @@ import numpy as np
 from gemseo.core.discipline import Discipline
 
 from mdo_framework.core.evaluators import LocalEvaluator
+from mdo_framework.optimization.ax_algo_lib import MAX_STALLED_GENERATIONS
 from mdo_framework.optimization.optimizer import (
     BayesianOptimizer,
     OptimizationConfigurationError,
@@ -288,6 +289,18 @@ class TestOptimizerHelpers(OptimizerTestCase):
         self.assertEqual(float(design_space.get_lower_bound("count")[0]), 0.0)
         self.assertEqual(float(design_space.get_upper_bound("count")[0]), 5.0)
 
+    def test_optimizer_rejects_empty_objectives(self):
+        with self.assertRaisesRegex(
+            OptimizationConfigurationError, "At least one objective is required"
+        ):
+            BayesianOptimizer(self.evaluator, self.parameters, [])
+
+    def test_optimizer_rejects_objective_without_name(self):
+        with self.assertRaisesRegex(
+            OptimizationConfigurationError, "missing the required 'name' key"
+        ):
+            BayesianOptimizer(self.evaluator, self.parameters, [{"minimize": True}])
+
     def test_extract_best_objectives_contracts(self):
         from mdo_framework.optimization.optimizer import _extract_best_objectives
 
@@ -360,7 +373,9 @@ class TestBayesianOptimizer(OptimizerTestCase):
         result = optimizer.optimize(n_steps=2, n_init=2)
 
         self.assertIn("best_parameters", result)
-        self.assertEqual(len(result["history"]), 3)
+        # The mocked Ax client re-proposes one design: x0, that design, then
+        # the stall guard stops after MAX_STALLED_GENERATIONS cache hits.
+        self.assertEqual(len(result["history"]), 2 + MAX_STALLED_GENERATIONS)
 
     @patch("mdo_framework.optimization.ax_algo_lib.Client")
     def test_optimize_with_parameter_constraints(self, mock_client_cls):
