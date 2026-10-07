@@ -24,6 +24,7 @@ from mdo_framework.optimization.optimizer import (
     RemoteEvaluator,
 )
 from mdo_framework.schema import StudySchema, StudyValidationError
+from services.errors import register_validation_handler
 
 
 def to_jsonable(obj: Any) -> Any:
@@ -54,6 +55,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Optimization Service", lifespan=lifespan)
+register_validation_handler(app)
 
 EXECUTION_SERVICE_URL = os.getenv("EXECUTION_SERVICE_URL", "http://localhost:8002")
 GRAPH_SERVICE_URL = os.getenv("GRAPH_SERVICE_URL", "http://localhost:8001")

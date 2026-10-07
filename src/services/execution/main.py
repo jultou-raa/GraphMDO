@@ -20,7 +20,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from mdo_framework.core.topology import build_variable_specs
 from mdo_framework.core.translator import GraphProblemBuilder, encode_tool_inputs
-from mdo_framework.schema import MAX_NAME_LENGTH, StudySchema
+from mdo_framework.schema import MAX_NAME_LENGTH, Scalar, StudySchema
+from services.errors import register_validation_handler
 
 # Configure logging
 logger = logging.getLogger("uvicorn.error")
@@ -86,7 +87,6 @@ def to_float(val: Any) -> float:
 # --- Tool Registry ---
 ToolRegistry: TypeAlias = dict[str, Callable[..., Any]]
 TOOL_REGISTRY: ToolRegistry = {"Paraboloid": paraboloid_func}
-InputScalar: TypeAlias = bool | int | float | str
 
 
 # --- Domain Models ---
@@ -293,12 +293,12 @@ async def get_problem_pool(request: Request) -> ProblemPool:
 
 # --- Request Models ---
 class EvaluateRequest(BaseModel):
-    inputs: dict[str, InputScalar]
+    inputs: dict[str, Scalar]
     objectives: list[str] = Field(..., min_length=1)
 
     @field_validator("inputs")
     @classmethod
-    def validate_inputs(cls, v: dict[str, InputScalar]) -> dict[str, InputScalar]:
+    def validate_inputs(cls, v: dict[str, Scalar]) -> dict[str, Scalar]:
         if not v:
             raise ValueError("At least one input is required.")
         if len(v) > 100:
@@ -329,6 +329,7 @@ async def lifespan(app_instance: FastAPI):
 
 
 app = FastAPI(title="Execution Service", lifespan=lifespan)
+register_validation_handler(app)
 
 
 # --- Endpoints ---

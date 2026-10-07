@@ -5,7 +5,6 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
@@ -24,7 +23,10 @@ from mdo_framework.schema import (
     Variable,
 )
 
+from services.errors import register_validation_handler
+
 app = FastAPI(title="Graph Service")
+register_validation_handler(app)
 
 
 def get_graph_manager() -> GraphManager:
@@ -64,17 +66,6 @@ def role_conflict_handler(_: Request, exc: RoleConflictError) -> JSONResponse:
         409,
         {"error": "role_conflict", "variable": exc.variable, "message": exc.message},
     )
-
-
-@app.exception_handler(RequestValidationError)
-def request_validation_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
-    # FastAPI's default handler echoes the rejected ``input``, which crashes the
-    # JSON encoder (HTTP 500) when the body held NaN or Infinity.
-    errors = [
-        {"loc": list(error["loc"]), "msg": error["msg"], "type": error["type"]}
-        for error in exc.errors()
-    ]
-    return _error(422, errors)
 
 
 @app.exception_handler(StudyValidationError)

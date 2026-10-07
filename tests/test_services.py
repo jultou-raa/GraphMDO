@@ -462,6 +462,59 @@ class TestGraphService(unittest.TestCase):
                     self.assertEqual(response.status_code, 422)
 
 
+class TestSharedValidationHandler(unittest.TestCase):
+    """Every service answers a body holding NaN with 422, not a 500."""
+
+    def setUp(self):
+        manager = GraphManager(graph=FakeGraph())
+        graph_app.dependency_overrides[get_graph_manager] = lambda: manager
+        self.addCleanup(graph_app.dependency_overrides.clear)
+        execution_app.state.schema_provider = None
+        execution_app.state.problem_pool = None
+
+    def post_raw(self, app, path, text):
+        return TestClient(app).post(
+            path, content=text, headers={"Content-Type": "application/json"}
+        )
+
+    def assert_unprocessable(self, response, error_type):
+        self.assertEqual(response.status_code, 422, response.text)
+        errors = response.json()["detail"]
+        self.assertIn(error_type, [error["type"] for error in errors])
+        for error in errors:
+            self.assertEqual(set(error), {"loc", "msg", "type"})
+
+    def test_graph_service_rejects_nan(self):
+        response = self.post_raw(
+            graph_app,
+            "/variables",
+            '{"kind": "range", "name": "x", "lower": NaN, "upper": 1.0}',
+        )
+        self.assert_unprocessable(response, "finite_number")
+
+    def test_execution_service_rejects_nan(self):
+        response = self.post_raw(
+            execution_app, "/evaluate", '{"inputs": {"x": 1.0}, "objectives": [NaN]}'
+        )
+        self.assert_unprocessable(response, "string_type")
+
+    def test_execution_service_rejects_a_nan_input_value(self):
+        response = self.post_raw(
+            execution_app,
+            "/evaluate",
+            '{"inputs": {"x": NaN}, "objectives": ["f_xy"]}',
+        )
+        self.assert_unprocessable(response, "finite_number")
+
+    def test_optimization_service_rejects_nan(self):
+        response = self.post_raw(
+            optimization_app,
+            "/optimize",
+            '{"objectives": [{"name": "f_xy"}], "n_steps": NaN}',
+        )
+        self.assert_unprocessable(response, "finite_number")
+
+
 class TestExecutionService(unittest.TestCase):
     def setUp(self):
         # Force a hard wipe of cached state properties before each test
