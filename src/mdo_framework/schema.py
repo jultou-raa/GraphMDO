@@ -203,10 +203,28 @@ class ToolNode(_Strict):
     Attributes:
         name: Tool name.
         fidelity: Fidelity level label.
+        deterministic: Whether the tool returns the same outputs for the same
+            inputs. A non-deterministic tool is never cached, so every
+            evaluation calls it again.
+        arg_map: Graph input name to Python argument name, for inputs whose
+            argument has a different name. Two graph inputs cannot feed the
+            same argument.
     """
 
     name: Name
     fidelity: Name = "high"
+    deterministic: StrictBool = True
+    arg_map: dict[Name, Name] = {}
+
+    @model_validator(mode="after")
+    def _check_arg_map(self) -> "ToolNode":
+        arguments = list(self.arg_map.values())
+        repeated = sorted({name for name in arguments if arguments.count(name) > 1})
+        if repeated:
+            raise ValueError(
+                f"arg_map values must be unique; several graph inputs feed {repeated}"
+            )
+        return self
 
 
 class ToolSpec(ToolNode):
@@ -215,6 +233,8 @@ class ToolSpec(ToolNode):
     Attributes:
         name: Tool name.
         fidelity: Fidelity level label.
+        deterministic: Whether the tool is cacheable.
+        arg_map: Graph input name to Python argument name.
         inputs: Unique names of the variables the tool reads.
         outputs: Unique names of the variables the tool produces.
     """

@@ -390,7 +390,92 @@ def test_tool_rejects_bad_fidelity_name() -> None:
 def test_tool_node_defaults_and_is_the_node_part_of_a_tool_spec() -> None:
     node = ToolNode(name="t")
     assert node.fidelity == "high"
+    assert node.deterministic is True
+    assert node.arg_map == {}
     assert isinstance(ToolSpec(name="t"), ToolNode)
+
+
+def test_tool_options_are_inherited_by_the_tool_spec() -> None:
+    tool = ToolSpec(
+        name="t",
+        inputs=["x", "y"],
+        deterministic=False,
+        arg_map={"x": "a", "y": "b"},
+    )
+    assert tool.deterministic is False
+    assert tool.arg_map == {"x": "a", "y": "b"}
+    assert tool.model_dump()["arg_map"] == {"x": "a", "y": "b"}
+
+
+@pytest.mark.parametrize("value", ["false", 0, 1, None])
+def test_deterministic_must_be_a_boolean(value: Any) -> None:
+    with pytest.raises(ValidationError):
+        ToolNode(name="t", deterministic=value)
+
+
+def test_arg_map_rejects_two_graph_inputs_feeding_one_argument() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        ToolNode(name="t", arg_map={"x": "a", "y": "a"})
+    assert "unique" in _messages(exc_info)
+    assert "'a'" in _messages(exc_info)
+
+
+@pytest.mark.parametrize(
+    "arg_map",
+    [
+        {"not valid": "a"},
+        {"x": "not valid"},
+        {"x": "lambda"},
+        {"lambda": "a"},
+        {"x": ""},
+    ],
+)
+def test_arg_map_names_follow_the_name_rule(arg_map: dict[str, str]) -> None:
+    with pytest.raises(ValidationError):
+        ToolNode(name="t", arg_map=arg_map)
+
+
+def test_arg_map_key_need_not_be_a_tool_input() -> None:
+    node = ToolNode(name="t", arg_map={"ghost": "a"})
+    assert node.arg_map == {"ghost": "a"}
+
+
+def test_arg_map_may_map_an_input_to_its_own_name() -> None:
+    assert ToolNode(name="t", arg_map={"x": "x"}).arg_map == {"x": "x"}
+
+
+def test_tool_options_survive_a_json_round_trip() -> None:
+    study = StudySchema(
+        variables=[RangeVar(name="x", lower=0, upper=1), StateVar(name="f")],
+        tools=[
+            ToolSpec(
+                name="t",
+                inputs=["x"],
+                outputs=["f"],
+                deterministic=False,
+                arg_map={"x": "a"},
+            )
+        ],
+    )
+    restored = StudySchema.model_validate_json(study.model_dump_json())
+    assert restored == study
+    assert restored.tool("t").arg_map == {"x": "a"}
+    assert restored.tool("t").deterministic is False
+
+
+def test_tool_options_change_the_content_hash() -> None:
+    def study(**options: Any) -> StudySchema:
+        return StudySchema(
+            variables=[RangeVar(name="x", lower=0, upper=1), StateVar(name="f")],
+            tools=[ToolSpec(name="t", inputs=["x"], outputs=["f"], **options)],
+        )
+
+    hashes = {
+        study().content_hash(),
+        study(deterministic=False).content_hash(),
+        study(arg_map={"x": "a"}).content_hash(),
+    }
+    assert len(hashes) == 3
 
 
 @pytest.mark.parametrize("extra", ["inputs", "outputs"])

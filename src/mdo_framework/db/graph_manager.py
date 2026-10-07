@@ -4,6 +4,7 @@ License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -337,10 +338,7 @@ class GraphManager:
         Returns:
             The stored tools, without their connections.
         """
-        return [
-            ToolNode.model_validate(_node_properties(node))
-            for (node,) in self._run(_TOOL_QUERIES.list_all)
-        ]
+        return [_tool_from_node(node) for (node,) in self._run(_TOOL_QUERIES.list_all)]
 
     # --- Connections ---
 
@@ -531,7 +529,18 @@ def _node_properties(node: Any) -> dict[str, Any]:
 
 
 def _node_props(model: Variable | ToolNode, seq: int) -> dict[str, Any]:
-    return {**model.model_dump(mode="json", exclude_none=True), "seq": seq}
+    props = model.model_dump(mode="json", exclude_none=True)
+    if isinstance(model, ToolNode):
+        # FalkorDB properties cannot hold a map
+        props["arg_map"] = json.dumps(props["arg_map"])
+    return {**props, "seq": seq}
+
+
+def _tool_from_node(node: Any) -> ToolNode:
+    properties = _node_properties(node)
+    if "arg_map" in properties:
+        properties["arg_map"] = json.loads(properties["arg_map"])
+    return ToolNode.model_validate(properties)
 
 
 def _both_roles_message(variable_name: str, tool_name: str) -> str:
