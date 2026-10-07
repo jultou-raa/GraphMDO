@@ -19,6 +19,7 @@ except ImportError:
 
 from fakes.falkordb import FakeGraph
 
+from mdo_framework.core.topology import ResolvedInputs
 from mdo_framework.db.graph_manager import GraphManager
 from mdo_framework.optimization.optimizer import (
     OptimizationConfigurationError,
@@ -26,12 +27,15 @@ from mdo_framework.optimization.optimizer import (
 )
 from mdo_framework.schema import (
     ChoiceVar,
+    Finding,
     FixedParam,
     RangeVar,
     StateVar,
     StudySchema,
+    StudyValidationError,
     ToolNode,
     ToolSpec,
+    ValidationReport,
 )
 from services.execution.main import app as execution_app
 from services.graph.main import app as graph_app
@@ -39,6 +43,29 @@ from services.graph.main import get_graph_manager
 from services.optimization.main import app as optimization_app
 
 X_BODY = {"kind": "range", "name": "x", "lower": -10.0, "upper": 10.0}
+
+PARABOLOID_SCHEMA = StudySchema(
+    variables=[
+        RangeVar(name="x", lower=-10.0, upper=10.0),
+        RangeVar(name="y", lower=-10.0, upper=10.0),
+        StateVar(name="f_xy"),
+    ],
+    tools=[ToolSpec(name="Paraboloid", inputs=["x", "y"], outputs=["f_xy"])],
+)
+PARABOLOID_PAYLOAD = PARABOLOID_SCHEMA.model_dump(mode="json")
+
+SERVICE_VARIABLES = (
+    RangeVar(name="x", lower=0.0, upper=1.0),
+    RangeVar(name="y", lower=0.0, upper=1.0),
+)
+SERVICE_SCHEMA = StudySchema(
+    variables=[*SERVICE_VARIABLES, StateVar(name="f_xy")],
+    tools=[ToolSpec(name="ToolA", inputs=["x", "y"], outputs=["f_xy"])],
+)
+SERVICE_PAYLOAD = SERVICE_SCHEMA.model_dump(mode="json")
+SERVICE_RESOLVED = ResolvedInputs(
+    design_variables=SERVICE_VARIABLES, fixed_parameters=(), tools=("ToolA",)
+)
 
 
 class TestGraphService(unittest.TestCase):
@@ -491,12 +518,7 @@ class TestExecutionService(unittest.TestCase):
 
             mock_resp = MagicMock()
             mock_resp.status_code = 200
-            mock_resp.json.return_value = {
-                "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
-                ],
-                "variables": [{"name": "x"}, {"name": "y"}],
-            }
+            mock_resp.json.return_value = PARABOLOID_PAYLOAD
             mock_resp.raise_for_status = MagicMock()
             mock_client.get.return_value = mock_resp
 
@@ -538,7 +560,7 @@ class TestExecutionService(unittest.TestCase):
             mock_client = AsyncMock()
             mock_resp = MagicMock()
             mock_resp.status_code = 200
-            mock_resp.json.return_value = {"tools": [], "variables": [{"name": "x"}]}
+            mock_resp.json.return_value = PARABOLOID_PAYLOAD
             mock_client.get.return_value = mock_resp
             execution_app.state.schema_provider = SchemaProvider(mock_client)
             execution_app.state.problem_pool = ProblemPool(TOOL_REGISTRY, size=1)
@@ -557,6 +579,7 @@ class TestExecutionService(unittest.TestCase):
                 json={"inputs": {"unknown_var": 1.0}, "objectives": ["f_xy"]},
             )
             self.assertEqual(response.status_code, 422)
+            self.assertIn("Unknown inputs", response.json()["detail"])
 
     def test_evaluate_payload_limits(self):
         # inputs > 100
@@ -607,12 +630,7 @@ class TestExecutionService(unittest.TestCase):
             mock_client = AsyncMock()
             mock_resp = MagicMock()
             mock_resp.status_code = 200
-            mock_resp.json.return_value = {
-                "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
-                ],
-                "variables": [{"name": "x"}, {"name": "y"}],
-            }
+            mock_resp.json.return_value = PARABOLOID_PAYLOAD
             mock_client.get.return_value = mock_resp
             execution_app.state.schema_provider = SchemaProvider(mock_client)
             execution_app.state.problem_pool = ProblemPool(TOOL_REGISTRY, size=1)
@@ -639,12 +657,7 @@ class TestExecutionService(unittest.TestCase):
             mock_client = AsyncMock()
             mock_resp = MagicMock()
             mock_resp.status_code = 200
-            mock_resp.json.return_value = {
-                "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
-                ],
-                "variables": [{"name": "x"}, {"name": "y"}],
-            }
+            mock_resp.json.return_value = PARABOLOID_PAYLOAD
             mock_client.get.return_value = mock_resp
             execution_app.state.schema_provider = SchemaProvider(mock_client)
             # Patch discard_instance to verify it's called
@@ -761,30 +774,44 @@ class TestExecutionService(unittest.TestCase):
         asyncio.run(test_timeout())
 
     def test_schema_envelope_invalid_format(self):
+        from pydantic import ValidationError
+
         from services.execution.main import SchemaEnvelope
 
-        with self.assertRaises(ValueError):
-            # Pass a type that causes TypeError during iteration
-            SchemaEnvelope(
-                {
-                    "variables": [{"name": "x"}],
-                    "tools": [{"name": "tool", "outputs": None}],
-                },
-            )
+        legacy = {
+            "variables": [{"name": "x"}],
+            "tools": [{"name": "tool", "outputs": None}],
+        }
+        with self.assertRaises(ValidationError):
+            SchemaEnvelope(StudySchema.model_validate(legacy))
 
-    def test_schema_envelope_dict_output(self):
+    def test_schema_provider_rejects_legacy_payload(self):
+        import asyncio
+
+        from services.execution.main import SchemaProvider
+
+        mock_client = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "variables": [{"name": "x"}],
+            "tools": [{"name": "tool", "inputs": ["x"], "outputs": []}],
+        }
+        mock_client.get.return_value = mock_resp
+        provider = SchemaProvider(mock_client)
+
+        with self.assertRaises(Exception) as context:
+            asyncio.run(provider.get_schema())
+        self.assertEqual(context.exception.status_code, 502)
+
+    def test_schema_envelope_exposes_typed_schema(self):
         from services.execution.main import SchemaEnvelope
 
-        # Covers line 109 dict objective mapping
-        env = SchemaEnvelope(
-            {
-                "variables": [{"name": "x"}],
-                "tools": [
-                    {"name": "tool", "outputs": [{"name": "obj1", "type": "float"}]}
-                ],
-            }
-        )
-        self.assertIn("obj1", env.known_objectives)
+        env = SchemaEnvelope(PARABOLOID_SCHEMA)
+        self.assertIs(env.schema, PARABOLOID_SCHEMA)
+        self.assertEqual(env.known_vars, {"x", "y", "f_xy"})
+        self.assertEqual(env.known_objectives, {"f_xy"})
+        self.assertEqual(list(env.variable_specs), ["x", "y"])
+        self.assertEqual(env.hash, PARABOLOID_SCHEMA.content_hash())
 
     def test_to_float_integer(self):
         from services.execution.main import to_float
@@ -804,12 +831,7 @@ class TestExecutionService(unittest.TestCase):
             mock_client = AsyncMock()
             mock_resp = MagicMock()
             mock_resp.status_code = 200
-            mock_resp.json.return_value = {
-                "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
-                ],
-                "variables": [{"name": "x"}, {"name": "y"}],
-            }
+            mock_resp.json.return_value = PARABOLOID_PAYLOAD
             mock_client.get.return_value = mock_resp
             execution_app.state.schema_provider = SchemaProvider(mock_client)
 
@@ -836,7 +858,7 @@ class TestExecutionService(unittest.TestCase):
 
         mock_client = AsyncMock()
         provider = SchemaProvider(mock_client)
-        provider.envelope = SchemaEnvelope({"variables": [], "tools": []})
+        provider.envelope = SchemaEnvelope(StudySchema())
         provider.expiry = 1e9  # Not expired initially
 
         async def test_run():
@@ -860,7 +882,7 @@ class TestExecutionService(unittest.TestCase):
         mock_client = AsyncMock()
         mock_client.get.side_effect = httpx.RequestError("Network error")
         provider = SchemaProvider(mock_client)
-        provider.envelope = SchemaEnvelope({"variables": [], "tools": []})
+        provider.envelope = SchemaEnvelope(StudySchema())
         provider.expiry = 0  # force fetch
 
         async def test_run():
@@ -880,7 +902,7 @@ class TestExecutionService(unittest.TestCase):
         mock_client.get.return_value = mock_resp
 
         provider = SchemaProvider(mock_client)
-        provider.envelope = SchemaEnvelope({"variables": [], "tools": []})
+        provider.envelope = SchemaEnvelope(StudySchema())
         provider.expiry = 0  # force fetch
 
         async def test_run():
@@ -888,6 +910,24 @@ class TestExecutionService(unittest.TestCase):
             self.assertEqual(res, provider.envelope)
 
         asyncio.run(test_run())
+
+    def test_schema_provider_legacy_payload_fallback(self):
+        import asyncio
+
+        from services.execution.main import SchemaEnvelope, SchemaProvider
+
+        mock_client = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"variables": [{"name": "x"}], "tools": []}
+        mock_client.get.return_value = mock_resp
+
+        provider = SchemaProvider(mock_client)
+        stale = SchemaEnvelope(PARABOLOID_SCHEMA)
+        provider.envelope = stale
+        provider.expiry = 0  # force fetch
+
+        res = asyncio.run(provider.get_schema())
+        self.assertIs(res, stale)
 
     def test_lifespan_initialization(self):
         import asyncio
@@ -938,14 +978,7 @@ class TestProblemPool(unittest.TestCase):
 
         from services.execution.main import SchemaEnvelope
 
-        envelope = SchemaEnvelope(
-            {
-                "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
-                ],
-                "variables": [{"name": "x"}, {"name": "y"}],
-            },
-        )
+        envelope = SchemaEnvelope(PARABOLOID_SCHEMA)
         self.pool.current_hash = envelope.hash
 
         async def run_test():
@@ -978,10 +1011,13 @@ class TestProblemPool(unittest.TestCase):
         from services.execution.main import SchemaEnvelope
 
         envelope = SchemaEnvelope(
-            {
-                "tools": [{"name": "MissingTool", "inputs": ["x"], "outputs": ["y"]}],
-                "variables": [{"name": "x"}],
-            },
+            StudySchema(
+                variables=[
+                    RangeVar(name="x", lower=-10.0, upper=10.0),
+                    StateVar(name="y"),
+                ],
+                tools=[ToolSpec(name="MissingTool", inputs=["x"], outputs=["y"])],
+            )
         )
 
         async def run_test():
@@ -1000,14 +1036,7 @@ class TestProblemPool(unittest.TestCase):
 
         from services.execution.main import SchemaEnvelope
 
-        envelope = SchemaEnvelope(
-            {
-                "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
-                ],
-                "variables": [{"name": "x"}, {"name": "y"}],
-            },
-        )
+        envelope = SchemaEnvelope(PARABOLOID_SCHEMA)
 
         async def run_test():
             # Simply patch the get_instance logic to simulate a timeout directly
@@ -1067,7 +1096,7 @@ class TestProblemPool(unittest.TestCase):
                 side_effect=Exception("Failed Init"),
             ):
                 # This should catch the exception and log instead of crashing
-                await self.pool._replenish_one("hash1", {"tools": []})
+                await self.pool._replenish_one("hash1", StudySchema())
 
         asyncio.run(run_test())
 
@@ -1079,7 +1108,7 @@ class TestOptimizationService(unittest.TestCase):
 
         # Default mock response for schema fetch
         self.mock_resp = MagicMock()
-        self.mock_resp.json.return_value = {"tools": [], "variables": []}
+        self.mock_resp.json.return_value = StudySchema().model_dump(mode="json")
         self.mock_client.get.return_value = self.mock_resp
 
         self.client = TestClient(optimization_app)
@@ -1088,31 +1117,10 @@ class TestOptimizationService(unittest.TestCase):
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
     def test_optimize(self, mock_resolve, mock_optimize):
         mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "variables": [
-                {
-                    "name": "x",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-                {
-                    "name": "y",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-            ],
-            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        }
+        mock_resp.json.return_value = SERVICE_PAYLOAD
 
         self.mock_client.get.return_value = mock_resp
-        mock_resolve.return_value = (
-            ["x", "y"],
-            [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        )
+        mock_resolve.return_value = SERVICE_RESOLVED
 
         # Mock result of optimization
         mock_optimize.return_value = {
@@ -1143,26 +1151,8 @@ class TestOptimizationService(unittest.TestCase):
     def test_optimize_tensor_conversion(self, mock_resolve, mock_optimize):
         import torch
 
-        self.mock_resp.json.return_value = {
-            "variables": [
-                {
-                    "name": "x",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-                {
-                    "name": "y",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-            ],
-            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        }
-        mock_resolve.return_value = (["x", "y"], [])
+        self.mock_resp.json.return_value = SERVICE_PAYLOAD
+        mock_resolve.return_value = SERVICE_RESOLVED
 
         # Mock result of optimization
         mock_optimize.return_value = {
@@ -1189,31 +1179,10 @@ class TestOptimizationService(unittest.TestCase):
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
     def test_optimize_exception(self, mock_resolve, mock_optimize):
         mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "variables": [
-                {
-                    "name": "x",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-                {
-                    "name": "y",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-            ],
-            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        }
+        mock_resp.json.return_value = SERVICE_PAYLOAD
 
         optimization_app.state.client.get.return_value = mock_resp
-        mock_resolve.return_value = (
-            ["x", "y"],
-            [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        )
+        mock_resolve.return_value = SERVICE_RESOLVED
 
         # Mock result of optimization
         mock_optimize.side_effect = Exception("Optimization Failed")
@@ -1232,26 +1201,8 @@ class TestOptimizationService(unittest.TestCase):
     def test_optimize_tensor_conversion_nested(self, mock_resolve, mock_optimize):
         import numpy as np
 
-        self.mock_resp.json.return_value = {
-            "variables": [
-                {
-                    "name": "x",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-                {
-                    "name": "y",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-            ],
-            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        }
-        mock_resolve.return_value = (["x", "y"], [])
+        self.mock_resp.json.return_value = SERVICE_PAYLOAD
+        mock_resolve.return_value = SERVICE_RESOLVED
 
         # Mock result of optimization
         mock_optimize.return_value = {
@@ -1292,31 +1243,10 @@ class TestOptimizationService(unittest.TestCase):
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
     def test_optimize_exception2(self, mock_resolve, mock_init):
         mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "variables": [
-                {
-                    "name": "x",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-                {
-                    "name": "y",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-            ],
-            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        }
+        mock_resp.json.return_value = SERVICE_PAYLOAD
 
         optimization_app.state.client.get.return_value = mock_resp
-        mock_resolve.return_value = (
-            ["x", "y"],
-            [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        )
+        mock_resolve.return_value = SERVICE_RESOLVED
 
         # Mock result of optimization
         mock_init.side_effect = Exception("Initialization Failed")
@@ -1333,26 +1263,8 @@ class TestOptimizationService(unittest.TestCase):
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
     def test_optimize_with_constraints_service(self, mock_resolve, mock_optimize):
-        self.mock_resp.json.return_value = {
-            "variables": [
-                {
-                    "name": "x",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-                {
-                    "name": "y",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-            ],
-            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        }
-        mock_resolve.return_value = (["x", "y"], [])
+        self.mock_resp.json.return_value = SERVICE_PAYLOAD
+        mock_resolve.return_value = SERVICE_RESOLVED
 
         mock_optimize.return_value = {
             "best_parameters": {"x": 0.5, "y": 0.5},
@@ -1444,22 +1356,29 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
 
         # 2. Dependency resolution failure (400)
         mock_resp = MagicMock()
-        mock_resp.json.return_value = {"variables": [], "tools": []}
+        mock_resp.json.return_value = StudySchema().model_dump(mode="json")
         mock_client.get.return_value = mock_resp
-        mock_resolve.side_effect = ValueError("Unresolved dep")
+        mock_resolve.side_effect = StudyValidationError(
+            ValidationReport(
+                errors=(Finding(code="NOT_PRODUCED", message="'obj1' has no producer"),)
+            )
+        )
 
         response = client.post("/optimize", json=payload)
         self.assertEqual(response.status_code, 400)
+        self.assertIn("NOT_PRODUCED", response.json()["detail"])
         mock_resolve.side_effect = None
 
         # 3. No design variables found (400)
-        mock_resolve.return_value = ([], [])
+        mock_resolve.return_value = ResolvedInputs(
+            design_variables=(), fixed_parameters=(), tools=()
+        )
         response = client.post("/optimize", json=payload)
         self.assertEqual(response.status_code, 400)
         self.assertIn("No independent design variables", response.json()["detail"])
 
         # 4. Extract parameters failure (400)
-        mock_resolve.return_value = (["x"], [])
+        mock_resolve.return_value = SERVICE_RESOLVED
         with patch(
             "mdo_framework.core.topology.TopologicalAnalyzer.extract_parameters",
             return_value=None,
@@ -1476,9 +1395,8 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
                 return_value=[
                     {
                         "name": "x",
-                        "param_type": "range",
-                        "lower": 0.0,
-                        "upper": 1.0,
+                        "type": "range",
+                        "bounds": [0.0, 1.0],
                         "value_type": "float",
                     },
                 ],
@@ -1492,6 +1410,36 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 500)
             self.assertIn("Optimization failed", response.json()["detail"])
 
+    async def test_optimize_rejects_invalid_schema_payload(self):
+        mock_client = AsyncMock()
+        optimization_app.state.client = mock_client
+        client = TestClient(optimization_app)
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"variables": [{"name": "x"}], "tools": []}
+        mock_client.get.return_value = mock_resp
+
+        payload = {"objectives": [{"name": "f_xy"}], "n_steps": 1, "n_init": 1}
+        response = client.post("/optimize", json=payload)
+
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("invalid schema", response.json()["detail"])
+
+    async def test_optimize_resolves_real_dependencies(self):
+        mock_client = AsyncMock()
+        optimization_app.state.client = mock_client
+        client = TestClient(optimization_app)
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = SERVICE_PAYLOAD
+        mock_client.get.return_value = mock_resp
+
+        payload = {"objectives": [{"name": "unknown"}], "n_steps": 1, "n_init": 1}
+        response = client.post("/optimize", json=payload)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("UNKNOWN_OUTPUT", response.json()["detail"])
+
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
     async def test_optimize_exception_mapping(self, mock_resolve):
         mock_client = AsyncMock()
@@ -1499,20 +1447,9 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
         client = TestClient(optimization_app)
 
         mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "variables": [
-                {
-                    "name": "x",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-            ],
-            "tools": [{"name": "ToolA", "inputs": ["x"], "outputs": ["f_xy"]}],
-        }
+        mock_resp.json.return_value = SERVICE_PAYLOAD
         mock_client.get.return_value = mock_resp
-        mock_resolve.return_value = (["x"], [])
+        mock_resolve.return_value = SERVICE_RESOLVED
 
         payload = {
             "objectives": [{"name": "f_xy"}],

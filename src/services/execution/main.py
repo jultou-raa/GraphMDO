@@ -5,8 +5,6 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
 import asyncio
-import hashlib
-import json
 import logging
 import os
 import time
@@ -22,6 +20,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from mdo_framework.core.topology import build_variable_specs
 from mdo_framework.core.translator import GraphProblemBuilder, encode_tool_inputs
+from mdo_framework.schema import MAX_NAME_LENGTH, StudySchema
 
 # Configure logging
 logger = logging.getLogger("uvicorn.error")
@@ -56,7 +55,7 @@ def paraboloid_func(x: float, y: float) -> float:
 
 
 def build_and_init(
-    schema: dict[str, Any],
+    schema: StudySchema,
     registry: dict[str, Callable[..., Any]],
 ) -> Any:
     """Instantiates builder and creates problem in a worker thread."""
@@ -92,30 +91,14 @@ InputScalar: TypeAlias = bool | int | float | str
 
 # --- Domain Models ---
 class SchemaEnvelope:
-    """Wraps raw schema data with pre-parsed metadata and hashing."""
+    """Wraps a study schema with pre-computed metadata and its content hash."""
 
-    def __init__(self, raw_data: dict[str, Any]):
-        self.data = raw_data
-        try:
-            variables = raw_data.get("variables", [])
-            self.known_vars = {v["name"] for v in variables}
-            self.variable_specs = build_variable_specs(raw_data)
-
-            self.known_objectives: set[str] = set()
-            for tool in raw_data.get("tools", []):
-                for out in tool.get("outputs", []):
-                    if isinstance(out, dict):
-                        self.known_objectives.add(out["name"])
-                    else:
-                        self.known_objectives.add(str(out))
-        except (KeyError, TypeError) as e:
-            logger.error("Failed to parse schema structure.", exc_info=True)
-            raise ValueError("Schema format is invalid.") from e
-
-        # Stable hash for memoization
-        # Note: In production, consider using a faster/more stable serializer like orjson
-        serialized = json.dumps(raw_data, sort_keys=True)
-        self.hash = hashlib.sha256(serialized.encode()).hexdigest()
+    def __init__(self, schema: StudySchema):
+        self.schema = schema
+        self.known_vars = {variable.name for variable in schema.variables}
+        self.variable_specs = build_variable_specs(schema)
+        self.known_objectives = set(schema.producers())
+        self.hash = schema.content_hash()
 
 
 # --- Providers ---
@@ -158,7 +141,7 @@ class SchemaProvider:
             try:
                 resp = await self.client.get(f"{GRAPH_SERVICE_URL}/schema")
                 resp.raise_for_status()
-                self.envelope = SchemaEnvelope(resp.json())
+                self.envelope = SchemaEnvelope(StudySchema.model_validate(resp.json()))
                 self.expiry = current_time + CACHE_TTL
             except (httpx.RequestError, httpx.HTTPStatusError):
                 if self.envelope is not None:
@@ -174,7 +157,7 @@ class SchemaProvider:
                         detail="Graph Service unavailable.",
                     )
             except ValueError:
-                # Malformed schema data
+                # Malformed JSON or a payload that is not a valid StudySchema
                 logger.error("Graph Service returned an invalid schema.", exc_info=True)
                 if self.envelope is not None:
                     self.expiry = current_time + CACHE_BACKOFF
@@ -222,10 +205,10 @@ class ProblemPool:
             except asyncio.QueueEmpty:
                 break
 
-    async def _replenish_one(self, schema_hash: str, schema_data: dict[str, Any]):
+    async def _replenish_one(self, schema_hash: str, schema: StudySchema):
         """Builds one replacement instance if the schema hasn't changed."""
         try:
-            inst = await asyncio.to_thread(build_and_init, schema_data, self.registry)
+            inst = await asyncio.to_thread(build_and_init, schema, self.registry)
             async with self.lock:
                 if self.current_hash == schema_hash:
                     await self.pool.put(inst)
@@ -238,7 +221,7 @@ class ProblemPool:
         if hasattr(instance, "cleanup"):
             await asyncio.to_thread(instance.cleanup)
 
-        task = asyncio.create_task(self._replenish_one(envelope.hash, envelope.data))
+        task = asyncio.create_task(self._replenish_one(envelope.hash, envelope.schema))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
@@ -255,7 +238,7 @@ class ProblemPool:
                 # This could be slow if build_and_init is expensive, but it's a deliberate
                 # serialization point to prevent concurrent rebuilds.
                 tasks = [
-                    asyncio.to_thread(build_and_init, envelope.data, self.registry)
+                    asyncio.to_thread(build_and_init, envelope.schema, self.registry)
                     for _ in range(self.size)
                 ]
 
@@ -321,10 +304,11 @@ class EvaluateRequest(BaseModel):
         if len(v) > 100:
             raise ValueError("Too many inputs (max 100 allowed).")
         for key in v:
-            if len(key) > 50:
+            if len(key) > MAX_NAME_LENGTH:
                 preview = key[:20]
                 raise ValueError(
-                    f"Input key '{preview}...' exceeds maximum length of 50.",
+                    f"Input key '{preview}...' exceeds maximum length of "
+                    f"{MAX_NAME_LENGTH}.",
                 )
         return v
 

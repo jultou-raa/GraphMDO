@@ -12,7 +12,7 @@ from typing import Any, Literal
 import httpx
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from mdo_framework.optimization.ax_algo_lib import AxObjectiveDict
 from mdo_framework.optimization.optimizer import (
@@ -23,6 +23,7 @@ from mdo_framework.optimization.optimizer import (
     RemoteEvaluationTransportError,
     RemoteEvaluator,
 )
+from mdo_framework.schema import StudySchema, StudyValidationError
 
 
 def to_jsonable(obj: Any) -> Any:
@@ -124,11 +125,19 @@ async def optimize(req: OptimizeRequest, request: Request):
         client: httpx.AsyncClient = request.app.state.client
         resp = await client.get(f"{GRAPH_SERVICE_URL}/schema")
         resp.raise_for_status()
-        schema = resp.json()
+        payload = resp.json()
     except Exception as e:
         raise HTTPException(
             status_code=502,
             detail=f"Failed to fetch graph schema: {e}",
+        )
+
+    try:
+        schema = StudySchema.model_validate(payload)
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Graph service returned an invalid schema: {e}",
         )
 
     from mdo_framework.core.topology import TopologicalAnalyzer
@@ -141,18 +150,18 @@ async def optimize(req: OptimizeRequest, request: Request):
         target_outputs.extend([c.name for c in req.constraints])
 
     try:
-        design_vars, _ = analyzer.resolve_dependencies(target_outputs)
-    except ValueError as e:
+        resolved = analyzer.resolve_dependencies(target_outputs)
+    except StudyValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    if not design_vars:
+    if not resolved.design_variables:
         raise HTTPException(
             status_code=400,
             detail="No independent design variables found in the graph for the requested targets.",
         )
 
     # 3. Extract parameter definitions
-    parameters = analyzer.extract_parameters(design_vars)
+    parameters = analyzer.extract_parameters(resolved.design_variables)
 
     if not parameters:
         raise HTTPException(

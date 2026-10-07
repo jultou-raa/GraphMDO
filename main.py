@@ -54,8 +54,7 @@ def main():
 
     # 3. Translate to GEMSEO
     print("Translating Graph to GEMSEO OptimizationProblem...")
-    # The translator and topology analyzer still consume plain dicts.
-    schema = gm.get_study_schema().model_dump(mode="json", exclude_none=True)
+    schema = gm.get_study_schema()
     builder = GraphProblemBuilder(schema)
 
     try:
@@ -70,8 +69,8 @@ def main():
     from mdo_framework.core.topology import TopologicalAnalyzer
 
     analyzer = TopologicalAnalyzer(schema)
-    design_vars, _ = analyzer.resolve_dependencies(["f_xy"])
-    parameters = analyzer.extract_parameters(design_vars)
+    resolved = analyzer.resolve_dependencies(["f_xy", "c_xy"])
+    parameters = analyzer.extract_parameters(resolved.design_variables)
 
     evaluator = LocalEvaluator(prob, builder.variable_specs)
 
