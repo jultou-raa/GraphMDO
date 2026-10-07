@@ -119,8 +119,8 @@ class FakeGraph:
         for queries in (gm._VARIABLE_QUERIES, gm._TOOL_QUERIES):
             label = queries.label
             handlers[queries.exists] = partial(self._exists, label)
-            handlers[queries.create] = partial(self._create, label)
-            handlers[queries.replace] = partial(self._replace, label)
+            handlers[queries.add] = partial(self._add, label)
+            handlers[queries.put] = partial(self._put, label)
             handlers[queries.delete] = partial(self._delete, label)
             handlers[queries.list_all] = partial(self._list_all, label)
         return handlers
@@ -168,14 +168,33 @@ class FakeGraph:
             [node.properties.get("seq")] for node in self._find(label, params["name"])
         ]
 
-    def _create(self, label: str, params: Params) -> list[Row]:
-        self._add_node(label, params["props"])
-        return []
+    def _merge(self, label: str, name: str) -> tuple[list[FakeNode], bool]:
+        """``MERGE (n:label {name: $name})``: the matches, else a new node."""
+        matches = self._find(label, name)
+        if matches:
+            return matches, False
+        return [self._add_node(label, {"name": name})], True
 
-    def _replace(self, label: str, params: Params) -> list[Row]:
-        for node in self._find(label, params["name"]):
+    def _add(self, label: str, params: Params) -> list[Row]:
+        """``MERGE ... ON CREATE SET n = $props RETURN n.seq``."""
+        nodes, created = self._merge(label, params["name"])
+        if created:
+            nodes[0].properties = _stored(params["props"])
+        return [[node.properties.get("seq")] for node in nodes]
+
+    def _put(self, label: str, params: Params) -> list[Row]:
+        """``MERGE ... ON CREATE SET n.seq = $seq`` then replace, keeping the seq."""
+        nodes, created = self._merge(label, params["name"])
+        if created:
+            nodes[0].properties["seq"] = params["seq"]
+        rows: list[Row] = []
+        for node in nodes:
+            old = node.properties.get("seq")
             node.properties = _stored(params["props"])
-        return []
+            node.properties["seq"] = old if old is not None else params["seq"]
+            # ``old = $seq`` is null when ``old`` is null
+            rows.append([None if old is None else old == params["seq"]])
+        return rows
 
     def _delete(self, label: str, params: Params) -> list[Row]:
         for node in self._find(label, params["name"]):
@@ -206,15 +225,33 @@ class FakeGraph:
         return [[name] for name in sorted(names)]
 
     def _output_check(self, params: Params) -> list[Row]:
-        rows: list[Row] = []
+        """Evaluate the query over its joined rows.
+
+        The two OPTIONAL MATCH clauses give, per (variable, tool) match, one row
+        per producer of the variable crossed with one row per input edge of the
+        variable into the tool; each side is a single null row when empty. The
+        ``collect`` and ``count`` aggregates ignore nulls and are grouped by
+        ``v.kind``.
+        """
+        joined: list[tuple[Any, str | None, tuple[str, int, int] | None]] = []
         for variable, tool in self._pairs(params):
-            producers = sorted(
+            producers: list[str | None] = sorted(
                 self._by_id(tool_id).properties["name"]
                 for relation, variable_id, tool_id in self._edges
                 if relation == OUTPUTS and variable_id == variable.id
+            ) or [None]
+            input_edge = (INPUTS_TO, variable.id, tool.id)
+            input_edges = [input_edge] if input_edge in self._edges else [None]
+            kind = variable.properties.get("kind")
+            joined.extend(
+                (kind, producer, edge) for producer in producers for edge in input_edges
             )
-            is_input = (INPUTS_TO, variable.id, tool.id) in self._edges
-            rows.append([variable.properties.get("kind"), producers, int(is_input)])
+        rows: list[Row] = []
+        for kind in dict.fromkeys(row[0] for row in joined):
+            group = [row for row in joined if row[0] == kind]
+            producer_names = dict.fromkeys(p for _, p, _ in group if p is not None)
+            distinct_edges = {edge for _, _, edge in group if edge is not None}
+            rows.append([kind, list(producer_names), len(distinct_edges)])
         return rows
 
     def _is_output_of_tool(self, params: Params) -> list[Row]:

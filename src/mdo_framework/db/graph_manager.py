@@ -97,19 +97,34 @@ class _NodeQueries:
 
     label: str
     exists: str
-    create: str
-    replace: str
+    add: str
+    put: str
     delete: str
     list_all: str
 
 
 def _node_queries(label: str) -> _NodeQueries:
-    # ``label`` is one of two module constants, never user input
+    # ``label`` is one of two module constants, never user input.
+    # ``add`` and ``put`` are single MERGE statements, hence atomic: two writers
+    # racing on one name cannot both create a node. ``$seq`` is a number freshly
+    # drawn from the counter. ``add`` returns the ``seq`` of the node holding the
+    # name, equal to ``$seq`` only if it just created it. ``put`` keeps the old
+    # ``seq`` (a legacy node without one gets ``$seq``) and returns whether it
+    # created the node, null for that legacy node.
     return _NodeQueries(
         label=label,
         exists=f"MATCH (n:{label} {{name: $name}}) RETURN n.seq",
-        create=f"CREATE (n:{label}) SET n = $props",
-        replace=f"MATCH (n:{label} {{name: $name}}) SET n = $props",
+        add=(
+            f"MERGE (n:{label} {{name: $name}}) ON CREATE SET n = $props RETURN n.seq"
+        ),
+        put=(
+            f"MERGE (n:{label} {{name: $name}}) "
+            "ON CREATE SET n.seq = $seq "
+            "WITH n, n.seq AS old "
+            "SET n = $props "
+            "SET n.seq = coalesce(old, $seq) "
+            "RETURN old = $seq"
+        ),
         delete=f"MATCH (n:{label} {{name: $name}}) DETACH DELETE n",
         list_all=f"MATCH (n:{label}) RETURN n ORDER BY n.seq",
     )
@@ -132,7 +147,7 @@ _OUTPUT_CHECK = (
     "MATCH (t:Tool {name: $tool_name}), (v:Variable {name: $variable_name}) "
     "OPTIONAL MATCH (p:Tool)-[:OUTPUTS]->(v) "
     "OPTIONAL MATCH (v)-[i:INPUTS_TO]->(t) "
-    "RETURN v.kind, collect(DISTINCT p.name), count(i)"
+    "RETURN v.kind, collect(DISTINCT p.name), count(DISTINCT i)"
 )
 _IS_OUTPUT_OF_TOOL = (
     "MATCH (:Tool {name: $tool_name})-[o:OUTPUTS]->(:Variable {name: $variable_name}) "
@@ -163,7 +178,9 @@ class GraphManager:
     Variables and tools are created from the models of ``mdo_framework.schema`` and
     read back as models. Each node carries a ``seq`` number, assigned at creation,
     that defines the order of every listing: design variable order is meaningful.
-    Operations are not atomic: the manager assumes a single writer.
+    The numbers may have gaps. Creating or replacing a node is one atomic query, so
+    concurrent writers cannot duplicate a name; checks spanning several queries
+    (role conflicts, duplicate producers) assume a single writer.
 
     Attributes:
         graph: The FalkorDB graph that is queried.
@@ -458,26 +475,20 @@ class GraphManager:
         # An empty parameter map would render an invalid ``CYPHER`` header
         return self.graph.query(query, params=params or None).result_set
 
-    def _insert(self, queries: _NodeQueries, model: Variable | ToolNode) -> None:
-        seq = self._run(_NEXT_SEQ)[0][0]
-        self._run(queries.create, props=_node_props(model, seq))
-
     def _create(self, queries: _NodeQueries, model: Variable | ToolNode) -> None:
-        if self._run(queries.exists, name=model.name):
+        # The number is drawn first, so a refused creation leaves a gap in ``seq``;
+        # only the relative order matters
+        seq = self._run(_NEXT_SEQ)[0][0]
+        rows = self._run(queries.add, name=model.name, props=_node_props(model, seq))
+        if rows[0][0] != seq:
             raise NodeExistsError(queries.label, model.name)
-        self._insert(queries, model)
 
     def _put(self, queries: _NodeQueries, model: Variable | ToolNode) -> bool:
-        rows = self._run(queries.exists, name=model.name)
-        if not rows:
-            self._insert(queries, model)
-            return True
-        seq = rows[0][0]
-        if seq is None:
-            # A legacy node was stored without a ``seq``: number it now
-            seq = self._run(_NEXT_SEQ)[0][0]
-        self._run(queries.replace, name=model.name, props=_node_props(model, seq))
-        return False
+        seq = self._run(_NEXT_SEQ)[0][0]
+        rows = self._run(
+            queries.put, name=model.name, seq=seq, props=_node_props(model, seq)
+        )
+        return bool(rows[0][0])
 
     def _delete(self, queries: _NodeQueries, name: str) -> None:
         if not self._run(queries.exists, name=name):

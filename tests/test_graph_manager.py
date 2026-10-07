@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 from fakes.falkordb import FakeGraph
 
+from mdo_framework.db import graph_manager
 from mdo_framework.db.graph_manager import (
     DuplicateProducerError,
     GraphManager,
@@ -92,6 +93,59 @@ def test_injected_graph_is_used_without_touching_the_client(
 def test_fake_graph_rejects_a_query_it_does_not_implement(graph: FakeGraph) -> None:
     with pytest.raises(AssertionError, match="does not implement"):
         graph.query("MATCH (n) RETURN n")
+
+
+def _seed_two_producers_and_an_input(graph: FakeGraph) -> None:
+    graph.add_raw_node("Variable", name="v", kind="state")
+    for tool in ("A", "B", "T"):
+        graph.add_raw_node("Tool", name=tool)
+    graph.add_raw_edge("OUTPUTS", "v", "A")
+    graph.add_raw_edge("OUTPUTS", "v", "B")
+    graph.add_raw_edge("INPUTS_TO", "v", "T")
+
+
+def _output_check(graph: FakeGraph, tool: str) -> list[list[Any]]:
+    params = {"tool_name": tool, "variable_name": "v"}
+    return graph.query(graph_manager._OUTPUT_CHECK, params=params).result_set
+
+
+def test_fake_output_check_counts_one_input_edge_across_two_producers(
+    graph: FakeGraph,
+) -> None:
+    _seed_two_producers_and_an_input(graph)
+    # two producer rows times one input row must not be counted twice
+    assert _output_check(graph, "T") == [["state", ["A", "B"], 1]]
+
+
+def test_fake_output_check_ignores_the_null_rows_of_the_optional_matches(
+    graph: FakeGraph,
+) -> None:
+    _seed_two_producers_and_an_input(graph)
+    assert _output_check(graph, "A") == [["state", ["A", "B"], 0]]
+    graph.add_raw_node("Variable", name="w", kind="range")
+    params = {"tool_name": "T", "variable_name": "w"}
+    result = graph.query(graph_manager._OUTPUT_CHECK, params=params)
+    assert result.result_set == [["range", [], 0]]
+
+
+def test_fake_output_check_returns_no_row_for_an_unknown_node(
+    graph: FakeGraph,
+) -> None:
+    _seed_two_producers_and_an_input(graph)
+    assert _output_check(graph, "ghost") == []
+
+
+class _RacingGraph(FakeGraph):
+    """Graph where a second writer acts right after the first draws its ``seq``."""
+
+    rival: Callable[[], Any] | None = None
+
+    def query(self, query: str, params: dict[str, Any] | None = None) -> Any:
+        result = super().query(query, params)
+        if query == graph_manager._NEXT_SEQ and self.rival is not None:
+            rival, self.rival = self.rival, None
+            rival()
+        return result
 
 
 # --- Variables --------------------------------------------------------------
@@ -492,6 +546,74 @@ def test_an_output_of_a_tool_cannot_also_be_its_input(
     assert exc_info.value.variable == "f_xy"
     assert "input and output" in exc_info.value.message
     assert paraboloid.get_tool_inputs("Paraboloid") == ["x", "y"]
+
+
+# --- Concurrent writers -----------------------------------------------------
+
+
+def _racing_pair() -> tuple[_RacingGraph, GraphManager, GraphManager]:
+    racing = _RacingGraph()
+    return racing, GraphManager(graph=racing), GraphManager(graph=racing)
+
+
+def test_add_variable_loses_a_race_without_duplicating_the_node() -> None:
+    racing, manager, rival = _racing_pair()
+    racing.rival = lambda: rival.add_variable(_range("x", upper=1.0))
+    with pytest.raises(NodeExistsError):
+        manager.add_variable(_range("x"))
+    # the winner is untouched; ``node`` fails on duplicate nodes
+    assert racing.node("Variable", "x")["upper"] == 1.0
+    assert manager.get_variables() == [_range("x", upper=1.0)]
+
+
+def test_add_tool_loses_a_race_without_duplicating_the_node() -> None:
+    racing, manager, rival = _racing_pair()
+    racing.rival = lambda: rival.add_tool(ToolNode(name="T", fidelity="low"))
+    with pytest.raises(NodeExistsError):
+        manager.add_tool(ToolNode(name="T"))
+    assert racing.node("Tool", "T")["fidelity"] == "low"
+    assert manager.get_tools() == [ToolNode(name="T", fidelity="low")]
+
+
+def test_put_variable_racing_a_creation_replaces_it_and_keeps_its_position() -> None:
+    racing, manager, rival = _racing_pair()
+    racing.rival = lambda: rival.add_variable(_range("x", upper=1.0))
+    assert manager.put_variable(_range("x", upper=2.0)) is False
+    assert racing.node("Variable", "x")["upper"] == 2.0
+    assert _variable_names(manager) == ["x"]
+    manager.add_variable(_range("y"))
+    assert _variable_names(manager) == ["x", "y"]
+
+
+def test_put_tool_racing_a_creation_replaces_it_and_keeps_its_position() -> None:
+    racing, manager, rival = _racing_pair()
+    racing.rival = lambda: rival.add_tool(ToolNode(name="T"))
+    assert manager.put_tool(ToolNode(name="T", fidelity="low")) is False
+    assert racing.node("Tool", "T")["fidelity"] == "low"
+    assert _tool_names(manager) == ["T"]
+
+
+def test_refused_and_replacing_writes_leave_the_order_unchanged(
+    manager: GraphManager,
+) -> None:
+    manager.add_variable(_range("x"))
+    with pytest.raises(NodeExistsError):
+        manager.add_variable(_range("x"))
+    manager.put_variable(_range("x", upper=1.0))
+    manager.add_variable(_range("y"))
+    manager.put_variable(_range("x", upper=2.0))
+    manager.put_variable(_range("z"))
+    assert _variable_names(manager) == ["x", "y", "z"]
+
+
+def test_put_variable_numbers_a_legacy_node_that_has_no_sequence_number(
+    manager: GraphManager, graph: FakeGraph
+) -> None:
+    manager.add_variable(_range("a"))
+    graph.add_raw_node("Variable", name="old_x", param_type="continuous")
+    assert manager.put_variable(_range("old_x")) is False
+    assert graph.node("Variable", "old_x")["seq"] > graph.node("Variable", "a")["seq"]
+    assert manager.get_variables() == [_range("a"), _range("old_x")]
 
 
 # --- Ordering ---------------------------------------------------------------
