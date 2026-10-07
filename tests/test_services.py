@@ -5,6 +5,7 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
 # ruff: noqa: E402
+import json
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1570,6 +1571,54 @@ class TestStudyPreflight(unittest.TestCase):
         self.assertEqual(response.status_code, 502)
         self.assert_nothing_ran()
 
+    def test_every_upstream_failure_is_a_bad_gateway(self):
+        request = httpx.Request("GET", "http://graph/schema")
+        status_error = httpx.HTTPStatusError(
+            "Server error", request=request, response=httpx.Response(500)
+        )
+        not_json = json.JSONDecodeError("Expecting value", "<html>", 0)
+
+        def fail_get(error):
+            self.mock_client.get.side_effect = error
+
+        def fail_status(response):
+            response.raise_for_status.side_effect = status_error
+
+        def fail_json(response):
+            response.json.side_effect = not_json
+
+        cases = {
+            "timeout": lambda response: fail_get(httpx.ReadTimeout("slow")),
+            "connection error": lambda response: fail_get(httpx.ConnectError("down")),
+            "non-2xx status": fail_status,
+            "2xx body that is not JSON": fail_json,
+        }
+        for path in ("/validate", "/optimize"):
+            for label, break_upstream in cases.items():
+                with self.subTest(path=path, upstream=label):
+                    response = MagicMock()
+                    self.mock_client.get.side_effect = None
+                    self.mock_client.get.return_value = response
+                    break_upstream(response)
+
+                    result = self.client.post(path, json=self.VALID_BODY)
+
+                    self.assertEqual(result.status_code, 502, result.text)
+                    self.assertIn("graph", result.json()["detail"].lower())
+        self.assert_nothing_ran()
+
+    def test_json_that_is_not_a_study_is_reported_not_a_bad_gateway(self):
+        self.serve({"variables": "not a list"})
+
+        validated = self.client.post("/validate", json=self.VALID_BODY)
+        optimized = self.client.post("/optimize", json=self.VALID_BODY)
+
+        self.assertEqual(validated.status_code, 200)
+        self.assertFalse(validated.json()["valid"])
+        self.assertEqual(optimized.status_code, 422)
+        self.assertEqual(optimized.json()["detail"], validated.json())
+        self.assert_nothing_ran()
+
     def test_optimize_rejects_non_finite_numbers_and_bad_names(self):
         bodies = {
             "NaN constraint bound": (
@@ -1685,7 +1734,7 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
         }
 
         # 1. Fetch schema failure (502)
-        mock_client.get.side_effect = Exception("Network down")
+        mock_client.get.side_effect = httpx.ConnectError("Network down")
         response = client.post("/optimize", json=payload)
         self.assertEqual(response.status_code, 502)
         mock_client.get.side_effect = None
@@ -1704,18 +1753,9 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.json()["detail"]["errors"][0]["code"], "NOT_PRODUCED")
         mock_resolve.side_effect = None
-
-        # 3. Extract parameters failure (400)
         mock_resolve.return_value = SERVICE_RESOLVED
-        with patch(
-            "mdo_framework.core.topology.TopologicalAnalyzer.extract_parameters",
-            return_value=None,
-        ):
-            response = client.post("/optimize", json=payload)
-            self.assertEqual(response.status_code, 400)
-            self.assertIn("Failed to extract parameter", response.json()["detail"])
 
-        # 4. Catch-all Internal Server Error (500)
+        # 3. Catch-all Internal Server Error (500)
         # Hit via to_jsonable or return block by returning None from optimize
         with (
             patch(

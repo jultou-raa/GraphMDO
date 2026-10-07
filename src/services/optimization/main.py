@@ -114,16 +114,27 @@ class OptimizeRequest(BaseModel):
 
 
 async def _fetch_schema(request: Request) -> Any:
-    """Fetches the raw study schema from the Graph Service."""
+    """Fetches the raw study schema from the Graph Service.
+
+    Every upstream failure is a bad gateway: transport errors, non-2xx
+    statuses and a 2xx body that is not JSON. A JSON body that is not a valid
+    study is left to the preflight, which reports it.
+    """
+    client: httpx.AsyncClient = request.app.state.client
     try:
-        client: httpx.AsyncClient = request.app.state.client
         resp = await client.get(f"{GRAPH_SERVICE_URL}/schema")
         resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
+    except httpx.HTTPError as e:
         raise HTTPException(
             status_code=502,
             detail=f"Failed to fetch graph schema: {e}",
+        )
+    try:
+        return resp.json()
+    except ValueError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Graph service returned a response that is not JSON: {e}",
         )
 
 
@@ -178,12 +189,6 @@ async def optimize(req: OptimizeRequest, request: Request):
 
     # 3. Extract parameter definitions
     parameters = analyzer.extract_parameters(resolved.design_variables)
-
-    if not parameters:
-        raise HTTPException(
-            status_code=400,
-            detail="Failed to extract parameter definitions from schema.",
-        )
 
     # 4. Setup Evaluator
     evaluator = RemoteEvaluator(EXECUTION_SERVICE_URL)
