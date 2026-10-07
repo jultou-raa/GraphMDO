@@ -7,7 +7,7 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Literal
+from typing import Any
 
 import httpx
 import numpy as np
@@ -23,7 +23,15 @@ from mdo_framework.optimization.optimizer import (
     RemoteEvaluationTransportError,
     RemoteEvaluator,
 )
-from mdo_framework.schema import StudySchema, StudyValidationError
+from mdo_framework.schema import (
+    ConstraintSpec,
+    ObjectiveSpec,
+    StudySchema,
+    StudyValidationError,
+    ValidationReport,
+    report_from_validation_error,
+)
+from mdo_framework.validation import validate_study
 from services.errors import register_validation_handler
 
 
@@ -61,37 +69,22 @@ EXECUTION_SERVICE_URL = os.getenv("EXECUTION_SERVICE_URL", "http://localhost:800
 GRAPH_SERVICE_URL = os.getenv("GRAPH_SERVICE_URL", "http://localhost:8001")
 
 
-class ObjectiveConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str
-    minimize: bool = True
-    threshold: float | None = Field(
-        default=None,
-        description="Reference point for this objective in multi-objective runs.",
-    )
-
-    def to_ax(self) -> AxObjectiveDict:
-        """Projects the request onto the Ax objective contract."""
-        objective: AxObjectiveDict = {"name": self.name, "minimize": self.minimize}
-        if self.threshold is not None:
-            objective["threshold"] = self.threshold
-        return objective
-
-
-class ConstraintConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str
-    bound: float
-    op: Literal["<=", ">="] = "<="
+def objective_to_ax(objective: ObjectiveSpec) -> AxObjectiveDict:
+    """Projects an objective onto the Ax objective contract."""
+    ax_objective: AxObjectiveDict = {
+        "name": objective.name,
+        "minimize": objective.minimize,
+    }
+    if objective.threshold is not None:
+        ax_objective["threshold"] = objective.threshold
+    return ax_objective
 
 
 class OptimizeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    objectives: list[ObjectiveConfig]
-    constraints: list[ConstraintConfig] | None = None
+    objectives: list[ObjectiveSpec] = Field(min_length=1)
+    constraints: list[ConstraintSpec] | None = None
     fidelity_parameter: str | None = Field(
         default=None,
         description="Reserved for multi-fidelity optimization; not supported yet.",
@@ -120,27 +113,54 @@ class OptimizeRequest(BaseModel):
         return value
 
 
-@app.post("/optimize")
-async def optimize(req: OptimizeRequest, request: Request):
-    # 1. Fetch schema from Graph Service
+async def _fetch_schema(request: Request) -> Any:
+    """Fetches the raw study schema from the Graph Service."""
     try:
         client: httpx.AsyncClient = request.app.state.client
         resp = await client.get(f"{GRAPH_SERVICE_URL}/schema")
         resp.raise_for_status()
-        payload = resp.json()
+        return resp.json()
     except Exception as e:
         raise HTTPException(
             status_code=502,
             detail=f"Failed to fetch graph schema: {e}",
         )
 
+
+def _preflight(
+    payload: Any, req: OptimizeRequest
+) -> tuple[StudySchema | None, ValidationReport]:
+    """Parses and validates the study; the schema is ``None`` if it cannot parse."""
     try:
         schema = StudySchema.model_validate(payload)
-    except ValidationError as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Graph service returned an invalid schema: {e}",
-        )
+    except ValidationError as exc:
+        return None, report_from_validation_error(exc)
+    # The Execution Service owns the tool registry, so it is not checked here.
+    report = validate_study(
+        schema,
+        objectives=req.objectives,
+        constraints=req.constraints or (),
+        parameter_constraints=req.parameter_constraints or (),
+        registry=None,
+    )
+    return schema, report
+
+
+@app.post("/validate", response_model=ValidationReport)
+async def validate(req: OptimizeRequest, request: Request):
+    """Reports whether the study would run, without running any tool."""
+    payload = await _fetch_schema(request)
+    _, report = await asyncio.to_thread(_preflight, payload, req)
+    return report
+
+
+@app.post("/optimize")
+async def optimize(req: OptimizeRequest, request: Request):
+    # 1. Fetch the schema from the Graph Service and reject an invalid study
+    payload = await _fetch_schema(request)
+    schema, report = await asyncio.to_thread(_preflight, payload, req)
+    if schema is None or not report.valid:
+        raise HTTPException(status_code=422, detail=report.model_dump(mode="json"))
 
     from mdo_framework.core.topology import TopologicalAnalyzer
 
@@ -154,13 +174,7 @@ async def optimize(req: OptimizeRequest, request: Request):
     try:
         resolved = analyzer.resolve_dependencies(target_outputs)
     except StudyValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    if not resolved.design_variables:
-        raise HTTPException(
-            status_code=400,
-            detail="No independent design variables found in the graph for the requested targets.",
-        )
+        raise HTTPException(status_code=422, detail=e.report.model_dump(mode="json"))
 
     # 3. Extract parameter definitions
     parameters = analyzer.extract_parameters(resolved.design_variables)
@@ -183,7 +197,7 @@ async def optimize(req: OptimizeRequest, request: Request):
             optimizer = BayesianOptimizer(
                 evaluator=evaluator,
                 parameters=parameters,
-                objectives=[o.to_ax() for o in req.objectives],
+                objectives=[objective_to_ax(o) for o in req.objectives],
                 constraints=constraints,
                 use_bonsai=req.use_bonsai,
                 parameter_constraints=req.parameter_constraints,

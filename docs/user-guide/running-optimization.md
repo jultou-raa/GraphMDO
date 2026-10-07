@@ -73,4 +73,12 @@ You will receive a JSON response containing:
 
 Some deployments may also include optional metadata such as `serialized_client`.
 
-If the request cannot be mapped to independent design variables from the graph, the service returns `400`. Upstream graph or execution failures are returned as `502`.
+Before any tool runs, the study is validated against the graph schema. To check a request without running it, send the same body to `/validate`:
+
+```bash
+curl -X POST http://localhost:8003/validate \
+     -H "Content-Type: application/json" \
+     -d '{"objectives": [{"name": "f_xy", "minimize": true}]}'
+```
+
+It answers `200` with `{"errors": [], "warnings": [], "valid": true}`, or lists the problems (for example `UNKNOWN_OUTPUT` or `PARAMETER_CONSTRAINT_INVALID`) in `errors`. `/optimize` returns the same report under `detail` with status `422` when the study is invalid, so nothing is evaluated. Malformed requests, such as non-finite numbers, empty `objectives` or names that break the name rule, are also rejected with `422`. Upstream graph or execution failures are returned as `502`.

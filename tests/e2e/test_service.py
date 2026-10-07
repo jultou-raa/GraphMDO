@@ -7,6 +7,8 @@ Un-mocked Optimization Service tests: real BayesianOptimizer, RemoteEvaluator
 and Execution Service app. Only the graph schema is served by a mock transport.
 """
 
+import functools
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -19,7 +21,13 @@ from mdo_framework.optimization.optimizer import (
     BayesianOptimizer,
     OptimizationConfigurationError,
 )
-from mdo_framework.schema import RangeVar, StateVar, StudySchema, ToolSpec
+from mdo_framework.schema import (
+    ObjectiveSpec,
+    RangeVar,
+    StateVar,
+    StudySchema,
+    ToolSpec,
+)
 
 pytestmark = pytest.mark.e2e
 
@@ -99,8 +107,53 @@ def test_unsupported_fields_are_rejected_with_422(services, payload, field):
 
 
 def test_objective_threshold_is_forwarded():
-    objective = optimization.ObjectiveConfig(name="f", minimize=False, threshold=1.5)
-    assert objective.to_ax() == {"name": "f", "minimize": False, "threshold": 1.5}
+    objective = ObjectiveSpec(name="f", minimize=False, threshold=1.5)
+    assert optimization.objective_to_ax(objective) == {
+        "name": "f",
+        "minimize": False,
+        "threshold": 1.5,
+    }
+
+
+def test_validate_reports_a_valid_study(services):
+    response = services.post("/validate", json=DOCUMENTED_PAYLOAD)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"errors": [], "warnings": [], "valid": True}
+
+
+@pytest.mark.parametrize(
+    ("payload", "code"),
+    [
+        ({"objectives": [{"name": "missing"}]}, "UNKNOWN_OUTPUT"),
+        (
+            {**DOCUMENTED_PAYLOAD, "parameter_constraints": ["x + z <= 1"]},
+            "PARAMETER_CONSTRAINT_INVALID",
+        ),
+    ],
+)
+def test_invalid_study_is_rejected_before_any_tool_runs(
+    services, monkeypatch, payload, code
+):
+    calls = []
+    real_tool = execution.TOOL_REGISTRY["Paraboloid"]
+
+    @functools.wraps(real_tool)
+    def spy(*args, **kwargs):
+        calls.append(kwargs)
+        return real_tool(*args, **kwargs)
+
+    monkeypatch.setitem(execution.TOOL_REGISTRY, "Paraboloid", spy)
+
+    validated = services.post("/validate", json=payload)
+    optimized = services.post("/optimize", json={**payload, "n_init": 2, "n_steps": 2})
+
+    assert validated.status_code == 200
+    assert validated.json()["valid"] is False
+    assert optimized.status_code == 422
+    assert optimized.json()["detail"] == validated.json()
+    assert code in [finding["code"] for finding in validated.json()["errors"]]
+    assert calls == []
 
 
 def test_optimizer_rejects_unsupported_objective_keys():

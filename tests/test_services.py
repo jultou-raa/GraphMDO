@@ -59,8 +59,8 @@ SERVICE_VARIABLES = (
     RangeVar(name="y", lower=0.0, upper=1.0),
 )
 SERVICE_SCHEMA = StudySchema(
-    variables=[*SERVICE_VARIABLES, StateVar(name="f_xy")],
-    tools=[ToolSpec(name="ToolA", inputs=["x", "y"], outputs=["f_xy"])],
+    variables=[*SERVICE_VARIABLES, StateVar(name="f_xy"), StateVar(name="g_xy")],
+    tools=[ToolSpec(name="ToolA", inputs=["x", "y"], outputs=["f_xy", "g_xy"])],
 )
 SERVICE_PAYLOAD = SERVICE_SCHEMA.model_dump(mode="json")
 SERVICE_RESOLVED = ResolvedInputs(
@@ -1278,14 +1278,14 @@ class TestOptimizationService(unittest.TestCase):
         response = self.client.post("/optimize", json=payload)
         self.assertEqual(response.status_code, 200)
 
-    def test_optimize_invalid_payload(self):
+    def test_optimize_requires_an_objective(self):
         payload = {
             "objectives": [],
             "n_steps": 1,
             "n_init": 1,
         }
         response = self.client.post("/optimize", json=payload)
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 422)
 
     def test_optimize_tensor_lists(self):
         # A simple check for the internal to_list method inside optimize route
@@ -1334,6 +1334,193 @@ class TestOptimizationService(unittest.TestCase):
 
         response = self.client.post("/optimize", json=payload)
         self.assertEqual(response.status_code, 200)
+
+
+class TestStudyPreflight(unittest.TestCase):
+    """``/validate`` and the 422 preflight of ``/optimize``."""
+
+    VALID_BODY = {
+        "objectives": [{"name": "f_xy"}],
+        "constraints": [{"name": "g_xy", "bound": 0.0}],
+        "parameter_constraints": ["x + y <= 1.5"],
+        "n_steps": 1,
+        "n_init": 1,
+    }
+    INVALID_STUDIES = {
+        "unknown objective": (
+            {"objectives": [{"name": "missing"}]},
+            "UNKNOWN_OUTPUT",
+        ),
+        "unusable parameter constraint": (
+            {"objectives": [{"name": "f_xy"}], "parameter_constraints": ["x + z <= 1"]},
+            "PARAMETER_CONSTRAINT_INVALID",
+        ),
+        "constraint on a design variable": (
+            {
+                "objectives": [{"name": "f_xy"}],
+                "constraints": [{"name": "x", "bound": 0.5}],
+            },
+            "NOT_PRODUCED",
+        ),
+    }
+
+    def setUp(self):
+        self.mock_client = AsyncMock()
+        optimization_app.state.client = self.mock_client
+        self.serve(SERVICE_PAYLOAD)
+        self.client = TestClient(optimization_app)
+        for target in ("RemoteEvaluator", "BayesianOptimizer"):
+            patcher = patch(f"services.optimization.main.{target}")
+            setattr(self, target, patcher.start())
+            self.addCleanup(patcher.stop)
+
+    def serve(self, payload):
+        response = MagicMock()
+        response.json.return_value = payload
+        self.mock_client.get.return_value = response
+
+    def assert_nothing_ran(self):
+        self.RemoteEvaluator.assert_not_called()
+        self.BayesianOptimizer.assert_not_called()
+
+    def test_validate_accepts_a_valid_study(self):
+        response = self.client.post("/validate", json=self.VALID_BODY)
+
+        self.assertEqual(response.status_code, 200)
+        report = response.json()
+        self.assertTrue(report["valid"])
+        self.assertEqual(report["errors"], [])
+        self.assert_nothing_ran()
+
+    def test_validate_reports_an_invalid_study_with_status_200(self):
+        for label, (body, code) in self.INVALID_STUDIES.items():
+            with self.subTest(label):
+                response = self.client.post("/validate", json=body)
+
+                self.assertEqual(response.status_code, 200)
+                report = response.json()
+                self.assertFalse(report["valid"])
+                self.assertIn(code, [item["code"] for item in report["errors"]])
+        self.assert_nothing_ran()
+
+    def test_validate_reports_a_schema_that_does_not_parse(self):
+        payloads = {
+            "legacy node without a kind": (
+                {"variables": [{"name": "x"}], "tools": []},
+                "SCHEMA_INVALID",
+            ),
+            "duplicate variable": (
+                {
+                    "variables": [
+                        {"kind": "state", "name": "f"},
+                        {"kind": "state", "name": "f"},
+                    ]
+                },
+                "DUPLICATE_NAME",
+            ),
+        }
+        for label, (payload, code) in payloads.items():
+            with self.subTest(label):
+                self.serve(payload)
+
+                response = self.client.post("/validate", json=self.VALID_BODY)
+
+                self.assertEqual(response.status_code, 200)
+                report = response.json()
+                self.assertFalse(report["valid"])
+                self.assertIn(code, [item["code"] for item in report["errors"]])
+
+    def test_validate_is_bad_gateway_when_the_graph_service_is_down(self):
+        self.mock_client.get.side_effect = httpx.ConnectError("graph service down")
+
+        response = self.client.post("/validate", json=self.VALID_BODY)
+
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("Failed to fetch graph schema", response.json()["detail"])
+
+    def test_validate_takes_the_body_of_optimize(self):
+        response = self.client.post("/validate", json={"objectives": []})
+
+        self.assertEqual(response.status_code, 422)
+
+    def test_optimize_rejects_an_invalid_study_before_running_anything(self):
+        for label, (body, code) in self.INVALID_STUDIES.items():
+            with self.subTest(label):
+                response = self.client.post("/optimize", json=body)
+
+                self.assertEqual(response.status_code, 422)
+                report = response.json()["detail"]
+                self.assertEqual(
+                    report, self.client.post("/validate", json=body).json()
+                )
+                self.assertIn(code, [item["code"] for item in report["errors"]])
+        self.assert_nothing_ran()
+
+    def test_optimize_rejects_a_schema_that_does_not_parse(self):
+        self.serve({"variables": [{"name": "x"}], "tools": []})
+
+        response = self.client.post("/optimize", json=self.VALID_BODY)
+
+        self.assertEqual(response.status_code, 422)
+        codes = [item["code"] for item in response.json()["detail"]["errors"]]
+        self.assertIn("SCHEMA_INVALID", codes)
+        self.assert_nothing_ran()
+
+    def test_optimize_is_bad_gateway_when_the_graph_service_is_down(self):
+        self.mock_client.get.side_effect = httpx.ConnectError("graph service down")
+
+        response = self.client.post("/optimize", json=self.VALID_BODY)
+
+        self.assertEqual(response.status_code, 502)
+        self.assert_nothing_ran()
+
+    def test_optimize_rejects_non_finite_numbers_and_bad_names(self):
+        bodies = {
+            "NaN constraint bound": (
+                '{"objectives": [{"name": "f_xy"}],'
+                ' "constraints": [{"name": "g_xy", "bound": NaN}]}'
+            ),
+            "infinite constraint bound": (
+                '{"objectives": [{"name": "f_xy"}],'
+                ' "constraints": [{"name": "g_xy", "bound": Infinity}]}'
+            ),
+            "NaN objective threshold": (
+                '{"objectives": [{"name": "f_xy", "threshold": NaN}]}'
+            ),
+            "objective name that is not an identifier": (
+                '{"objectives": [{"name": "1f"}]}'
+            ),
+        }
+        for path in ("/optimize", "/validate"):
+            for label, text in bodies.items():
+                with self.subTest(path=path, body=label):
+                    response = self.client.post(
+                        path,
+                        content=text,
+                        headers={"Content-Type": "application/json"},
+                    )
+
+                    self.assertEqual(response.status_code, 422, response.text)
+                    self.assertIsInstance(response.json()["detail"], list)
+        self.assert_nothing_ran()
+
+    def test_optimize_runs_a_valid_study(self):
+        self.BayesianOptimizer.return_value.optimize.return_value = {
+            "best_parameters": {"x": 0.5, "y": 0.5},
+            "best_objectives": {"f_xy": 0.0},
+            "history": [],
+        }
+
+        response = self.client.post("/optimize", json=self.VALID_BODY)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["best_parameters"], {"x": 0.5, "y": 0.5})
+        arguments = self.BayesianOptimizer.call_args.kwargs
+        self.assertEqual(arguments["objectives"], [{"name": "f_xy", "minimize": True}])
+        self.assertEqual(
+            arguments["constraints"], [{"name": "g_xy", "bound": 0.0, "op": "<="}]
+        )
+        self.assertEqual(arguments["parameter_constraints"], ["x + y <= 1.5"])
 
 
 class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
@@ -1396,7 +1583,7 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
         client = TestClient(optimization_app)
 
         payload = {
-            "objectives": [{"name": "obj1"}],
+            "objectives": [{"name": "f_xy"}],
             "n_steps": 1,
             "n_init": 1,
         }
@@ -1407,30 +1594,22 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 502)
         mock_client.get.side_effect = None
 
-        # 2. Dependency resolution failure (400)
+        # 2. Dependency resolution failure (422 with the report)
         mock_resp = MagicMock()
-        mock_resp.json.return_value = StudySchema().model_dump(mode="json")
+        mock_resp.json.return_value = SERVICE_PAYLOAD
         mock_client.get.return_value = mock_resp
         mock_resolve.side_effect = StudyValidationError(
             ValidationReport(
-                errors=(Finding(code="NOT_PRODUCED", message="'obj1' has no producer"),)
+                errors=(Finding(code="NOT_PRODUCED", message="'f_xy' has no producer"),)
             )
         )
 
         response = client.post("/optimize", json=payload)
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("NOT_PRODUCED", response.json()["detail"])
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["detail"]["errors"][0]["code"], "NOT_PRODUCED")
         mock_resolve.side_effect = None
 
-        # 3. No design variables found (400)
-        mock_resolve.return_value = ResolvedInputs(
-            design_variables=(), fixed_parameters=(), tools=()
-        )
-        response = client.post("/optimize", json=payload)
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("No independent design variables", response.json()["detail"])
-
-        # 4. Extract parameters failure (400)
+        # 3. Extract parameters failure (400)
         mock_resolve.return_value = SERVICE_RESOLVED
         with patch(
             "mdo_framework.core.topology.TopologicalAnalyzer.extract_parameters",
@@ -1440,7 +1619,7 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 400)
             self.assertIn("Failed to extract parameter", response.json()["detail"])
 
-        # 5. Catch-all Internal Server Error (500)
+        # 4. Catch-all Internal Server Error (500)
         # Hit via to_jsonable or return block by returning None from optimize
         with (
             patch(
@@ -1463,21 +1642,6 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 500)
             self.assertIn("Optimization failed", response.json()["detail"])
 
-    async def test_optimize_rejects_invalid_schema_payload(self):
-        mock_client = AsyncMock()
-        optimization_app.state.client = mock_client
-        client = TestClient(optimization_app)
-
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"variables": [{"name": "x"}], "tools": []}
-        mock_client.get.return_value = mock_resp
-
-        payload = {"objectives": [{"name": "f_xy"}], "n_steps": 1, "n_init": 1}
-        response = client.post("/optimize", json=payload)
-
-        self.assertEqual(response.status_code, 502)
-        self.assertIn("invalid schema", response.json()["detail"])
-
     async def test_optimize_resolves_real_dependencies(self):
         mock_client = AsyncMock()
         optimization_app.state.client = mock_client
@@ -1490,8 +1654,9 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
         payload = {"objectives": [{"name": "unknown"}], "n_steps": 1, "n_init": 1}
         response = client.post("/optimize", json=payload)
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("UNKNOWN_OUTPUT", response.json()["detail"])
+        self.assertEqual(response.status_code, 422)
+        codes = [item["code"] for item in response.json()["detail"]["errors"]]
+        self.assertIn("UNKNOWN_OUTPUT", codes)
 
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
     async def test_optimize_exception_mapping(self, mock_resolve):
