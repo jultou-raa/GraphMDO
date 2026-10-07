@@ -3,11 +3,8 @@ This Source Code Form is subject to the terms of the Mozilla Public
 License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-End-to-end tests (real Ax/GEMSEO) for the values tools receive.
+Tests for the values tools receive (codec, component, Execution Service).
 """
-
-import logging
-import warnings
 
 import httpx
 import numpy as np
@@ -19,7 +16,6 @@ from mdo_framework.core.components import ToolComponent, to_tool_value
 from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.core.topology import TopologicalAnalyzer
 from mdo_framework.core.translator import GraphProblemBuilder
-from mdo_framework.optimization.optimizer import BayesianOptimizer
 from mdo_framework.optimization.parameter_codec import ParameterValueError
 
 FLOAT_OUT = {"param_type": "continuous", "value_type": "float"}
@@ -70,60 +66,6 @@ def build_local(tool):
     return schema, parameters, LocalEvaluator(mda, builder.variable_specs)
 
 
-def assert_declared(call):
-    assert call["gear"] in {10, 20, 30} and type(call["gear"]) is int
-    assert type(call["n"]) is int and 1 <= call["n"] <= 5
-    assert call["material"] in DENSITY
-
-
-@pytest.fixture(autouse=True)
-def _isolated_run(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)  # optimize() writes XDSM/plot files into the cwd
-    logging.disable(logging.CRITICAL)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        yield
-    logging.disable(logging.NOTSET)
-
-
-class RecordingExecutionService:
-    """Evaluator without a `.problem`: forces the RemoteDiscipline path."""
-
-    def __init__(self):
-        self.received: list[dict] = []
-
-    def evaluate(self, parameters, objectives):
-        self.received.append(dict(parameters))
-        return {"f": (parameters["c"] - 3) ** 2 + parameters["z"]}
-
-
-def test_remote_discipline_delivers_declared_numeric_choices():
-    service = RecordingExecutionService()
-    parameters = [
-        {"name": "c", "type": "choice", "values": [1, 2, 3], "value_type": "int"},
-        {"name": "z", "type": "range", "bounds": [0.0, 1.0], "value_type": "float"},
-    ]
-    result = BayesianOptimizer(
-        service, parameters, [{"name": "f", "minimize": True}]
-    ).optimize(n_steps=4, n_init=4)
-
-    received_c = [p["c"] for p in service.received]
-    assert set(received_c) <= {1, 2, 3}
-    # Ax may re-propose evaluated designs (GEMSEO cache hits, no service call),
-    # so every history entry must match some design the service received.
-    for trial in result["history"]:
-        assert any(
-            p["c"] == trial["parameters"]["c"]
-            and p["z"] == pytest.approx(trial["parameters"]["z"])
-            for p in service.received
-        )
-    assert result["best_parameters"]["c"] in {1, 2, 3}
-    expected_f = (result["best_parameters"]["c"] - 3) ** 2 + result["best_parameters"][
-        "z"
-    ]
-    assert result["best_objectives"]["f"] == pytest.approx(expected_f)
-
-
 def test_to_tool_value_decodes_specs():
     choice = {"name": "g", "type": "choice", "values": [10, 20, 30]}
     strings = {"name": "m", "type": "choice", "values": ["a", "b"]}
@@ -164,33 +106,6 @@ def test_builder_rejects_undeclared_choice_default():
     schema["variables"][0] = {**schema["variables"][0], "value": 15}
     with pytest.raises(ParameterValueError):
         GraphProblemBuilder(schema).build_problem({"T": lambda gear: gear})
-
-
-def test_local_optimize_and_explore_deliver_declared_values():
-    tool = RecordingTool()
-    _, parameters, evaluator = build_local(tool)
-    optimizer = BayesianOptimizer(
-        evaluator, parameters, [{"name": "f", "minimize": True}]
-    )
-    result = optimizer.optimize(n_steps=3, n_init=3)
-
-    assert tool.calls
-    for call in tool.calls:
-        assert_declared(call)
-    for trial in result["history"]:
-        assert trial["parameters"] in tool.calls
-
-    best = result["best_parameters"]
-    assert_declared(best)
-    assert evaluator.evaluate(best, ["f"])["f"] == pytest.approx(
-        result["best_objectives"]["f"]
-    )
-
-    tool.calls.clear()
-    optimizer.explore(n_samples=4)
-    assert len(tool.calls) == 4
-    for call in tool.calls:
-        assert_declared(call)
 
 
 def test_local_and_execution_service_pass_identical_tool_inputs(monkeypatch):

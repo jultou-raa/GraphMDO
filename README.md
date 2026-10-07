@@ -203,8 +203,13 @@ print(f"Trial History: {result['history']}")
 ### 3. Running Tests
 
 ```bash
-uv run pytest tests/
+uv run pytest tests/                           # everything
+uv run pytest -m "not e2e" tests/              # fast unit tests
+OMP_NUM_THREADS=1 uv run pytest -m e2e tests/  # real Ax + GEMSEO runs (tests/e2e/)
 ```
+
+Tests that pin an open bug are marked `xfail(strict=True)` with the issue number in
+the reason. The PR that fixes the bug removes the marker.
 
 ## Contributing
 
