@@ -186,7 +186,20 @@ A tool is a node with a `name`, a `fidelity` and two execution options, `determi
 
 `inputs` and `outputs` must also name declared variables; that check belongs to the [structural invariants](#structural-invariants) of the whole schema.
 
-Tool functions are called with keyword arguments named after the inputs and return a dictionary of outputs (or a single value for a single output). `arg_map` renames an input on the way in: with `arg_map={"x": "a"}` the graph input `x` is passed as the argument `a`, so one function `f(a)` can serve a tool fed by `x` and another fed by `y`. Inputs absent from `arg_map` keep their name. The Graph Service and the graph store `arg_map` as a JSON string, because a graph node property cannot hold a map; the API shows it as an object.
+### Tool function contract
+
+Tool functions are called with keyword arguments named after the inputs. `arg_map` renames an input on the way in: with `arg_map={"x": "a"}` the graph input `x` is passed as the argument `a`, so one function `f(a)` can serve a tool fed by `x` and another fed by `y`. Inputs absent from `arg_map` keep their name. The Graph Service and the graph store `arg_map` as a JSON string, because a graph node property cannot hold a map; the API shows it as an object.
+
+A function returns a dictionary keyed by output name, whose keys are exactly the tool's outputs. A tool with a single output may also return the bare value. A tuple or a list is never mapped to the outputs by position. Every value must be numeric and finite.
+
+A tool that breaks the contract raises a typed error, a subclass of `EvaluationError` (itself a `ValueError`) that carries the tool name and a stable `code`:
+
+| Error | Code | Raised when |
+| --- | --- | --- |
+| `ToolExecutionError` | `TOOL_FAILED` | The function raises an exception. The message names the tool and the original exception, which is chained as the cause. `KeyboardInterrupt`, `SystemExit` and `MemoryError` are not wrapped. |
+| `ToolOutputError` | `OUTPUT_INVALID` | The function returns `None`, a dictionary with missing or unexpected keys, a non-dictionary for several outputs, a value that is not numeric, or a NaN or infinite value. |
+
+Jacobians are approximated by finite differences. Evaluations of a tool are cached unless it is declared `deterministic=false`.
 
 ## Structural invariants
 

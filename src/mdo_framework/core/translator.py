@@ -12,6 +12,7 @@ from gemseo.mda.factory import MDAFactory
 from gemseo.utils.discipline import check_disciplines_consistency
 
 from mdo_framework.core.components import ToolComponent
+from mdo_framework.core.dependencies import walk_dependencies
 from mdo_framework.core.topology import build_variable_specs
 from mdo_framework.optimization.parameter_codec import (
     ParameterDefinition,
@@ -22,6 +23,7 @@ from mdo_framework.schema import (
     StateVar,
     StudySchema,
     StudyValidationError,
+    ToolNode,
 )
 from mdo_framework.validation import validate_registry
 
@@ -64,8 +66,10 @@ class GraphProblemBuilder:
     def build_problem(self, tool_registry: Mapping[str, Callable]) -> Any:
         """Constructs a GEMSEO MDA from the study schema.
 
-        Fixed parameter values and coupling initial guesses become the default
-        inputs of the MDA; design variables have no default.
+        Each tool gets its own defaults: the value of its fixed parameters, the
+        initial guess of its state variables, and 0.0 for a coupling variable
+        without an initial guess. Design variables have no default. The MDA
+        gathers the defaults of its disciplines.
 
         Args:
             tool_registry: Dictionary mapping tool names to Python functions.
@@ -83,6 +87,7 @@ class GraphProblemBuilder:
         if not report.valid:
             raise StudyValidationError(report)
 
+        couplings = set(walk_dependencies(self.schema, []).couplings)
         disciplines = [
             ToolComponent(
                 name=tool.name,
@@ -94,30 +99,29 @@ class GraphProblemBuilder:
                     for in_name in tool.inputs
                     if in_name in self.variable_specs
                 },
+                defaults=self._tool_defaults(tool, couplings),
+                deterministic=tool.deterministic,
+                arg_map=tool.arg_map,
             )
             for tool in self.schema.tools
         ]
         check_disciplines_consistency(disciplines, False, True)
 
         # MDAChain picks the sub-MDAs itself (MDAJacobi for coupled disciplines).
-        mda = MDAFactory().create("MDAChain", disciplines=disciplines)
+        return MDAFactory().create("MDAChain", disciplines=disciplines)
 
-        for name, value in self._seed_values().items():
-            if name in mda.input_grammar:
-                mda.default_input_data[name] = value
-
-        return mda
-
-    def _seed_values(self) -> dict[str, np.ndarray]:
-        defaults = {}
-        for variable in self.schema.variables:
+    def _tool_defaults(self, tool: ToolNode, couplings: set[str]) -> dict[str, Any]:
+        variables = {variable.name: variable for variable in self.schema.variables}
+        defaults: dict[str, Any] = {}
+        for name in tool.inputs:
+            variable = variables[name]
             if isinstance(variable, FixedParam):
-                spec = self.variable_specs.get(variable.name)
-                defaults[variable.name] = np.atleast_1d(
-                    to_design_value(spec, variable.value)
+                defaults[name] = to_design_value(
+                    self.variable_specs.get(name), variable.value
                 )
-            elif isinstance(variable, StateVar) and variable.initial_guess is not None:
-                defaults[variable.name] = np.atleast_1d(
-                    np.asarray(variable.initial_guess, dtype=float)
-                )
+            elif isinstance(variable, StateVar):
+                if variable.initial_guess is not None:
+                    defaults[name] = np.asarray(variable.initial_guess, dtype=float)
+                elif name in couplings:
+                    defaults[name] = 0.0
         return defaults

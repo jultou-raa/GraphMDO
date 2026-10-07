@@ -4,12 +4,15 @@ License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import numpy as np
 from gemseo.core.discipline import Discipline
+from gemseo.core.discipline.base_discipline import CacheType
+from gemseo.typing import StrKeyMapping
 
+from mdo_framework.core.errors import ToolExecutionError, ToolOutputError
 from mdo_framework.optimization.parameter_codec import (
     ParameterDefinition,
     index_to_value,
@@ -36,74 +39,121 @@ def to_tool_value(spec: ParameterDefinition | None, raw: Any) -> Any:
 
 
 class ToolComponent(Discipline):
-    """Generic GEMSEO discipline that wraps a Python function."""
+    """GEMSEO discipline that wraps a Python function.
+
+    The function is called with keyword arguments only, one per input. It returns
+    a dict keyed by output name, or a bare value when the tool has a single
+    output. Anything else, a non-finite value included, is a
+    ``ToolOutputError``; an exception raised by the function becomes a
+    ``ToolExecutionError``. Jacobians are approximated by finite differences.
+    """
 
     def __init__(
         self,
         name: str,
-        func: Callable,
-        inputs: list[str],
-        outputs: list[str],
-        derivatives: bool = False,
+        func: Callable[..., Any],
+        inputs: Sequence[str],
+        outputs: Sequence[str],
+        *,
         specs: Mapping[str, ParameterDefinition] | None = None,
-    ):
-        """Initializes the generic GEMSEO tool component.
+        defaults: Mapping[str, Any] | None = None,
+        deterministic: bool = True,
+        arg_map: Mapping[str, str] | None = None,
+    ) -> None:
+        """Initializes the tool component.
 
         Args:
             name: The name of the discipline.
             func: The Python callable executing the tool logic.
-            inputs: List of input variable names.
-            outputs: List of output variable names.
-            derivatives: Whether the function provides analytical derivatives (default False).
-            specs: Optional parameter definitions per input name, used to decode
-                choice indices and integers before calling ``func``.
+            inputs: Input variable names.
+            outputs: Output variable names.
+            specs: Parameter definitions per input name, used to decode choice
+                indices and integers before calling ``func``.
+            defaults: Value of the inputs that may be omitted when executing, per
+                input name. An input without a default is required.
+            deterministic: Whether the same inputs always give the same outputs.
+                If false, the discipline is never cached.
+            arg_map: Python argument name per input name, for the inputs whose
+                argument is named differently.
         """
         super().__init__(name=name)
         self.func = func
-        self._inputs_list = inputs
-        self._outputs_list = outputs
-        self._derivatives = derivatives
+        self._input_names = tuple(inputs)
+        self._output_names = tuple(outputs)
         self._specs = dict(specs or {})
+        self._arg_map = dict(arg_map or {})
 
-        # GEMSEO Grammars require us to define input/output names
-        self.input_grammar.update_from_names(self._inputs_list)
-        self.output_grammar.update_from_names(self._outputs_list)
-
-    def _run(self, **kwargs) -> None:
-        """Executes the wrapped function using data from self.local_data and stores results.
-
-        Expects the wrapped function to return a dictionary mapping output names
-        to their computed values, or a single value for single outputs, or a tuple.
-        """
-        input_vals = {
-            name: to_tool_value(self._specs.get(name), self.local_data[name])
-            for name in self._inputs_list
+        self.input_grammar.update_from_names(self._input_names)
+        self.output_grammar.update_from_names(self._output_names)
+        self.default_input_data = {
+            input_name: np.atleast_1d(value)
+            for input_name, value in (defaults or {}).items()
         }
+        self.set_jacobian_approximation()
+        if not deterministic:
+            self.set_cache(CacheType.NONE)
 
-        # Always use keyword arguments to guarantee correct mapping
-        # regardless of the order in _inputs_list.
-        result = self.func(**input_vals)
+    def _run(self, input_data: StrKeyMapping) -> dict[str, np.ndarray]:
+        kwargs = {
+            self._arg_map.get(name, name): to_tool_value(
+                self._specs.get(name), input_data[name]
+            )
+            for name in self._input_names
+        }
+        try:
+            result = self.func(**kwargs)
+        except MemoryError:
+            raise
+        except Exception as exc:
+            raise ToolExecutionError(
+                f"{type(exc).__name__}: {exc}", tool=self.name
+            ) from exc
+        return self._normalise_outputs(result)
 
-        # Map results to outputs inside self.local_data
-        if len(self._outputs_list) == 1:
-            output_name = self._outputs_list[0]
-            self.local_data[output_name] = np.atleast_1d(result)
-        elif isinstance(result, dict):
-            for name in self._outputs_list:
-                self.local_data[name] = np.atleast_1d(result[name])
+    def _normalise_outputs(self, result: Any) -> dict[str, np.ndarray]:
+        if result is None:
+            raise self._output_error(
+                f"returned None; expected values for {list(self._output_names)}"
+            )
+        if isinstance(result, Mapping):
+            values = self._values_by_name(result)
+        elif len(self._output_names) == 1:
+            values = {self._output_names[0]: result}
         else:
-            # If result is a tuple/list, assume order matches outputs
-            for i, name in enumerate(self._outputs_list):
-                self.local_data[name] = np.atleast_1d(result[i])
+            raise self._output_error(
+                f"returned a {type(result).__name__} for the outputs "
+                f"{list(self._output_names)}; return a dict keyed by output name"
+            )
 
-    def _compute_jacobian(
-        self, inputs: list[str] = None, outputs: list[str] = None
-    ) -> None:
-        """Computes the analytical derivatives if provided."""
-        if self._derivatives:
-            # Placeholder for exact jacobian
-            pass
-        else:
-            # GEMSEO handles finite differences automatically if we call self.set_jacobian_approximation()
-            # which is typically done outside or at initialization.
-            pass
+        outputs: dict[str, np.ndarray] = {}
+        for output_name, value in values.items():
+            try:
+                outputs[output_name] = np.atleast_1d(np.asarray(value, dtype=float))
+            except (TypeError, ValueError) as exc:
+                raise self._output_error(
+                    f"output '{output_name}' is not numeric: {exc}"
+                ) from exc
+        non_finite = [
+            output_name
+            for output_name, array in outputs.items()
+            if not np.all(np.isfinite(array))
+        ]
+        if non_finite:
+            raise self._output_error(
+                f"non-finite value (NaN or infinity) in the outputs {non_finite}"
+            )
+        return outputs
+
+    def _values_by_name(self, result: Mapping[str, Any]) -> dict[str, Any]:
+        missing = [name for name in self._output_names if name not in result]
+        unexpected = [name for name in result if name not in self._output_names]
+        if missing or unexpected:
+            raise self._output_error(
+                "the returned dict does not match the declared outputs "
+                f"{list(self._output_names)}: missing {missing}, "
+                f"unexpected {unexpected}"
+            )
+        return {name: result[name] for name in self._output_names}
+
+    def _output_error(self, message: str) -> ToolOutputError:
+        return ToolOutputError(message, tool=self.name)

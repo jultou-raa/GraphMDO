@@ -14,7 +14,7 @@ The architecture consists of three primary layers:
 
 2.  **Execution Layer (GEMSEO)**
     *   Translates the study schema into an executable GEMSEO Problem.
-    *   Wraps Python functions or external codes into `ToolComponent`.
+    *   Wraps Python functions or external codes into `ToolComponent`, a GEMSEO discipline that enforces the tool output contract and approximates Jacobians by finite differences (see [Study Schema](study-schema.md#tool-function-contract)).
     *   Handles variable promotion and data passing between components.
 
 3.  **Optimization Layer (Ax/SMT)**
