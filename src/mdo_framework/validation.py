@@ -221,7 +221,16 @@ def check_tool_signature(
     return errors, warnings
 
 
-def _resolution_errors(walk: DependencyWalk, has_targets: bool) -> list[Finding]:
+def dependency_findings(walk: DependencyWalk) -> list[Finding]:
+    """Turn the unresolved parts of a dependency walk into error findings.
+
+    Args:
+        walk: Result of ``walk_dependencies``.
+
+    Returns:
+        ``UNKNOWN_OUTPUT``, ``NOT_PRODUCED`` and ``UNPRODUCED_STATE`` findings,
+        in that order.
+    """
     errors = [
         Finding(
             code="UNKNOWN_OUTPUT",
@@ -249,6 +258,11 @@ def _resolution_errors(walk: DependencyWalk, has_targets: bool) -> list[Finding]
         )
         for name in walk.unproduced_states
     )
+    return errors
+
+
+def _resolution_errors(walk: DependencyWalk, has_targets: bool) -> list[Finding]:
+    errors = dependency_findings(walk)
     resolved = not (walk.unknown_targets or walk.unproduced_targets)
     if has_targets and resolved and not walk.design_variables:
         errors.append(
@@ -260,9 +274,19 @@ def _resolution_errors(walk: DependencyWalk, has_targets: bool) -> list[Finding]
     return errors
 
 
-def _registry_findings(
+def registry_findings(
     schema: StudySchema, registry: Mapping[str, Callable[..., Any]]
 ) -> tuple[list[Finding], list[Finding]]:
+    """Check every schema tool against the tool registry.
+
+    Args:
+        schema: Study whose tools must be registered.
+        registry: Tool name to Python function.
+
+    Returns:
+        The error findings (``UNREGISTERED_TOOL`` for every missing tool, then
+        the signature errors of the registered ones) and the warning findings.
+    """
     errors = [
         Finding(
             code="UNREGISTERED_TOOL",
@@ -585,7 +609,7 @@ def validate_study(
     errors = _resolution_errors(walk, has_targets)
     signature_warnings: list[Finding] = []
     if registry is not None:
-        registry_errors, signature_warnings = _registry_findings(schema, registry)
+        registry_errors, signature_warnings = registry_findings(schema, registry)
         errors.extend(registry_errors)
     errors.extend(_search_space_errors(walk.design_variables, parameter_constraints))
 

@@ -69,11 +69,6 @@ class ToolComponent(Discipline):
         self.input_grammar.update_from_names(self._inputs_list)
         self.output_grammar.update_from_names(self._outputs_list)
 
-        # GEMSEO expects default values to be set in default_inputs if they exist
-        self.default_inputs = {
-            in_name: np.array([0.0]) for in_name in self._inputs_list
-        }
-
     def _run(self, **kwargs) -> None:
         """Executes the wrapped function using data from self.local_data and stores results.
 
