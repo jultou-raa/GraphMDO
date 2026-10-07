@@ -19,31 +19,26 @@ from mdo_framework.optimization.optimizer import (
     BayesianOptimizer,
     OptimizationConfigurationError,
 )
+from mdo_framework.schema import RangeVar, StateVar, StudySchema, ToolSpec
 
 pytestmark = pytest.mark.e2e
 
-FLOAT = {"param_type": "continuous", "value_type": "float"}
-SCHEMA = {  # documented walkthrough (docs/user-guide/running-optimization.md)
-    "tools": [
-        {
-            "name": "Paraboloid",
-            "fidelity": "high",
-            "inputs": ["x", "y"],
-            "outputs": ["f_xy"],
-        }
+# Documented walkthrough (docs/user-guide/running-optimization.md)
+SCHEMA = StudySchema(
+    variables=[
+        RangeVar(name="x", lower=0.0, upper=10.0),
+        RangeVar(name="y", lower=0.0, upper=10.0),
+        StateVar(name="f_xy"),
     ],
-    "variables": [
-        {"name": "x", "lower": 0.0, "upper": 10.0, **FLOAT},
-        {"name": "y", "lower": 0.0, "upper": 10.0, **FLOAT},
-        {"name": "f_xy", **FLOAT},
-    ],
-}
+    tools=[ToolSpec(name="Paraboloid", inputs=["x", "y"], outputs=["f_xy"])],
+)
 DOCUMENTED_PAYLOAD = {"objectives": [{"name": "f_xy", "minimize": True}]}
 
 
 @pytest.fixture
 def services(monkeypatch):
-    graph = httpx.MockTransport(lambda request: httpx.Response(200, json=SCHEMA))
+    payload = SCHEMA.model_dump(mode="json")
+    graph = httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
     with (
         TestClient(execution.app) as execution_client,
         TestClient(optimization.app) as optimization_client,

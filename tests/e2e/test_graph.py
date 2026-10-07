@@ -10,41 +10,32 @@ import math
 
 import pytest
 
+from mdo_framework.schema import FixedParam, RangeVar, StateVar, StudySchema, ToolSpec
+
 pytestmark = pytest.mark.e2e
 
-FLOAT = {"param_type": "continuous", "value_type": "float"}
-SELLAR_SCHEMA = {  # scalar Sellar; couplings y1, y2 deliberately have no `value`
-    "tools": [
-        {
-            "name": "Sellar1",
-            "fidelity": "high",
-            "inputs": ["x", "z1", "z2", "y2"],
-            "outputs": ["y1"],
-        },
-        {
-            "name": "Sellar2",
-            "fidelity": "high",
-            "inputs": ["z1", "z2", "y1"],
-            "outputs": ["y2"],
-        },
-        {
-            "name": "System",
-            "fidelity": "high",
-            "inputs": ["x", "z1", "z2", "y1", "y2"],
-            "outputs": ["obj", "c1", "c2"],
-        },
+# Scalar Sellar; the couplings y1, y2 deliberately have no `initial_guess`.
+SELLAR_SCHEMA = StudySchema(
+    variables=[
+        RangeVar(name="x", lower=0.0, upper=10.0),
+        RangeVar(name="z1", lower=-10.0, upper=10.0),
+        RangeVar(name="z2", lower=0.0, upper=10.0),
+        StateVar(name="y1"),
+        StateVar(name="y2"),
+        StateVar(name="obj"),
+        StateVar(name="c1"),
+        StateVar(name="c2"),
     ],
-    "variables": [
-        {"name": "x", "lower": 0.0, "upper": 10.0, **FLOAT},
-        {"name": "z1", "lower": -10.0, "upper": 10.0, **FLOAT},
-        {"name": "z2", "lower": 0.0, "upper": 10.0, **FLOAT},
-        {"name": "y1", **FLOAT},
-        {"name": "y2", **FLOAT},
-        {"name": "obj", **FLOAT},
-        {"name": "c1", **FLOAT},
-        {"name": "c2", **FLOAT},
+    tools=[
+        ToolSpec(name="Sellar1", inputs=["x", "z1", "z2", "y2"], outputs=["y1"]),
+        ToolSpec(name="Sellar2", inputs=["z1", "z2", "y1"], outputs=["y2"]),
+        ToolSpec(
+            name="System",
+            inputs=["x", "z1", "z2", "y1", "y2"],
+            outputs=["obj", "c1", "c2"],
+        ),
     ],
-}
+)
 SELLAR_REGISTRY = {
     "Sellar1": lambda x, z1, z2, y2: z1**2 + z2 + x - 0.2 * y2,
     "Sellar2": lambda z1, z2, y1: math.sqrt(abs(y1)) + z1 + z2,
@@ -87,29 +78,19 @@ def test_sellar_without_coupling_values(build_optimizer):
     strict=True, reason="#61: every graph tool must be registered, even unused ones"
 )
 def test_unrelated_unregistered_tool(build_optimizer, recorded):
-    schema = {
-        "tools": [
-            {
-                "name": "Paraboloid",
-                "fidelity": "high",
-                "inputs": ["x", "y"],
-                "outputs": ["f_xy"],
-            },
-            {
-                "name": "Unrelated",
-                "fidelity": "high",
-                "inputs": ["z"],
-                "outputs": ["u"],
-            },
+    schema = StudySchema(
+        variables=[
+            RangeVar(name="x", lower=-10.0, upper=4.0),
+            RangeVar(name="y", lower=-4.0, upper=10.0),
+            StateVar(name="f_xy"),
+            RangeVar(name="z", lower=0.0, upper=1.0),
+            StateVar(name="u"),
         ],
-        "variables": [
-            {"name": "x", "lower": -10.0, "upper": 4.0, **FLOAT},
-            {"name": "y", "lower": -4.0, "upper": 10.0, **FLOAT},
-            {"name": "f_xy", **FLOAT},
-            {"name": "z", "lower": 0.0, "upper": 1.0, **FLOAT},
-            {"name": "u", **FLOAT},
+        tools=[
+            ToolSpec(name="Paraboloid", inputs=["x", "y"], outputs=["f_xy"]),
+            ToolSpec(name="Unrelated", inputs=["z"], outputs=["u"]),
         ],
-    }
+    )
     tool = recorded(lambda x, y: (x - 1) ** 2 + (y + 2) ** 2)
     optimizer, _ = build_optimizer(
         schema, {"Paraboloid": tool}, [{"name": "f_xy", "minimize": True}]
@@ -121,20 +102,15 @@ def test_unrelated_unregistered_tool(build_optimizer, recorded):
     assert result["best_objectives"]["f_xy"] == pytest.approx(tool.function(**best))
 
 
-@pytest.mark.xfail(
-    strict=True, reason="#38: a valued, unbounded input becomes a [0, 1] variable"
-)
 def test_fixed_variable_not_optimized(build_optimizer, recorded):
-    schema = {
-        "tools": [
-            {"name": "T", "fidelity": "high", "inputs": ["v", "rho"], "outputs": ["f"]}
+    schema = StudySchema(
+        variables=[
+            RangeVar(name="v", lower=0.0, upper=10.0),
+            FixedParam(name="rho", value=1.225),
+            StateVar(name="f"),
         ],
-        "variables": [
-            {"name": "v", "lower": 0.0, "upper": 10.0, **FLOAT},
-            {"name": "rho", "value": 1.225, **FLOAT},
-            {"name": "f", **FLOAT},
-        ],
-    }
+        tools=[ToolSpec(name="T", inputs=["v", "rho"], outputs=["f"])],
+    )
     tool = recorded(lambda v, rho: rho * (v - 7) ** 2)
     optimizer, _ = build_optimizer(
         schema, {"T": tool}, [{"name": "f", "minimize": True}]

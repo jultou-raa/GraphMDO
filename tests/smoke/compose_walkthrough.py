@@ -15,9 +15,9 @@ import httpx
 GRAPH = os.getenv("GRAPH_URL", "http://localhost:8001")
 OPTIMIZATION = os.getenv("OPTIMIZATION_URL", "http://localhost:8003")
 VARIABLES = (
-    {"name": "x", "lower": 0.0, "upper": 10.0},
-    {"name": "y", "lower": 0.0, "upper": 10.0},
-    {"name": "f_xy"},
+    {"kind": "range", "name": "x", "lower": 0.0, "upper": 10.0},
+    {"kind": "range", "name": "y", "lower": 0.0, "upper": 10.0},
+    {"kind": "state", "name": "f_xy"},
 )
 CONNECTIONS = (
     ("input", "x", "Paraboloid"),

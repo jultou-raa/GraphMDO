@@ -12,39 +12,23 @@ import pytest
 from mdo_framework.optimization import ax_algo_lib
 from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
 from mdo_framework.optimization.optimizer import OptimizationConfigurationError
+from mdo_framework.schema import ChoiceVar, RangeVar, StateVar, StudySchema, ToolSpec
 
 pytestmark = pytest.mark.e2e
 
-FLOAT = {"param_type": "continuous", "value_type": "float"}
-BOX = {"lower": -10.0, "upper": 10.0, **FLOAT}
-PARABOLOID_SCHEMA = {  # main.py demo
-    "tools": [
-        {
-            "name": "Paraboloid",
-            "fidelity": "high",
-            "inputs": ["x", "y"],
-            "outputs": ["f_xy", "c_xy"],
-        }
+PARABOLOID_SCHEMA = StudySchema(  # main.py demo
+    variables=[
+        RangeVar(name="x", lower=-10.0, upper=10.0),
+        RangeVar(name="y", lower=-10.0, upper=10.0),
+        StateVar(name="f_xy"),
+        StateVar(name="c_xy"),
     ],
-    "variables": [
-        {"name": "x", **BOX},
-        {"name": "y", **BOX},
-        {"name": "f_xy", **FLOAT},
-        {"name": "c_xy", **FLOAT},
-    ],
-}
-DISCRETE_SCHEMA = {
-    "tools": [{"name": "T", "fidelity": "high", "inputs": ["m"], "outputs": ["f"]}],
-    "variables": [
-        {
-            "name": "m",
-            "param_type": "choice",
-            "choices": ["a", "b", "c"],
-            "value_type": "str",
-        },
-        {"name": "f", **FLOAT},
-    ],
-}
+    tools=[ToolSpec(name="Paraboloid", inputs=["x", "y"], outputs=["f_xy", "c_xy"])],
+)
+DISCRETE_SCHEMA = StudySchema(
+    variables=[ChoiceVar(name="m", choices=["a", "b", "c"]), StateVar(name="f")],
+    tools=[ToolSpec(name="T", inputs=["m"], outputs=["f"])],
+)
 MINIMIZE_F_XY = [{"name": "f_xy", "minimize": True}]
 
 

@@ -10,17 +10,15 @@ import math
 
 import pytest
 
+from mdo_framework.schema import RangeVar, StateVar, StudySchema, ToolSpec
+
 pytestmark = pytest.mark.e2e
 
-FLOAT = {"param_type": "continuous", "value_type": "float"}
 MINIMIZE_F = [{"name": "f", "minimize": True}]
-LINE_SCHEMA = {  # T(x) -> f with x on [0, 10]; x0 is the centre, 5
-    "tools": [{"name": "T", "fidelity": "high", "inputs": ["x"], "outputs": ["f"]}],
-    "variables": [
-        {"name": "x", "lower": 0.0, "upper": 10.0, **FLOAT},
-        {"name": "f", **FLOAT},
-    ],
-}
+LINE_SCHEMA = StudySchema(  # T(x) -> f with x on [0, 10]; x0 is the centre, 5
+    variables=[RangeVar(name="x", lower=0.0, upper=10.0), StateVar(name="f")],
+    tools=[ToolSpec(name="T", inputs=["x"], outputs=["f"])],
+)
 
 
 def diverging(x: float) -> float:
@@ -90,16 +88,14 @@ def test_failure_at_initial_point(build_optimizer, recorded):
     strict=True, reason="#45: no feasible point crashes, no feasibility flag"
 )
 def test_infeasible_problem_is_flagged(build_optimizer, recorded):
-    schema = {
-        "tools": [
-            {"name": "T", "fidelity": "high", "inputs": ["x"], "outputs": ["f", "g"]}
+    schema = StudySchema(
+        variables=[
+            RangeVar(name="x", lower=-1.0, upper=1.0),
+            StateVar(name="f"),
+            StateVar(name="g"),
         ],
-        "variables": [
-            {"name": "x", "lower": -1.0, "upper": 1.0, **FLOAT},
-            {"name": "f", **FLOAT},
-            {"name": "g", **FLOAT},
-        ],
-    }
+        tools=[ToolSpec(name="T", inputs=["x"], outputs=["f", "g"])],
+    )
     tool = recorded(lambda x: {"f": x**2, "g": 1 + x**2})
     optimizer, _ = build_optimizer(
         schema, {"T": tool}, MINIMIZE_F, [{"name": "g", "op": "<=", "bound": 0.0}]

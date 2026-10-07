@@ -8,21 +8,22 @@ Objective and constraint semantics: convergence, maximization, Pareto, `>=`.
 
 import pytest
 
+from mdo_framework.schema import RangeVar, StateVar, StudySchema, ToolSpec
+
 pytestmark = pytest.mark.e2e
 
-FLOAT = {"param_type": "continuous", "value_type": "float"}
 CONSTRAINED_OPTIMUM = 65 / 3  # shifted paraboloid at (-1/3, -1/3); f(x0) = 73
 
 
-def line_schema(lower: float, upper: float, outputs: list[str]) -> dict:
+def line_schema(lower: float, upper: float, outputs: list[str]) -> StudySchema:
     """One tool T(x) -> outputs, with x on [lower, upper]."""
-    return {
-        "tools": [
-            {"name": "T", "fidelity": "high", "inputs": ["x"], "outputs": outputs}
+    return StudySchema(
+        variables=[
+            RangeVar(name="x", lower=lower, upper=upper),
+            *(StateVar(name=name) for name in outputs),
         ],
-        "variables": [{"name": "x", "lower": lower, "upper": upper, **FLOAT}]
-        + [{"name": name, **FLOAT} for name in outputs],
-    }
+        tools=[ToolSpec(name="T", inputs=["x"], outputs=outputs)],
+    )
 
 
 def dominates(a: dict[str, float], b: dict[str, float]) -> bool:
