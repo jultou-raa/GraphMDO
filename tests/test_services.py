@@ -17,46 +17,209 @@ try:
 except ImportError:
     torch = None
 
-# Pre-patch GraphManager to avoid DB connection during import of services.graph.main
-gm_patcher = patch("mdo_framework.db.graph_manager.GraphManager")
-MockGraphManager = gm_patcher.start()
-# Set the mock instance that will be assigned to 'gm' in main.py
-mock_gm_instance = MockGraphManager.return_value
+from fakes.falkordb import FakeGraph
 
-# Now safe to import
+from mdo_framework.db.graph_manager import GraphManager
 from mdo_framework.optimization.optimizer import (
     OptimizationConfigurationError,
     RemoteEvaluationTransportError,
 )
+from mdo_framework.schema import (
+    ChoiceVar,
+    FixedParam,
+    RangeVar,
+    StateVar,
+    StudySchema,
+    ToolNode,
+    ToolSpec,
+)
 from services.execution.main import app as execution_app
 from services.graph.main import app as graph_app
+from services.graph.main import get_graph_manager
 from services.optimization.main import app as optimization_app
+
+X_BODY = {"kind": "range", "name": "x", "lower": -10.0, "upper": 10.0}
 
 
 class TestGraphService(unittest.TestCase):
     def setUp(self):
+        self.graph = FakeGraph()
+        self.manager = GraphManager(graph=self.graph)
+        graph_app.dependency_overrides[get_graph_manager] = lambda: self.manager
+        self.addCleanup(graph_app.dependency_overrides.clear)
         self.client = TestClient(graph_app)
-        self.mock_gm = mock_gm_instance  # The instance created at module level
+
+    def build_paraboloid(self):
+        self.manager.add_variable(RangeVar(name="x", lower=-10.0, upper=10.0))
+        self.manager.add_variable(RangeVar(name="y", lower=-10.0, upper=10.0))
+        self.manager.add_variable(StateVar(name="f_xy"))
+        self.manager.add_tool(ToolNode(name="Paraboloid"))
+        self.manager.connect_input_to_tool("x", "Paraboloid")
+        self.manager.connect_input_to_tool("y", "Paraboloid")
+        self.manager.connect_tool_to_output("Paraboloid", "f_xy")
 
     def test_create_variable(self):
-        # The endpoint calls gm.add_variable
-        response = self.client.post("/variables", json={"name": "x", "value": 1.0})
-        self.assertEqual(response.status_code, 200)
-        self.mock_gm.add_variable.assert_called_with(
-            "x",
-            1.0,
-            None,
-            None,
-            "continuous",
-            None,
-            "float",
+        response = self.client.post("/variables", json=X_BODY)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json(), {"status": "created", "variable": "x"})
+        self.assertEqual(
+            self.manager.get_variables(), [RangeVar(name="x", lower=-10.0, upper=10.0)]
         )
 
-    def test_get_schema(self):
-        self.mock_gm.get_graph_schema.return_value = {"tools": [], "variables": []}
+    def test_create_variable_of_every_kind(self):
+        bodies = [
+            (X_BODY, RangeVar(name="x", lower=-10.0, upper=10.0)),
+            (
+                {"kind": "choice", "name": "m", "choices": ["a", "b"]},
+                ChoiceVar(name="m", choices=["a", "b"]),
+            ),
+            (
+                {"kind": "fixed", "name": "g", "value": 9.81},
+                FixedParam(name="g", value=9.81),
+            ),
+            (
+                {"kind": "state", "name": "f", "initial_guess": [1.0, 2.0]},
+                StateVar(name="f", initial_guess=[1.0, 2.0]),
+            ),
+        ]
+        for body, expected in bodies:
+            with self.subTest(kind=body["kind"]):
+                response = self.client.post("/variables", json=body)
+                self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            self.manager.get_variables(), [expected for _, expected in bodies]
+        )
+
+    def test_create_existing_variable_conflicts(self):
+        self.client.post("/variables", json=X_BODY)
+        response = self.client.post(
+            "/variables", json={"kind": "fixed", "name": "x", "value": 1}
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.json(),
+            {"detail": {"error": "exists", "label": "Variable", "name": "x"}},
+        )
+        self.assertEqual(
+            self.manager.get_variables(), [RangeVar(name="x", lower=-10.0, upper=10.0)]
+        )
+
+    def test_create_variable_rejects_invalid_bodies(self):
+        bodies = {
+            "no kind": {"name": "x", "lower": 0.0, "upper": 1.0},
+            "unknown kind": {"kind": "continuous", "name": "x"},
+            "legacy field": {**X_BODY, "param_type": "range"},
+            "inverted bounds": {**X_BODY, "lower": 5.0, "upper": 1.0},
+            "bad name": {**X_BODY, "name": "not a name"},
+        }
+        for label, body in bodies.items():
+            with self.subTest(label):
+                response = self.client.post("/variables", json=body)
+                self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.manager.get_variables(), [])
+
+    def test_create_variable_rejects_a_nan_bound(self):
+        response = self.client.post(
+            "/variables",
+            content='{"kind": "range", "name": "x", "lower": NaN, "upper": 1.0}',
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["detail"][0]["type"], "finite_number")
+        self.assertEqual(self.manager.get_variables(), [])
+
+    def test_put_variable_creates_then_replaces(self):
+        created = self.client.put("/variables/x", json=X_BODY)
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json(), {"status": "created", "variable": "x"})
+
+        replaced = self.client.put("/variables/x", json={**X_BODY, "upper": 20.0})
+        self.assertEqual(replaced.status_code, 200)
+        self.assertEqual(replaced.json(), {"status": "replaced", "variable": "x"})
+        self.assertEqual(
+            self.manager.get_variables(), [RangeVar(name="x", lower=-10.0, upper=20.0)]
+        )
+
+    def test_put_variable_rejects_a_name_that_differs_from_the_path(self):
+        response = self.client.put("/variables/other", json=X_BODY)
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("'other'", response.json()["detail"])
+        self.assertEqual(self.manager.get_variables(), [])
+
+    def test_put_variable_rejects_an_invalid_body(self):
+        response = self.client.put("/variables/x", json={"name": "x"})
+        self.assertEqual(response.status_code, 422)
+
+    def test_put_variable_refuses_to_turn_a_produced_variable_into_an_input(self):
+        self.build_paraboloid()
+        response = self.client.put(
+            "/variables/f_xy", json={"kind": "fixed", "name": "f_xy", "value": 1.0}
+        )
+        self.assertEqual(response.status_code, 409)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error"], "role_conflict")
+        self.assertEqual(detail["variable"], "f_xy")
+        self.assertIn("Paraboloid", detail["message"])
+        self.assertEqual(
+            self.manager.get_study_schema().variable("f_xy"), StateVar(name="f_xy")
+        )
+
+    def test_delete_variable(self):
+        self.build_paraboloid()
+        response = self.client.delete("/variables/x")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "deleted", "variable": "x"})
+        self.assertEqual(self.manager.get_tool_inputs("Paraboloid"), ["y"])
+
+    def test_delete_missing_variable_is_not_found(self):
+        response = self.client.delete("/variables/ghost")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            {
+                "detail": {
+                    "missing": [{"label": "Variable", "name": "ghost"}],
+                    "hint": None,
+                }
+            },
+        )
+
+    def test_get_schema_of_an_empty_graph(self):
         response = self.client.get("/schema")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"tools": [], "variables": []})
+        self.assertEqual(
+            response.json(), {"schema_version": "1", "variables": [], "tools": []}
+        )
+
+    def test_get_schema_returns_the_typed_study(self):
+        self.build_paraboloid()
+        response = self.client.get("/schema")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            StudySchema.model_validate(response.json()),
+            StudySchema(
+                variables=[
+                    RangeVar(name="x", lower=-10.0, upper=10.0),
+                    RangeVar(name="y", lower=-10.0, upper=10.0),
+                    StateVar(name="f_xy"),
+                ],
+                tools=[
+                    ToolSpec(name="Paraboloid", inputs=["x", "y"], outputs=["f_xy"])
+                ],
+            ),
+        )
+        self.assertEqual(response.json()["variables"][0]["kind"], "range")
+
+    def test_get_schema_reports_legacy_nodes_as_a_conflict(self):
+        self.graph.add_raw_node("Variable", name="old", param_type="continuous")
+        response = self.client.get("/schema")
+        self.assertEqual(response.status_code, 409)
+        report = response.json()["detail"]
+        self.assertFalse(report["valid"])
+        self.assertEqual(
+            [(error["code"], error["names"]) for error in report["errors"]],
+            [("LEGACY_NODE", ["old"])],
+        )
 
     def test_health_ok_when_falkordb_answers(self):
         with patch("services.graph.main.ping_database") as ping:
@@ -83,40 +246,193 @@ class TestGraphService(unittest.TestCase):
         client_cls.return_value.client.connection.ping.assert_called_once()
 
     def test_clear_graph(self):
+        self.build_paraboloid()
         response = self.client.post("/clear")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "cleared")
-        self.mock_gm.clear_graph.assert_called()
+        self.assertEqual(response.json(), {"status": "cleared"})
+        self.assertEqual(self.manager.get_study_schema(), StudySchema())
 
     def test_create_tool(self):
-        response = self.client.post(
-            "/tools",
-            json={"name": "ToolA", "fidelity": "high"},
+        response = self.client.post("/tools", json={"name": "ToolA", "fidelity": "low"})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json(), {"status": "created", "tool": "ToolA"})
+        self.assertEqual(
+            self.manager.get_tools(), [ToolNode(name="ToolA", fidelity="low")]
         )
+
+    def test_create_tool_defaults_to_high_fidelity(self):
+        self.client.post("/tools", json={"name": "ToolA"})
+        self.assertEqual(self.manager.get_tools(), [ToolNode(name="ToolA")])
+
+    def test_create_existing_tool_conflicts(self):
+        self.client.post("/tools", json={"name": "ToolA"})
+        response = self.client.post("/tools", json={"name": "ToolA", "fidelity": "low"})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.json(),
+            {"detail": {"error": "exists", "label": "Tool", "name": "ToolA"}},
+        )
+        self.assertEqual(self.manager.get_tools(), [ToolNode(name="ToolA")])
+
+    def test_create_tool_rejects_invalid_bodies(self):
+        bodies = {
+            "unknown field": {"name": "ToolA", "version": "1.2"},
+            "connections in body": {"name": "ToolA", "inputs": ["x"]},
+            "bad name": {"name": "not a name"},
+            "no name": {"fidelity": "low"},
+        }
+        for label, body in bodies.items():
+            with self.subTest(label):
+                response = self.client.post("/tools", json=body)
+                self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.manager.get_tools(), [])
+
+    def test_put_tool_creates_then_replaces(self):
+        created = self.client.put("/tools/ToolA", json={"name": "ToolA"})
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json(), {"status": "created", "tool": "ToolA"})
+
+        replaced = self.client.put(
+            "/tools/ToolA", json={"name": "ToolA", "fidelity": "low"}
+        )
+        self.assertEqual(replaced.status_code, 200)
+        self.assertEqual(replaced.json(), {"status": "replaced", "tool": "ToolA"})
+        self.assertEqual(
+            self.manager.get_tools(), [ToolNode(name="ToolA", fidelity="low")]
+        )
+
+    def test_put_tool_rejects_a_name_that_differs_from_the_path(self):
+        response = self.client.put("/tools/other", json={"name": "ToolA"})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("'other'", response.json()["detail"])
+        self.assertEqual(self.manager.get_tools(), [])
+
+    def test_delete_tool(self):
+        self.build_paraboloid()
+        response = self.client.delete("/tools/Paraboloid")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "created")
-        self.assertEqual(response.json()["tool"], "ToolA")
-        self.mock_gm.add_tool.assert_called_with("ToolA", "high")
+        self.assertEqual(response.json(), {"status": "deleted", "tool": "Paraboloid"})
+        self.assertEqual(self.manager.get_tools(), [])
+
+    def test_delete_missing_tool_is_not_found(self):
+        response = self.client.delete("/tools/ghost")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            {"detail": {"missing": [{"label": "Tool", "name": "ghost"}], "hint": None}},
+        )
 
     def test_connect_input(self):
+        self.manager.add_variable(RangeVar(name="varX", lower=0.0, upper=1.0))
+        self.manager.add_tool(ToolNode(name="ToolA"))
         response = self.client.post(
-            "/connections/input",
-            json={"source": "varX", "target": "ToolA"},
+            "/connections/input", json={"source": "varX", "target": "ToolA"}
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "connected")
-        self.assertEqual(response.json()["type"], "input")
-        self.mock_gm.connect_input_to_tool.assert_called_with("varX", "ToolA")
+        self.assertEqual(response.json(), {"status": "connected", "type": "input"})
+        self.assertEqual(self.manager.get_tool_inputs("ToolA"), ["varX"])
 
     def test_connect_output(self):
+        self.manager.add_variable(StateVar(name="varY"))
+        self.manager.add_tool(ToolNode(name="ToolA"))
         response = self.client.post(
-            "/connections/output",
-            json={"source": "ToolA", "target": "varY"},
+            "/connections/output", json={"source": "ToolA", "target": "varY"}
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "connected")
-        self.assertEqual(response.json()["type"], "output")
-        self.mock_gm.connect_tool_to_output.assert_called_with("ToolA", "varY")
+        self.assertEqual(response.json(), {"status": "connected", "type": "output"})
+        self.assertEqual(self.manager.get_tool_outputs("ToolA"), ["varY"])
+
+    def test_connecting_a_missing_node_is_not_found(self):
+        self.build_paraboloid()
+        cases = [
+            ("/connections/input", "ghost", "Paraboloid", [("Variable", "ghost")]),
+            ("/connections/input", "x", "ghost", [("Tool", "ghost")]),
+            ("/connections/output", "Paraboloid", "ghost", [("Variable", "ghost")]),
+            ("/connections/output", "ghost", "f_xy", [("Tool", "ghost")]),
+        ]
+        for path, source, target, missing in cases:
+            with self.subTest(path=path, source=source, target=target):
+                response = self.client.post(
+                    path, json={"source": source, "target": target}
+                )
+                self.assertEqual(response.status_code, 404)
+                self.assertEqual(
+                    response.json(),
+                    {
+                        "detail": {
+                            "missing": [
+                                {"label": label, "name": name}
+                                for label, name in missing
+                            ],
+                            "hint": None,
+                        }
+                    },
+                )
+
+    def test_swapped_connection_arguments_come_with_a_hint(self):
+        self.build_paraboloid()
+        response = self.client.post(
+            "/connections/input", json={"source": "Paraboloid", "target": "f_xy"}
+        )
+        self.assertEqual(response.status_code, 404)
+        detail = response.json()["detail"]
+        self.assertEqual(
+            detail["missing"],
+            [
+                {"label": "Variable", "name": "Paraboloid"},
+                {"label": "Tool", "name": "f_xy"},
+            ],
+        )
+        self.assertIn("connect_tool_to_output", detail["hint"])
+
+    def test_second_producer_of_a_variable_conflicts(self):
+        self.build_paraboloid()
+        self.manager.add_tool(ToolNode(name="Other"))
+        response = self.client.post(
+            "/connections/output", json={"source": "Other", "target": "f_xy"}
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.json(),
+            {
+                "detail": {
+                    "error": "duplicate_producer",
+                    "variable": "f_xy",
+                    "producers": ["Paraboloid", "Other"],
+                }
+            },
+        )
+
+    def test_design_variable_as_tool_output_conflicts(self):
+        self.build_paraboloid()
+        response = self.client.post(
+            "/connections/output", json={"source": "Paraboloid", "target": "x"}
+        )
+        self.assertEqual(response.status_code, 409)
+        detail = response.json()["detail"]
+        self.assertEqual((detail["error"], detail["variable"]), ("role_conflict", "x"))
+        self.assertIn("kind 'state'", detail["message"])
+
+    def test_variable_that_is_input_and_output_of_a_tool_conflicts(self):
+        self.build_paraboloid()
+        response = self.client.post(
+            "/connections/input", json={"source": "f_xy", "target": "Paraboloid"}
+        )
+        self.assertEqual(response.status_code, 409)
+        detail = response.json()["detail"]
+        self.assertEqual(
+            (detail["error"], detail["variable"]), ("role_conflict", "f_xy")
+        )
+
+    def test_connection_bodies_are_strict(self):
+        for path in ("/connections/input", "/connections/output"):
+            for body in (
+                {"source": "a"},
+                {"source": "a", "target": "b", "weight": 1},
+            ):
+                with self.subTest(path=path, body=body):
+                    response = self.client.post(path, json=body)
+                    self.assertEqual(response.status_code, 422)
 
 
 class TestExecutionService(unittest.TestCase):

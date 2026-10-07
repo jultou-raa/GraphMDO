@@ -4,14 +4,25 @@ License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
-from typing import Any
-
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from mdo_framework.db.client import FalkorDBClient
-from mdo_framework.db.graph_manager import GraphManager
+from mdo_framework.db.graph_manager import (
+    DuplicateProducerError,
+    GraphManager,
+    NodeExistsError,
+    NodeNotFoundError,
+    RoleConflictError,
+)
+from mdo_framework.schema import (
+    StudySchema,
+    StudyValidationError,
+    ToolNode,
+    Variable,
+)
 
 app = FastAPI(title="Graph Service")
 
@@ -20,26 +31,60 @@ def get_graph_manager() -> GraphManager:
     return GraphManager()
 
 
-class VariableCreate(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    name: str
-    value: float | None = None
-    lower: float | None = None
-    upper: float | None = None
-    param_type: str = "continuous"
-    choices: list | None = None
-    value_type: str = "float"
+def _error(status_code: int, detail: object) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content={"detail": detail})
 
 
-class ToolCreate(BaseModel):
-    model_config = ConfigDict(extra="allow")
+@app.exception_handler(NodeNotFoundError)
+def node_not_found_handler(_: Request, exc: NodeNotFoundError) -> JSONResponse:
+    missing = [{"label": label, "name": name} for label, name in exc.missing]
+    return _error(404, {"missing": missing, "hint": exc.hint})
 
-    name: str
-    fidelity: str = "high"
+
+@app.exception_handler(NodeExistsError)
+def node_exists_handler(_: Request, exc: NodeExistsError) -> JSONResponse:
+    return _error(409, {"error": "exists", "label": exc.label, "name": exc.name})
+
+
+@app.exception_handler(DuplicateProducerError)
+def duplicate_producer_handler(_: Request, exc: DuplicateProducerError) -> JSONResponse:
+    return _error(
+        409,
+        {
+            "error": "duplicate_producer",
+            "variable": exc.variable,
+            "producers": list(exc.producers),
+        },
+    )
+
+
+@app.exception_handler(RoleConflictError)
+def role_conflict_handler(_: Request, exc: RoleConflictError) -> JSONResponse:
+    return _error(
+        409,
+        {"error": "role_conflict", "variable": exc.variable, "message": exc.message},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+def request_validation_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    # FastAPI's default handler echoes the rejected ``input``, which crashes the
+    # JSON encoder (HTTP 500) when the body held NaN or Infinity.
+    errors = [
+        {"loc": list(error["loc"]), "msg": error["msg"], "type": error["type"]}
+        for error in exc.errors()
+    ]
+    return _error(422, errors)
+
+
+@app.exception_handler(StudyValidationError)
+def study_validation_handler(_: Request, exc: StudyValidationError) -> JSONResponse:
+    return _error(409, exc.report.model_dump(mode="json"))
 
 
 class ConnectionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     source: str
     target: str
 
@@ -60,9 +105,12 @@ class ConnectionResponse(StatusResponse):
     type: str
 
 
-class SchemaResponse(BaseModel):
-    tools: list[dict[str, Any]]
-    variables: list[dict[str, Any]]
+def _check_path_name(path_name: str, body_name: str) -> None:
+    if path_name != body_name:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"Path name '{path_name}' does not match body name '{body_name}'"),
+        )
 
 
 @app.post("/clear", response_model=StatusResponse)
@@ -71,25 +119,56 @@ def clear_graph(gm: GraphManager = Depends(get_graph_manager)):
     return StatusResponse(status="cleared")
 
 
-@app.post("/variables", response_model=VariableResponse)
-def create_variable(var: VariableCreate, gm: GraphManager = Depends(get_graph_manager)):
-    gm.add_variable(
-        var.name,
-        var.value,
-        var.lower,
-        var.upper,
-        var.param_type,
-        var.choices,
-        var.value_type,
-        **(var.model_extra or {}),
-    )
+@app.post("/variables", response_model=VariableResponse, status_code=201)
+def create_variable(var: Variable, gm: GraphManager = Depends(get_graph_manager)):
+    gm.add_variable(var)
     return VariableResponse(status="created", variable=var.name)
 
 
-@app.post("/tools", response_model=ToolResponse)
-def create_tool(tool: ToolCreate, gm: GraphManager = Depends(get_graph_manager)):
-    gm.add_tool(tool.name, tool.fidelity, **(tool.model_extra or {}))
+@app.put("/variables/{name}", response_model=VariableResponse)
+def put_variable(
+    name: str,
+    var: Variable,
+    response: Response,
+    gm: GraphManager = Depends(get_graph_manager),
+):
+    _check_path_name(name, var.name)
+    created = gm.put_variable(var)
+    response.status_code = 201 if created else 200
+    return VariableResponse(
+        status="created" if created else "replaced", variable=var.name
+    )
+
+
+@app.delete("/variables/{name}", response_model=VariableResponse)
+def delete_variable(name: str, gm: GraphManager = Depends(get_graph_manager)):
+    gm.delete_variable(name)
+    return VariableResponse(status="deleted", variable=name)
+
+
+@app.post("/tools", response_model=ToolResponse, status_code=201)
+def create_tool(tool: ToolNode, gm: GraphManager = Depends(get_graph_manager)):
+    gm.add_tool(tool)
     return ToolResponse(status="created", tool=tool.name)
+
+
+@app.put("/tools/{name}", response_model=ToolResponse)
+def put_tool(
+    name: str,
+    tool: ToolNode,
+    response: Response,
+    gm: GraphManager = Depends(get_graph_manager),
+):
+    _check_path_name(name, tool.name)
+    created = gm.put_tool(tool)
+    response.status_code = 201 if created else 200
+    return ToolResponse(status="created" if created else "replaced", tool=tool.name)
+
+
+@app.delete("/tools/{name}", response_model=ToolResponse)
+def delete_tool(name: str, gm: GraphManager = Depends(get_graph_manager)):
+    gm.delete_tool(name)
+    return ToolResponse(status="deleted", tool=name)
 
 
 @app.post("/connections/input", response_model=ConnectionResponse)
@@ -112,9 +191,9 @@ def connect_output(
     return ConnectionResponse(status="connected", type="output")
 
 
-@app.get("/schema", response_model=SchemaResponse)
+@app.get("/schema", response_model=StudySchema)
 def get_schema(gm: GraphManager = Depends(get_graph_manager)):
-    return gm.get_graph_schema()
+    return gm.get_study_schema()
 
 
 def ping_database() -> None:
