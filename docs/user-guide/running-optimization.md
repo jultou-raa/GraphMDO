@@ -88,7 +88,7 @@ curl -X POST http://localhost:8003/validate \
      -d '{"objectives": [{"name": "f_xy", "minimize": true}]}'
 ```
 
-`/validate` always answers `200` with a report. A valid study has no errors:
+Once the study has been fetched from the Graph Service, `/validate` answers `200` with a report, whether the study is valid or not. A valid study has no errors:
 
 ```json
 {"errors": [], "warnings": [], "valid": true}
@@ -138,5 +138,5 @@ Warnings (for example `UNUSED_VARIABLE`) do not block a run. All codes are liste
 
 Other failures:
 
-- Malformed requests, such as non-finite numbers, empty `objectives`, unknown fields or names that break the name rule, are rejected with `422`. In that case `detail` is a list of `{"loc", "msg", "type"}` entries that never echo the submitted values.
-- If the Graph Service cannot be reached or answers with an error (for example `409` because a variable node was stored without `kind`), the Optimization Service answers `502`. Transport and contract failures of the Execution Service during a run are `502` too.
+- Malformed requests, such as non-finite numbers, empty `objectives`, unknown fields or names that break the name rule, are rejected with `422` by both `/validate` and `/optimize`. In that case `detail` is a list of `{"loc", "msg", "type"}` entries that never echo the submitted values. This is not a validation report.
+- If fetching the schema from the Graph Service fails, both endpoints answer `502`: the Graph Service cannot be reached, it answers with a non-2xx status (for example `409` because a variable node was stored without `kind`), or its body is not JSON. A JSON body that does not parse as a study is not a `502`: `/validate` reports it as findings with `200`, and `/optimize` answers `422` with that report. Transport and contract failures of the Execution Service during a run are `502` too.

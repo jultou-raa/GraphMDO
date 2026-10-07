@@ -85,20 +85,69 @@ The same study as JSON (`schema.model_dump(mode="json")`, which is also what `GE
 }
 ```
 
-In JSON, `kind` is required on every variable: it selects the model. Optional fields can be omitted from request bodies.
+In JSON, `kind` is required on every variable: it selects the model (see [Variable kinds](#variable-kinds)). Optional fields can be omitted from request bodies.
 
 ## Variable kinds
 
-Every variable has a `name` (see [Names](#names)) and an optional `units` label. Order is kept: variables, and so design variables, keep the order in which they were created.
+There are four kinds, one model each. All models are immutable and reject unknown fields. Every variable has a `kind` that selects the model, a `name` (see [Names](#names)) and an optional free-form `units` label. Order is kept: variables, and so design variables, keep the order in which they were created.
 
-| `kind` | Role | Fields | Rules |
+Types used in the tables:
+
+-   `Name` is the [name rule](#names).
+-   `float` (finite) is a finite number: `NaN`, infinities, booleans and strings are rejected, integers are accepted and widened.
+-   `Scalar` is exactly one of `bool`, `int`, finite `float` or `str`. There is no coercion: `1` stays an `int`, `1.0` is a `float`, and `"1"` is not converted.
+
+When you build the Python models directly, `kind` takes the default shown and need not be passed. In JSON, whether a request body or a `StudySchema` payload, `kind` is required: a variable without it is rejected.
+
+### `RangeVar`
+
+Design variable bounded by `[lower, upper]`.
+
+| Field | Type | Default | Validation rules |
 | --- | --- | --- | --- |
-| `range` | Design variable | `lower`, `upper`, `value_type` (`"float"` default, or `"int"`), `initial` | `lower < upper`. `int` needs integral bounds and `initial`. `initial` lies within the bounds. |
-| `choice` | Design variable | `choices`, `initial` | At least 2 choices of one type (`bool`, `int`, `float` or `str`), no duplicates. `initial` is one of the choices. |
-| `fixed` | Constant | `value` | `value` is a finite number, a boolean or a string. |
-| `state` | Output or coupling | `initial_guess` | `initial_guess` is a finite number, a non-empty list of finite numbers, or `null`. |
+| `kind` | `"range"` | `"range"` | Discriminator. |
+| `name` | `Name` | required | |
+| `lower` | `float` (finite) | required | Inclusive lower bound, strictly below `upper`. |
+| `upper` | `float` (finite) | required | Inclusive upper bound, strictly above `lower`. |
+| `value_type` | `"float"` or `"int"` | `"float"` | With `"int"`, `lower`, `upper` and `initial` (when given) must be integral. |
+| `initial` | `float` (finite) or `null` | `null` | Optional starting point. When given, it lies within `[lower, upper]`. |
+| `units` | `str` or `null` | `null` | None. |
 
-Numbers are finite: `NaN` and infinities are rejected, as are booleans or strings where a float is expected.
+### `ChoiceVar`
+
+Categorical design variable.
+
+| Field | Type | Default | Validation rules |
+| --- | --- | --- | --- |
+| `kind` | `"choice"` | `"choice"` | Discriminator. |
+| `name` | `Name` | required | |
+| `choices` | list of `Scalar` | required | At least 2 values, all of the same type (`1` and `1.0` are different types), no duplicates. |
+| `initial` | `Scalar` or `null` | `null` | Optional starting value. When given, it equals one of `choices` and has the same type. |
+| `units` | `str` or `null` | `null` | None. |
+
+The type name of the choices (`bool`, `int`, `float` or `str`) is exposed as the read-only `value_type` property. It is not a field and is not accepted in input.
+
+### `FixedParam`
+
+Constant passed unchanged to the tools that declare it.
+
+| Field | Type | Default | Validation rules |
+| --- | --- | --- | --- |
+| `kind` | `"fixed"` | `"fixed"` | Discriminator. |
+| `name` | `Name` | required | |
+| `value` | `Scalar` | required | A `bool`, an `int`, a finite `float` or a `str`. |
+| `units` | `str` or `null` | `null` | None. |
+
+### `StateVar`
+
+Output of a tool, or a coupling variable.
+
+| Field | Type | Default | Validation rules |
+| --- | --- | --- | --- |
+| `kind` | `"state"` | `"state"` | Discriminator. |
+| `name` | `Name` | required | |
+| `initial_guess` | `float` (finite), non-empty list of `float` (finite), or `null` | `null` | A list must contain at least one value. Seeds the multidisciplinary analysis of a coupling. |
+| `units` | `str` or `null` | `null` | None. |
 
 `initial` is the declared starting value of a design variable. It is checked by the preflight (bounds, and `INITIAL_OUT_OF_SPACE` against linear parameter constraints). The optimizer does not use it yet and starts from the centre of the design space.
 
@@ -120,7 +169,16 @@ Names become Python keyword arguments of the tool functions and GEMSEO variable 
 
 ## Tools
 
-A tool is a node with a `name` and a `fidelity` (default `"high"`). `ToolNode` is that stored node: it is what `GraphManager.add_tool()` and the Graph Service `POST /tools` take. `ToolSpec` extends it with `inputs` and `outputs`, the variable names derived from the graph edges, and is what the schema contains. Inputs are unique, outputs are unique, and no name is both an input and an output of the same tool.
+A tool is a node with a `name` and a `fidelity`. `ToolNode` is that stored node: it is what `GraphManager.add_tool()` and the Graph Service `POST /tools` take. `ToolSpec` extends it with `inputs` and `outputs`, the variable names derived from the graph edges, and is what the schema contains. Both models are immutable and reject unknown fields.
+
+| Model | Field | Type | Default | Validation rules |
+| --- | --- | --- | --- | --- |
+| `ToolNode`, `ToolSpec` | `name` | `Name` | required | |
+| `ToolNode`, `ToolSpec` | `fidelity` | `Name` | `"high"` | Fidelity level label. It follows the same rule as a name: pattern, length and not a Python keyword. |
+| `ToolSpec` only | `inputs` | list of `Name` | `[]` | No duplicates. |
+| `ToolSpec` only | `outputs` | list of `Name` | `[]` | No duplicates. No name is both an input and an output of the same tool. |
+
+`inputs` and `outputs` must also name declared variables; that check belongs to the [structural invariants](#structural-invariants) of the whole schema.
 
 Tool functions are called with keyword arguments named after the inputs and return a dictionary of outputs (or a single value for a single output).
 
@@ -195,10 +253,15 @@ The result is a `ValidationReport` with `errors`, `warnings` and a computed `val
 | `PARAMETER_CONSTRAINT_INVALID` | A parameter constraint does not parse, names an unknown, non-design or `choice` variable, is not finite, or is rejected by Ax. | Use only range design variables and finite coefficients. |
 | `INITIAL_OUT_OF_SPACE` | The `initial` values violate a linear parameter constraint. | Move `initial` inside the constraint, or relax it. |
 | `DESIGN_SPACE_INVALID` | GEMSEO rejects a design variable. | Fix the variable's bounds or choices. |
-| `SCHEMA_INVALID` | A schema or request body does not parse as a `StudySchema` (wrong type, missing `kind`, unknown field, breaks a field rule). The message gives the path. | Fix the field named in the message. |
+| `SCHEMA_INVALID` | A `StudySchema` payload fails model validation for a reason other than the structural invariants: wrong type, missing or unknown `kind`, unknown field, a broken field rule. `report_from_validation_error()` emits one finding per Pydantic error, and the message starts with the field path. Typically the body that `/validate` and `/optimize` fetch from the Graph Service. | Fix the field named in the message. |
 | `LEGACY_NODE` | A stored variable node has no `kind`. | Delete and recreate it with the typed API. |
 
-The five structural codes above are errors too.
+The five structural codes above are errors too. Like `SCHEMA_INVALID`, they come from `report_from_validation_error()`, which `/validate` and `/optimize` apply to a fetched `StudySchema` payload that fails model validation.
+
+Two things that look similar are not findings of this table:
+
+-   **HTTP request bodies.** A request body that fails validation (a malformed variable or tool on the Graph Service, a malformed `/validate` or `/optimize` body) is answered with the generic `422` `detail` list of `loc`, `msg` and `type` entries, not with these codes. See [Microservices](microservices.md).
+-   **Execution Service `SCHEMA_INVALID`.** Its `422` body `{"detail": {"code": "SCHEMA_INVALID", "report": {...}}}` means that the loaded study failed the tool registry check. The `code` labels the response; the findings inside `report` are `UNREGISTERED_TOOL` or `SIGNATURE_MISMATCH`, not a `SCHEMA_INVALID` finding. A body from the Graph Service that does not parse as a `StudySchema` is a `502` there.
 
 ### Warning codes
 
