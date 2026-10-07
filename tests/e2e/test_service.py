@@ -7,9 +7,6 @@ Un-mocked Optimization Service tests: real BayesianOptimizer, RemoteEvaluator
 and Execution Service app. Only the graph schema is served by a mock transport.
 """
 
-import logging
-import warnings
-
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -22,6 +19,8 @@ from mdo_framework.optimization.optimizer import (
     BayesianOptimizer,
     OptimizationConfigurationError,
 )
+
+pytestmark = pytest.mark.e2e
 
 FLOAT = {"param_type": "continuous", "value_type": "float"}
 SCHEMA = {  # documented walkthrough (docs/user-guide/running-optimization.md)
@@ -40,16 +39,6 @@ SCHEMA = {  # documented walkthrough (docs/user-guide/running-optimization.md)
     ],
 }
 DOCUMENTED_PAYLOAD = {"objectives": [{"name": "f_xy", "minimize": True}]}
-
-
-@pytest.fixture(autouse=True)
-def _isolated_run(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)  # optimize() writes XDSM/plot files into the cwd
-    logging.disable(logging.CRITICAL)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        yield
-    logging.disable(logging.NOTSET)
 
 
 @pytest.fixture
@@ -75,7 +64,7 @@ def services(monkeypatch):
         yield optimization_client
 
 
-def test_documented_payload_runs_real_optimization(services, monkeypatch):
+def test_optimize_service_end_to_end(services, monkeypatch):
     forwarded = []
     real_execute = AxOptimizationLibrary.execute
 

@@ -20,12 +20,40 @@ jobs:
       - name: Run Tests
         env:
           PYTHONPATH: .
-        run: uv run pytest --cov=src/mdo_framework --cov=src/services --cov-report=xml tests/
+        run: uv run pytest -m "not e2e" --cov=src/mdo_framework --cov=src/services --cov-report=xml tests/
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
+          flags: unit
+          fail_ci_if_error: false
+
+  e2e:
+    name: End-to-end regression suite (real Ax + GEMSEO)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: uv sync --frozen --all-extras --dev
+      - name: Run end-to-end tests
+        env:
+          OMP_NUM_THREADS: "1"
+          PYTHONPATH: .
+        run: uv run pytest -m e2e --durations=10 --cov=src/mdo_framework --cov=src/services --cov-report=xml tests/
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.xml
+          flags: e2e
           fail_ci_if_error: false
 
   wheel-smoke:

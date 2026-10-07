@@ -52,5 +52,8 @@ source = ["."]
 [tool.coverage.report]
 omit = ["test/*", "tests/*", "**/__init__.py", "main.py"]
 
+[tool.pytest.ini_options]
+markers = ["e2e: real Ax + GEMSEO run, no mocks"]
+
 [tool.ruff.lint.per-file-ignores]
 "src/mdo_framework/optimization/ax_algo_lib.py" = ["E402"]  # avoid futur warning

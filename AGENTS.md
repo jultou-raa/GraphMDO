@@ -32,6 +32,7 @@
 -   `src/services/execution/main.py` exposes the Execution Service API: `/evaluate`, `/health`, plus schema caching and pooled problem instances.
 -   `src/services/optimization/main.py` exposes the Optimization Service API: `/optimize`, `/health`.
 -   `tests/` covers the core modules, services, database layer, optimizer, topology, translator, and the top-level demo entry point.
+-   `tests/e2e/` holds the seeded, non-mocked Ax + GEMSEO regression suite (marker `e2e`); open bugs are pinned there as strict xfails.
 
 ## Runtime Architecture
 
@@ -85,7 +86,11 @@
 
 ## Validation and Docs
 
--   Run tests with `uv run pytest tests/`.
+-   Run all tests with `uv run pytest tests/`.
+-   Run fast unit tests with `uv run pytest -m "not e2e" tests/`.
+-   Run the real Ax + GEMSEO suite with `OMP_NUM_THREADS=1 uv run pytest -m e2e tests/`.
+-   Tests that pin an open bug are `xfail(strict=True)` with the issue number in the
+    reason; the PR that fixes the bug removes the marker.
 -   Run lint checks with `uv run ruff check .`.
 -   Format code with `uv run ruff format .`.
 -   Serve documentation locally with `uv run mkdocs serve`.
