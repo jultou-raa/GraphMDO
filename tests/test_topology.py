@@ -207,7 +207,49 @@ class TestParameterDefinitions(unittest.TestCase):
                 },
             )
 
-    def test_variable_specs_cover_only_design_variables(self):
+    def test_variable_specs_cover_design_variables_and_non_float_fixed_values(self):
+        schema = StudySchema(
+            variables=[
+                X,
+                FixedParam(name="rho", value=1.0),
+                FixedParam(name="material", value="steel"),
+                FixedParam(name="flag", value=True),
+                FixedParam(name="count", value=3),
+                Y,
+                StateVar(name="f"),
+            ],
+            tools=[
+                ToolSpec(
+                    name="T",
+                    inputs=["x", "y", "rho", "material", "flag", "count"],
+                    outputs=["f"],
+                )
+            ],
+        )
+
+        specs = build_variable_specs(schema)
+
+        self.assertEqual(list(specs), ["x", "material", "flag", "count", "y"])
+        self.assertEqual(specs["x"], to_parameter_definition(X))
+        self.assertEqual(
+            specs["material"],
+            {
+                "name": "material",
+                "type": "choice",
+                "values": ["steel"],
+                "value_type": "str",
+            },
+        )
+        self.assertEqual(
+            specs["flag"],
+            {"name": "flag", "type": "choice", "values": [True], "value_type": "bool"},
+        )
+        self.assertEqual(
+            specs["count"],
+            {"name": "count", "type": "range", "bounds": [3, 3], "value_type": "int"},
+        )
+
+    def test_variable_specs_skip_float_fixed_values_and_states(self):
         schema = StudySchema(
             variables=[
                 X,

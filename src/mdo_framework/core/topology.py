@@ -103,10 +103,47 @@ def to_parameter_definition(variable: DesignVariable) -> ParameterDefinition:
     }
 
 
-def build_variable_specs(schema: StudySchema) -> dict[str, ParameterDefinition]:
-    """Maps every design variable name to its parameter definition."""
+def to_fixed_parameter_definition(variable: FixedParam) -> ParameterDefinition | None:
+    """Converts a fixed parameter into a parameter definition, if it needs one.
+
+    GEMSEO only carries numbers, so a ``str`` or ``bool`` value travels as the
+    index of a one-value choice and an ``int`` value is pinned by a degenerate
+    integer range. The tool then receives the declared value and type. Floats
+    need no definition.
+    """
+    value = variable.value
+    if isinstance(value, bool):
+        value_type = "bool"
+    elif isinstance(value, str):
+        value_type = "str"
+    elif isinstance(value, int):
+        return {
+            "name": variable.name,
+            "type": "range",
+            "bounds": [value, value],
+            "value_type": "int",
+        }
+    else:
+        return None
     return {
-        variable.name: to_parameter_definition(variable)
-        for variable in schema.variables
-        if isinstance(variable, RangeVar | ChoiceVar)
+        "name": variable.name,
+        "type": "choice",
+        "values": [value],
+        "value_type": value_type,
     }
+
+
+def build_variable_specs(schema: StudySchema) -> dict[str, ParameterDefinition]:
+    """Maps design variables and non-float fixed parameters to their definitions.
+
+    Entries follow the declaration order of the schema.
+    """
+    specs: dict[str, ParameterDefinition] = {}
+    for variable in schema.variables:
+        if isinstance(variable, RangeVar | ChoiceVar):
+            specs[variable.name] = to_parameter_definition(variable)
+        elif isinstance(variable, FixedParam):
+            definition = to_fixed_parameter_definition(variable)
+            if definition is not None:
+                specs[variable.name] = definition
+    return specs

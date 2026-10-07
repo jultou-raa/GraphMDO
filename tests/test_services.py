@@ -604,6 +604,55 @@ class TestExecutionService(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(mock_client.get.call_count, 2)
 
+    def test_evaluate_passes_non_numeric_fixed_values_to_the_tool(self):
+        from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
+
+        received = []
+
+        def tool(x, material, flag, count, rho):
+            received.append(
+                {"material": material, "flag": flag, "count": count, "rho": rho}
+            )
+            return x * rho * count
+
+        schema = StudySchema(
+            variables=[
+                RangeVar(name="x", lower=0.0, upper=1.0),
+                FixedParam(name="material", value="steel"),
+                FixedParam(name="flag", value=True),
+                FixedParam(name="count", value=3),
+                FixedParam(name="rho", value=1.225),
+                StateVar(name="f"),
+            ],
+            tools=[
+                ToolSpec(
+                    name="T",
+                    inputs=["x", "material", "flag", "count", "rho"],
+                    outputs=["f"],
+                )
+            ],
+        )
+        mock_client = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = schema.model_dump(mode="json")
+        mock_client.get.return_value = mock_resp
+        execution_app.state.schema_provider = SchemaProvider(mock_client)
+        execution_app.state.problem_pool = ProblemPool(TOOL_REGISTRY, size=1)
+
+        with patch.dict(TOOL_REGISTRY, {"T": tool}):
+            response = self.client.post(
+                "/evaluate", json={"inputs": {"x": 0.5}, "objectives": ["f"]}
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertAlmostEqual(response.json()["results"]["f"], 0.5 * 1.225 * 3)
+        expected = {"material": "steel", "flag": True, "count": 3, "rho": 1.225}
+        self.assertEqual(received, [expected])
+        self.assertEqual(
+            {name: type(value) for name, value in received[0].items()},
+            {name: type(value) for name, value in expected.items()},
+        )
+
     def test_evaluate_unknown_objective_input(self):
         from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
 
@@ -1499,6 +1548,32 @@ class TestStudyPreflight(unittest.TestCase):
                 self.assertFalse(report["valid"])
                 self.assertIn(code, [item["code"] for item in report["errors"]])
         self.assert_nothing_ran()
+
+    def test_validate_accepts_a_study_with_non_numeric_fixed_parameters(self):
+        self.serve(
+            StudySchema(
+                variables=[
+                    *SERVICE_VARIABLES,
+                    FixedParam(name="material", value="steel"),
+                    FixedParam(name="flag", value=True),
+                    StateVar(name="f_xy"),
+                ],
+                tools=[
+                    ToolSpec(
+                        name="ToolA",
+                        inputs=["x", "y", "material", "flag"],
+                        outputs=["f_xy"],
+                    )
+                ],
+            ).model_dump(mode="json")
+        )
+
+        response = self.client.post(
+            "/validate", json={"objectives": [{"name": "f_xy"}]}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["valid"])
 
     def test_validate_reports_a_schema_that_does_not_parse(self):
         payloads = {

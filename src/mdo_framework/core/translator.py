@@ -112,7 +112,10 @@ class GraphProblemBuilder:
         defaults = {}
         for variable in self.schema.variables:
             if isinstance(variable, FixedParam):
-                defaults[variable.name] = np.atleast_1d(variable.value)
+                spec = self.variable_specs.get(variable.name)
+                defaults[variable.name] = np.atleast_1d(
+                    to_design_value(spec, variable.value)
+                )
             elif isinstance(variable, StateVar) and variable.initial_guess is not None:
                 defaults[variable.name] = np.atleast_1d(
                     np.asarray(variable.initial_guess, dtype=float)

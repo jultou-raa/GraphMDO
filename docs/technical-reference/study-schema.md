@@ -138,6 +138,8 @@ Constant passed unchanged to the tools that declare it.
 | `value` | `Scalar` | required | A `bool`, an `int`, a finite `float` or a `str`. |
 | `units` | `str` or `null` | `null` | None. |
 
+Tools receive the declared value and type: non-numeric values (`str`, `bool`) and `int` values are encoded for GEMSEO and decoded before the tool call.
+
 ### `StateVar`
 
 Output of a tool, or a coupling variable.

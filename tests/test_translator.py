@@ -161,6 +161,46 @@ class TestMdaDefaults(unittest.TestCase):
         self.assertNotIn("v", mda.default_input_data)
 
 
+class TestFixedParameterValues(unittest.TestCase):
+    EXPECTED = {"material": "steel", "flag": True, "count": 3, "rho": 1.225}
+
+    def build(self, tool):
+        schema = StudySchema(
+            variables=[
+                RangeVar(name="x", lower=0.0, upper=1.0),
+                *(FixedParam(name=n, value=v) for n, v in self.EXPECTED.items()),
+                StateVar(name="f"),
+            ],
+            tools=[ToolSpec(name="T", inputs=["x", *self.EXPECTED], outputs=["f"])],
+        )
+        return GraphProblemBuilder(schema).build_problem({"T": tool})
+
+    def test_tool_receives_each_fixed_value_with_its_declared_type(self):
+        received = {}
+
+        def tool(x, material, flag, count, rho):
+            received.update(material=material, flag=flag, count=count, rho=rho)
+            return x * rho * count
+
+        out = self.build(tool).execute({"x": np.array([0.5])})
+
+        self.assertEqual(received, self.EXPECTED)
+        self.assertEqual(
+            {name: type(value) for name, value in received.items()},
+            {name: type(value) for name, value in self.EXPECTED.items()},
+        )
+        self.assertAlmostEqual(float(np.asarray(out["f"]).flat[0]), 0.5 * 1.225 * 3)
+
+    def test_gemseo_only_sees_numbers_for_fixed_values(self):
+        mda = self.build(lambda x, material, flag, count, rho: 0.0)
+
+        for name in ("material", "flag", "count", "rho"):
+            with self.subTest(name):
+                self.assertTrue(
+                    np.issubdtype(mda.default_input_data[name].dtype, np.number)
+                )
+
+
 class TestRegistryErrors(unittest.TestCase):
     def test_every_bad_tool_is_listed_in_one_error(self):
         schema = StudySchema(
