@@ -399,6 +399,35 @@ def test_arg_map_key_that_is_not_an_input_does_not_change_the_binding() -> None:
     assert check_tool_signature(_mapped_tool({"ghost": "a"}), func) == ([], [])
 
 
+def test_two_inputs_for_the_same_argument_are_a_collision_not_a_binding() -> None:
+    def func(y: float) -> float:
+        return y
+
+    errors, warnings = check_tool_signature(_mapped_tool({"x": "y"}), func)
+
+    assert warnings == []
+    error = _only(errors, "ARG_MAP_COLLISION")
+    assert error.names == ("t", "y", "x", "y")
+    assert _codes(errors) == ["ARG_MAP_COLLISION"]
+
+
+def test_a_collision_is_reported_even_for_a_function_with_var_keyword() -> None:
+    def func(**kwargs: float) -> float:
+        return sum(kwargs.values())
+
+    errors, warnings = check_tool_signature(_mapped_tool({"x": "y"}), func)
+
+    assert _codes(errors) == ["ARG_MAP_COLLISION"]
+    assert warnings == []
+
+
+def test_swapped_argument_names_are_not_a_collision() -> None:
+    def func(x: float, y: float) -> float:
+        return x - y
+
+    assert check_tool_signature(_mapped_tool({"x": "y", "y": "x"}), func) == ([], [])
+
+
 # --- validate_study: all good, never calls tools ----------------------------
 
 
@@ -620,6 +649,58 @@ def test_valid_arg_map_passes_the_registry_check() -> None:
     )
 
     assert validate_registry(schema, {"t": func}) == ValidationReport()
+
+
+def _collision_schema() -> StudySchema:
+    return StudySchema(
+        variables=[_range("x"), _range("y"), StateVar(name="f")],
+        tools=[
+            ToolSpec(name="t", inputs=["x", "y"], outputs=["f"], arg_map={"x": "y"})
+        ],
+    )
+
+
+def test_two_inputs_for_the_same_argument_are_a_registry_error() -> None:
+    report = validate_registry(_collision_schema(), {"t": _paraboloid_fn})
+
+    assert not report.valid
+    assert _codes(report.errors) == ["ARG_MAP_COLLISION"]
+    error = report.errors[0]
+    assert error.names == ("t", "y", "x", "y")
+    assert "'t'" in error.message
+    assert "'y'" in error.message
+    assert "['x', 'y']" in error.message
+
+
+def test_arg_map_collision_is_reported_even_for_an_unregistered_tool() -> None:
+    report = validate_registry(_collision_schema(), {})
+
+    assert _codes(report.errors) == ["UNREGISTERED_TOOL", "ARG_MAP_COLLISION"]
+
+
+def test_arg_map_collision_comes_with_the_unknown_input_errors_of_the_tool() -> None:
+    schema = StudySchema(
+        variables=[_range("x"), _range("y"), StateVar(name="f")],
+        tools=[
+            ToolSpec(
+                name="t",
+                inputs=["x", "y"],
+                outputs=["f"],
+                arg_map={"x": "y", "ghost": "a"},
+            )
+        ],
+    )
+
+    report = validate_registry(schema, {"t": _paraboloid_fn})
+
+    assert _codes(report.errors) == ["ARG_MAP_UNKNOWN_INPUT", "ARG_MAP_COLLISION"]
+
+
+def test_arg_map_collision_is_part_of_validate_study() -> None:
+    report = _validate(_collision_schema(), registry={"t": _paraboloid_fn})
+
+    assert not report.valid
+    assert _only(report.errors, "ARG_MAP_COLLISION").names == ("t", "y", "x", "y")
 
 
 def test_validate_registry_carries_the_signature_warnings() -> None:

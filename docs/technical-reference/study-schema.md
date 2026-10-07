@@ -180,7 +180,7 @@ A tool is a node with a `name`, a `fidelity` and two execution options, `determi
 | `ToolNode`, `ToolSpec` | `name` | `Name` | required | |
 | `ToolNode`, `ToolSpec` | `fidelity` | `Name` | `"high"` | Fidelity level label. It follows the same rule as a name: pattern, length and not a Python keyword. |
 | `ToolNode`, `ToolSpec` | `deterministic` | `bool` | `true` | Strict boolean. `false` marks a tool whose outputs are not a function of its inputs alone; its evaluations are never cached. |
-| `ToolNode`, `ToolSpec` | `arg_map` | dict of `Name` to `Name` | `{}` | Graph input name to Python argument name. Values are unique: two graph inputs cannot feed the same argument. That a key is an input of the tool is checked against the graph, see `ARG_MAP_UNKNOWN_INPUT`. |
+| `ToolNode`, `ToolSpec` | `arg_map` | dict of `Name` to `Name` | `{}` | Graph input name to Python argument name. Values are unique: two graph inputs cannot be mapped to the same argument. That a key is an input of the tool, and that no unmapped input already bears the argument name, are checked against the graph, see `ARG_MAP_UNKNOWN_INPUT` and `ARG_MAP_COLLISION`. |
 | `ToolSpec` only | `inputs` | list of `Name` | `[]` | No duplicates. |
 | `ToolSpec` only | `outputs` | list of `Name` | `[]` | No duplicates. No name is both an input and an output of the same tool. |
 
@@ -188,16 +188,16 @@ A tool is a node with a `name`, a `fidelity` and two execution options, `determi
 
 ### Tool function contract
 
-Tool functions are called with keyword arguments named after the inputs. `arg_map` renames an input on the way in: with `arg_map={"x": "a"}` the graph input `x` is passed as the argument `a`, so one function `f(a)` can serve a tool fed by `x` and another fed by `y`. Inputs absent from `arg_map` keep their name. The Graph Service and the graph store `arg_map` as a JSON string, because a graph node property cannot hold a map; the API shows it as an object.
+Tool functions are called with keyword arguments named after the inputs. `arg_map` renames an input on the way in: with `arg_map={"x": "a"}` the graph input `x` is passed as the argument `a`, so one function `f(a)` can serve a tool fed by `x` and another fed by `y`. Inputs absent from `arg_map` keep their name. Two inputs cannot reach the same argument, whether through `arg_map` alone or because one is renamed to the name of another that keeps it: with inputs `x` and `y`, `arg_map={"x": "y"}` is an `ARG_MAP_COLLISION`. Swapping two names, `{"x": "y", "y": "x"}`, is fine. The Graph Service and the graph store `arg_map` as a JSON string, because a graph node property cannot hold a map; the API shows it as an object.
 
-A function returns a dictionary keyed by output name, whose keys are exactly the tool's outputs. A tool with a single output may also return the bare value. A tuple or a list is never mapped to the outputs by position. Every value must be numeric and finite.
+A function returns a dictionary keyed by output name, whose keys are exactly the tool's outputs. A tool with a single output may also return the bare value, which can be a list or an array for a vector. A tuple is always an error, whatever the number of outputs, and a list is never mapped to several outputs by position. Every value must be numeric and finite.
 
 A tool that breaks the contract raises a typed error, a subclass of `EvaluationError` (itself a `ValueError`) that carries the tool name and a stable `code`:
 
 | Error | Code | Raised when |
 | --- | --- | --- |
 | `ToolExecutionError` | `TOOL_FAILED` | The function raises an exception. The message names the tool and the original exception, which is chained as the cause. `KeyboardInterrupt`, `SystemExit` and `MemoryError` are not wrapped. |
-| `ToolOutputError` | `OUTPUT_INVALID` | The function returns `None`, a dictionary with missing or unexpected keys, a non-dictionary for several outputs, a value that is not numeric, or a NaN or infinite value. |
+| `ToolOutputError` | `OUTPUT_INVALID` | The function returns `None`, a tuple, a dictionary with missing or unexpected keys, a non-dictionary for several outputs, a value that is not numeric, or a NaN or infinite value. |
 
 Jacobians are approximated by finite differences. Evaluations of a tool are cached unless it is declared `deterministic=false`.
 
@@ -270,6 +270,7 @@ The result is a `ValidationReport` with `errors`, `warnings` and a computed `val
 | `UNREGISTERED_TOOL` | A tool has no function in the registry. | Register a function under the tool's name. |
 | `SIGNATURE_MISMATCH` | A registered function cannot be called with the tool's inputs as keyword arguments, after the `arg_map` renames. | Rename the arguments or the graph inputs, or add an `arg_map` entry, so they match. |
 | `ARG_MAP_UNKNOWN_INPUT` | An `arg_map` key is not one of the tool's inputs. Part of the registry check, but reported even when the tool has no registered function. | Fix the key, or connect the variable as an input of the tool. |
+| `ARG_MAP_COLLISION` | Two or more inputs of a tool are passed as the same argument (the `arg_map` value, or the input name itself when it is not mapped). Part of the registry check, reported even when the tool has no registered function; the signature of a colliding tool is not checked. `names` holds the tool, the argument, then the colliding inputs. | Map each input to its own argument. |
 | `PARAMETER_CONSTRAINT_INVALID` | A parameter constraint does not parse, names an unknown, non-design or `choice` variable, is not finite, or is rejected by Ax. | Use only range design variables and finite coefficients. |
 | `INITIAL_OUT_OF_SPACE` | The `initial` values violate a linear parameter constraint. | Move `initial` inside the constraint, or relax it. |
 | `DESIGN_SPACE_INVALID` | GEMSEO rejects a design variable. | Fix the variable's bounds or choices. |
@@ -281,7 +282,7 @@ The five structural codes above are errors too. Like `SCHEMA_INVALID`, they come
 Two things that look similar are not findings of this table:
 
 -   **HTTP request bodies.** A request body that fails validation (a malformed variable or tool on the Graph Service, a malformed `/validate` or `/optimize` body) is answered with the generic `422` `detail` list of `loc`, `msg` and `type` entries, not with these codes. See [Microservices](microservices.md).
--   **Execution Service `SCHEMA_INVALID`.** Its `422` body `{"detail": {"code": "SCHEMA_INVALID", "report": {...}}}` means that the loaded study failed the tool registry check. The `code` labels the response; the findings inside `report` are `UNREGISTERED_TOOL`, `SIGNATURE_MISMATCH` or `ARG_MAP_UNKNOWN_INPUT`, not a `SCHEMA_INVALID` finding. A body from the Graph Service that does not parse as a `StudySchema` is a `502` there.
+-   **Execution Service `SCHEMA_INVALID`.** Its `422` body `{"detail": {"code": "SCHEMA_INVALID", "report": {...}}}` means that the loaded study failed the tool registry check. The `code` labels the response; the findings inside `report` are `UNREGISTERED_TOOL`, `SIGNATURE_MISMATCH`, `ARG_MAP_UNKNOWN_INPUT` or `ARG_MAP_COLLISION`, not a `SCHEMA_INVALID` finding. A body from the Graph Service that does not parse as a `StudySchema` is a `502` there.
 
 ### Warning codes
 

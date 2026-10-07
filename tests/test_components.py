@@ -95,6 +95,12 @@ def test_a_vector_output_keeps_its_values() -> None:
     np.testing.assert_allclose(out["v"], [1.0, 2.0, 3.0])
 
 
+def test_an_array_is_a_vector_value_of_a_single_output() -> None:
+    out = _run_a(_component(lambda a: np.array([a, 2 * a]), ["v"]), 1.0)
+
+    np.testing.assert_allclose(out["v"], [1.0, 2.0])
+
+
 def test_a_parameter_name_that_is_not_an_input_fails_naming_the_tool() -> None:
     def mismatch(p: float, q: float) -> float:
         return p + q
@@ -130,6 +136,31 @@ def test_several_outputs_require_a_dict(result: Any) -> None:
     assert "Tool 'tool'" in message
     assert "dict keyed by output name" in message
     assert exc_info.value.tool == "tool"
+
+
+@pytest.mark.parametrize("outputs", [["f"], ["b", "c"]])
+@pytest.mark.parametrize("result", [(1.0,), (1.0, 2.0), (1.0, 2.0, 3.0)])
+def test_a_tuple_is_an_error_whatever_the_number_of_outputs(
+    outputs: list[str], result: tuple[float, ...]
+) -> None:
+    comp = _component(lambda a: result, outputs)
+
+    with pytest.raises(ToolOutputError) as exc_info:
+        _run_a(comp)
+
+    message = str(exc_info.value)
+    assert "Tool 'tool'" in message
+    assert "tuple" in message
+    assert "dict" in message
+    assert "single value" in message
+    assert exc_info.value.tool == "tool"
+
+
+@pytest.mark.parametrize("result", [[1.0], [1.0, 2.0], np.array([1.0, 2.0])])
+def test_a_list_or_array_is_a_vector_value_of_a_single_output(result: Any) -> None:
+    out = _run_a(_component(lambda a: result, ["v"]))
+
+    np.testing.assert_allclose(out["v"], np.atleast_1d(result))
 
 
 def test_a_missing_key_is_reported() -> None:
@@ -416,6 +447,39 @@ def test_the_arg_map_works_with_the_tool_value_decoding() -> None:
     comp.execute({"mode": _array(1.0)})
 
     assert seen == ["b"]
+
+
+@pytest.mark.parametrize(
+    ("inputs", "arg_map", "argument", "colliding"),
+    [
+        (["x", "y"], {"x": "y"}, "y", ["x", "y"]),
+        (["x", "y"], {"x": "a", "y": "a"}, "a", ["x", "y"]),
+        (["x", "y", "z"], {"x": "z", "y": "z"}, "z", ["x", "y", "z"]),
+    ],
+)
+def test_two_inputs_for_the_same_argument_are_rejected(
+    inputs: list[str],
+    arg_map: dict[str, str],
+    argument: str,
+    colliding: list[str],
+) -> None:
+    with pytest.raises(ValueError) as exc_info:
+        ToolComponent("clash", lambda **kwargs: 1.0, inputs, ["f"], arg_map=arg_map)
+
+    message = str(exc_info.value)
+    assert "Tool 'clash'" in message
+    assert f"'{argument}'" in message
+    assert str(colliding) in message
+
+
+def test_a_rename_to_a_free_argument_name_is_accepted() -> None:
+    comp = ToolComponent(
+        "swap", lambda x, y: x - y, ["x", "y"], ["f"], arg_map={"x": "y", "y": "x"}
+    )
+
+    out = comp.execute({"x": _array(5.0), "y": _array(2.0)})
+
+    np.testing.assert_allclose(out["f"], [-3.0])
 
 
 # --- Defaults ---------------------------------------------------------------

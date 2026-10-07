@@ -347,6 +347,25 @@ class TestToolOptions(unittest.TestCase):
             ["ARG_MAP_UNKNOWN_INPUT"],
         )
 
+    def test_two_inputs_for_the_same_argument_are_rejected_at_build_time(self):
+        schema = StudySchema(
+            variables=[
+                RangeVar(name="x", lower=0.0, upper=1.0),
+                RangeVar(name="y", lower=0.0, upper=1.0),
+                StateVar(name="f"),
+            ],
+            tools=[
+                ToolSpec(name="T", inputs=["x", "y"], outputs=["f"], arg_map={"x": "y"})
+            ],
+        )
+
+        with self.assertRaises(StudyValidationError) as context:
+            GraphProblemBuilder(schema).build_problem({"T": lambda y: y})
+
+        errors = context.exception.report.errors
+        self.assertEqual([finding.code for finding in errors], ["ARG_MAP_COLLISION"])
+        self.assertEqual(errors[0].names, ("T", "y", "x", "y"))
+
     def test_a_failing_tool_surfaces_as_a_tool_execution_error(self):
         def failing(x):
             raise RuntimeError("boom")

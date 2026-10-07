@@ -7,6 +7,7 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import hashlib
 import json
 import keyword
+from collections.abc import Mapping, Sequence
 from typing import Annotated, Final, Literal
 
 from pydantic import (
@@ -195,6 +196,30 @@ Variable = Annotated[
     RangeVar | ChoiceVar | FixedParam | StateVar, Field(discriminator="kind")
 ]
 DesignVariable = RangeVar | ChoiceVar
+
+
+def argument_collisions(
+    inputs: Sequence[str], arg_map: Mapping[str, str]
+) -> dict[str, list[str]]:
+    """Find the Python arguments that several graph inputs would be passed as.
+
+    The argument of an input is its ``arg_map`` value, or its own name when it
+    is not mapped.
+
+    Args:
+        inputs: Graph input names of a tool.
+        arg_map: Graph input name to Python argument name.
+
+    Returns:
+        The colliding inputs, in order, per argument name. Empty when every
+        input has its own argument.
+    """
+    by_argument: dict[str, list[str]] = {}
+    for name in inputs:
+        by_argument.setdefault(arg_map.get(name, name), []).append(name)
+    return {
+        argument: names for argument, names in by_argument.items() if len(names) > 1
+    }
 
 
 class ToolNode(_Strict):

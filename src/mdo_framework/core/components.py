@@ -17,6 +17,7 @@ from mdo_framework.optimization.parameter_codec import (
     ParameterDefinition,
     index_to_value,
 )
+from mdo_framework.schema import argument_collisions
 
 
 def to_tool_value(spec: ParameterDefinition | None, raw: Any) -> Any:
@@ -43,9 +44,11 @@ class ToolComponent(Discipline):
 
     The function is called with keyword arguments only, one per input. It returns
     a dict keyed by output name, or a bare value when the tool has a single
-    output. Anything else, a non-finite value included, is a
+    output; a list or an array is a vector value of a single output, a tuple is
+    never accepted. Anything else, a non-finite value included, is a
     ``ToolOutputError``; an exception raised by the function becomes a
-    ``ToolExecutionError``. Jacobians are approximated by finite differences.
+    ``ToolExecutionError``. Two inputs cannot be passed as the same argument.
+    Jacobians are approximated by finite differences.
     """
 
     def __init__(
@@ -82,7 +85,16 @@ class ToolComponent(Discipline):
         self._output_names = tuple(outputs)
         self._specs = dict(specs or {})
         self._arg_map = dict(arg_map or {})
-
+        collisions = argument_collisions(self._input_names, self._arg_map)
+        if collisions:
+            clashes = "; ".join(
+                f"'{argument}' would receive {names}"
+                for argument, names in collisions.items()
+            )
+            raise ValueError(
+                f"Tool '{name}': several inputs are passed as the same argument: "
+                f"{clashes}; map each input to its own argument"
+            )
         self.input_grammar.update_from_names(self._input_names)
         self.output_grammar.update_from_names(self._output_names)
         self.default_input_data = {
@@ -117,6 +129,12 @@ class ToolComponent(Discipline):
             )
         if isinstance(result, Mapping):
             values = self._values_by_name(result)
+        elif isinstance(result, tuple):
+            raise self._output_error(
+                "returned a tuple, which is never matched to the outputs "
+                f"{list(self._output_names)}; return a dict keyed by output name, "
+                "or a single value for a tool with one output"
+            )
         elif len(self._output_names) == 1:
             values = {self._output_names[0]: result}
         else:
