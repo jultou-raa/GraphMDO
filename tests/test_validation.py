@@ -5,11 +5,11 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
 import re
+import warnings
 from collections.abc import Callable, Sequence
 from typing import Any
 
 import pytest
-from gemseo.algos.design_space import DesignSpace
 
 from mdo_framework import validation
 from mdo_framework.schema import (
@@ -31,6 +31,14 @@ from mdo_framework.validation import (
     parse_parameter_constraints,
     validate_study,
 )
+
+
+@pytest.fixture
+def design_space_class() -> Any:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from gemseo.algos.design_space import DesignSpace
+    return DesignSpace
 
 
 def _range(name: str, **overrides: Any) -> RangeVar:
@@ -553,7 +561,7 @@ def test_integer_range_variables_pass_the_dry_builds() -> None:
 def test_ax_dry_build_only_runs_with_parameter_constraints(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(validation, "Client", _never_called)
+    monkeypatch.setattr(validation, "_ax_constraint_errors", _never_called)
 
     report = _validate(_paraboloid())
 
@@ -636,22 +644,37 @@ def test_initial_check_survives_a_bad_sibling_expression() -> None:
 
 
 def test_design_space_rejection_is_an_error(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, design_space_class: Any
 ) -> None:
-    original = DesignSpace.add_variable
+    original = design_space_class.add_variable
 
-    def reject_y(self: DesignSpace, name: str, **kwargs: Any) -> None:
+    def reject_y(self: Any, name: str, **kwargs: Any) -> None:
         if name == "y":
             raise ValueError("rejected by gemseo")
         original(self, name, **kwargs)
 
-    monkeypatch.setattr(DesignSpace, "add_variable", reject_y)
+    monkeypatch.setattr(design_space_class, "add_variable", reject_y)
 
     report = _validate(_paraboloid())
 
     error = _only(report.errors, "DESIGN_SPACE_INVALID")
     assert error.names == ("y",)
     assert "rejected by gemseo" in error.message
+
+
+def test_design_space_construction_failure_is_an_error(
+    monkeypatch: pytest.MonkeyPatch, design_space_class: Any
+) -> None:
+    def fail_construction(self: Any, *_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("cannot construct")
+
+    monkeypatch.setattr(design_space_class, "__init__", fail_construction)
+
+    report = _validate(_paraboloid())
+
+    error = _only(report.errors, "DESIGN_SPACE_INVALID")
+    assert error.names == ("x", "y")
+    assert "cannot construct" in error.message
 
 
 def test_every_applicable_error_is_reported_in_order() -> None:

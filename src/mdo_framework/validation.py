@@ -9,12 +9,8 @@ import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 from warnings import catch_warnings, simplefilter
-
-from ax.api.client import Client
-from ax.api.configs import ChoiceParameterConfig, RangeParameterConfig
-from gemseo.algos.design_space import DesignSpace
 
 from mdo_framework.core.dependencies import DependencyWalk, walk_dependencies
 from mdo_framework.schema import (
@@ -29,6 +25,9 @@ from mdo_framework.schema import (
     ToolSpec,
     ValidationReport,
 )
+
+if TYPE_CHECKING:
+    from ax.api.configs import ChoiceParameterConfig, RangeParameterConfig
 
 INITIAL_TOLERANCE: Final = 1e-9
 DEFAULT_COUPLING_GUESS: Final = 0.0
@@ -356,52 +355,79 @@ def _gemseo_variable_arguments(variable: DesignVariable) -> dict[str, Any]:
 
 
 def _design_space_errors(design_variables: Sequence[DesignVariable]) -> list[Finding]:
-    design_space = DesignSpace()
-    errors: list[Finding] = []
-    for variable in design_variables:
+    # GEMSEO is imported lazily: its import is slow and emits third-party warnings.
+    with catch_warnings():
+        simplefilter("ignore")
+        from gemseo.algos.design_space import DesignSpace
+
         try:
-            with catch_warnings():
-                simplefilter("ignore")
+            design_space = DesignSpace()
+        except Exception as exc:
+            return [
+                Finding(
+                    code="DESIGN_SPACE_INVALID",
+                    message=f"GEMSEO cannot create a design space: {exc}",
+                    names=tuple(variable.name for variable in design_variables),
+                )
+            ]
+        errors: list[Finding] = []
+        for variable in design_variables:
+            try:
                 design_space.add_variable(
                     variable.name, **_gemseo_variable_arguments(variable)
                 )
-        except Exception as exc:
-            errors.append(
-                Finding(
-                    code="DESIGN_SPACE_INVALID",
-                    message=f"GEMSEO rejects design variable '{variable.name}': {exc}",
-                    names=(variable.name,),
+            except Exception as exc:
+                errors.append(
+                    Finding(
+                        code="DESIGN_SPACE_INVALID",
+                        message=(
+                            f"GEMSEO rejects design variable '{variable.name}': {exc}"
+                        ),
+                        names=(variable.name,),
+                    )
                 )
-            )
     return errors
 
 
-def _ax_parameter(
-    variable: DesignVariable,
-) -> RangeParameterConfig | ChoiceParameterConfig:
-    if isinstance(variable, RangeVar):
-        cast = int if variable.value_type == "int" else float
-        return RangeParameterConfig(
-            name=variable.name,
-            bounds=(cast(variable.lower), cast(variable.upper)),
-            parameter_type=variable.value_type,
-        )
-    return ChoiceParameterConfig(
-        name=variable.name,
-        values=list(variable.choices),
-        parameter_type=variable.value_type,
-    )
+def _ax_parameters(
+    design_variables: Sequence[DesignVariable],
+) -> list["RangeParameterConfig | ChoiceParameterConfig"]:
+    from ax.api.configs import ChoiceParameterConfig, RangeParameterConfig
+
+    parameters: list[RangeParameterConfig | ChoiceParameterConfig] = []
+    for variable in design_variables:
+        if isinstance(variable, RangeVar):
+            cast = int if variable.value_type == "int" else float
+            parameters.append(
+                RangeParameterConfig(
+                    name=variable.name,
+                    bounds=(cast(variable.lower), cast(variable.upper)),
+                    parameter_type=variable.value_type,
+                )
+            )
+        else:
+            parameters.append(
+                ChoiceParameterConfig(
+                    name=variable.name,
+                    values=list(variable.choices),
+                    parameter_type=variable.value_type,
+                )
+            )
+    return parameters
 
 
 def _ax_constraint_errors(
     design_variables: Sequence[DesignVariable], expressions: Sequence[str]
 ) -> list[Finding]:
     try:
+        # Ax is imported lazily: its import is slow and emits third-party warnings.
         with catch_warnings():
             simplefilter("ignore")
+            from ax.api.client import Client
+
             Client().configure_experiment(
                 name="validation",
-                parameters=[_ax_parameter(variable) for variable in design_variables],
+                parameters=_ax_parameters(design_variables),
                 parameter_constraints=list(expressions),
             )
     except Exception as exc:
