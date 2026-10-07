@@ -22,6 +22,7 @@ from mdo_framework.schema import (
     StateVar,
     StudySchema,
     StudyValidationError,
+    ToolNode,
     ToolSpec,
     ValidationReport,
     Variable,
@@ -384,6 +385,24 @@ def test_tool_rejects_keyword_argument_name() -> None:
 def test_tool_rejects_bad_fidelity_name() -> None:
     with pytest.raises(ValidationError):
         ToolSpec(name="t", fidelity="not valid")
+
+
+def test_tool_node_defaults_and_is_the_node_part_of_a_tool_spec() -> None:
+    node = ToolNode(name="t")
+    assert node.fidelity == "high"
+    assert isinstance(ToolSpec(name="t"), ToolNode)
+
+
+@pytest.mark.parametrize("extra", ["inputs", "outputs"])
+def test_tool_node_rejects_edge_fields(extra: str) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        ToolNode(name="t", **{extra: ["x"]})
+    assert "extra" in _messages(exc_info).lower()
+
+
+def test_tool_node_rejects_bad_name() -> None:
+    with pytest.raises(ValidationError):
+        ToolNode(name="not valid")
 
 
 # --- ObjectiveSpec / ConstraintSpec -----------------------------------------

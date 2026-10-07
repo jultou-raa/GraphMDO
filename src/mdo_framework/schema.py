@@ -197,20 +197,30 @@ Variable = Annotated[
 DesignVariable = RangeVar | ChoiceVar
 
 
-class ToolSpec(_Strict):
-    """Tool (discipline) with its input and output variable names.
+class ToolNode(_Strict):
+    """Tool (discipline) as stored on a graph node, without its edges.
 
     Attributes:
         name: Tool name.
-        inputs: Unique names of the variables the tool reads.
-        outputs: Unique names of the variables the tool produces.
         fidelity: Fidelity level label.
     """
 
     name: Name
+    fidelity: Name = "high"
+
+
+class ToolSpec(ToolNode):
+    """Tool (discipline) with its input and output variable names.
+
+    Attributes:
+        name: Tool name.
+        fidelity: Fidelity level label.
+        inputs: Unique names of the variables the tool reads.
+        outputs: Unique names of the variables the tool produces.
+    """
+
     inputs: list[Name] = []
     outputs: list[Name] = []
-    fidelity: Name = "high"
 
     @model_validator(mode="after")
     def _check_ports(self) -> "ToolSpec":
