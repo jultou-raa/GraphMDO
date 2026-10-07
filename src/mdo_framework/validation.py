@@ -376,25 +376,7 @@ def _gemseo_variable_arguments(variable: DesignVariable) -> dict[str, Any]:
     }
 
 
-def _prepare_gemseo_arguments(
-    design_variables: Sequence[DesignVariable],
-) -> list[tuple[DesignVariable, dict[str, Any] | Finding]]:
-    prepared: list[tuple[DesignVariable, dict[str, Any] | Finding]] = []
-    for variable in design_variables:
-        try:
-            prepared.append((variable, _gemseo_variable_arguments(variable)))
-        except Exception as exc:
-            finding = Finding(
-                code="DESIGN_SPACE_INVALID",
-                message=f"GEMSEO rejects design variable '{variable.name}': {exc}",
-                names=(variable.name,),
-            )
-            prepared.append((variable, finding))
-    return prepared
-
-
 def _design_space_errors(design_variables: Sequence[DesignVariable]) -> list[Finding]:
-    prepared = _prepare_gemseo_arguments(design_variables)
     # Only the third-party import and backend calls run under the warning filter:
     # GEMSEO's import is slow and its backend emits warnings at runtime.
     with catch_warnings():
@@ -412,12 +394,11 @@ def _design_space_errors(design_variables: Sequence[DesignVariable]) -> list[Fin
                 )
             ]
         errors: list[Finding] = []
-        for variable, arguments in prepared:
-            if isinstance(arguments, Finding):
-                errors.append(arguments)
-                continue
+        for variable in design_variables:
             try:
-                design_space.add_variable(variable.name, **arguments)
+                design_space.add_variable(
+                    variable.name, **_gemseo_variable_arguments(variable)
+                )
             except Exception as exc:
                 errors.append(
                     Finding(
