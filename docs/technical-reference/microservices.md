@@ -16,7 +16,7 @@ Manages the FalkorDB property graph.
 
 Runs the GEMSEO problem.
 
--   **POST /evaluate**: Accepts `inputs` and a list of requested output names in `objectives`. Retrieves the graph schema (utilizing robust caching with TTL and backoff strategies), handles asynchronous execution via a pre-built `ProblemPool` of GEMSEO instances to avoid per-request rebuild overhead, offloads synchronous GEMSEO execution to worker threads, and returns a `results` object keyed by the requested outputs. Unknown inputs or outputs are rejected before execution. The default demo registry currently exposes the `Paraboloid` tool returning the scalar output `f_xy`; additional constrained outputs require extending the registry.
+-   **POST /evaluate**: Accepts `inputs` and a list of requested output names in `objectives`. Retrieves the graph schema (utilizing robust caching with TTL and backoff strategies), handles asynchronous execution via a pre-built `ProblemPool` of GEMSEO instances to avoid per-request rebuild overhead, offloads synchronous GEMSEO execution to worker threads, and returns a `results` object keyed by the requested outputs. Unknown inputs or outputs are rejected before execution. Each time a schema version is loaded, every tool it references is checked against the tool registry (existence and callable signature); if the check fails, `/evaluate` answers `422` with `{"code": "SCHEMA_INVALID", "report": ...}` (the same report shape as `/validate`) before any problem is checked out or any tool runs. The default demo registry currently exposes the `Paraboloid` tool returning the scalar output `f_xy`; additional constrained outputs require extending the registry.
 
 ## Optimization Service (Port 8003)
 

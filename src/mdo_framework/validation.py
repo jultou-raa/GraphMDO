@@ -274,9 +274,9 @@ def _resolution_errors(walk: DependencyWalk, has_targets: bool) -> list[Finding]
     return errors
 
 
-def registry_findings(
+def validate_registry(
     schema: StudySchema, registry: Mapping[str, Callable[..., Any]]
-) -> tuple[list[Finding], list[Finding]]:
+) -> ValidationReport:
     """Check every schema tool against the tool registry.
 
     Args:
@@ -284,8 +284,9 @@ def registry_findings(
         registry: Tool name to Python function.
 
     Returns:
-        The error findings (``UNREGISTERED_TOOL`` for every missing tool, then
-        the signature errors of the registered ones) and the warning findings.
+        Report whose errors are ``UNREGISTERED_TOOL`` for every missing tool,
+        then the signature errors of the registered ones, and whose warnings
+        are the signature warnings.
     """
     errors = [
         Finding(
@@ -302,7 +303,7 @@ def registry_findings(
             tool_errors, tool_warnings = check_tool_signature(tool, registry[tool.name])
             errors.extend(tool_errors)
             warnings.extend(tool_warnings)
-    return errors, warnings
+    return ValidationReport(errors=tuple(errors), warnings=tuple(warnings))
 
 
 def _parse_each(
@@ -607,10 +608,11 @@ def validate_study(
     has_targets = bool(targets)
 
     errors = _resolution_errors(walk, has_targets)
-    signature_warnings: list[Finding] = []
+    signature_warnings: tuple[Finding, ...] = ()
     if registry is not None:
-        registry_errors, signature_warnings = registry_findings(schema, registry)
-        errors.extend(registry_errors)
+        registry_report = validate_registry(schema, registry)
+        errors.extend(registry_report.errors)
+        signature_warnings = registry_report.warnings
     errors.extend(_search_space_errors(walk.design_variables, parameter_constraints))
 
     warnings = [

@@ -29,6 +29,7 @@ from mdo_framework.validation import (
     ParameterConstraintError,
     check_tool_signature,
     parse_parameter_constraints,
+    validate_registry,
     validate_study,
 )
 
@@ -470,6 +471,66 @@ def test_registry_is_not_required() -> None:
     report = _validate(_paraboloid())
 
     assert "UNREGISTERED_TOOL" not in _codes(report.errors)
+
+
+def test_validate_registry_reports_missing_and_mismatched_tools() -> None:
+    def wrong(x: float) -> None:
+        return None
+
+    schema = StudySchema(
+        variables=[
+            _range("x"),
+            _range("y"),
+            StateVar(name="f"),
+            StateVar(name="g"),
+        ],
+        tools=[
+            _tool("missing", ["x"], ["f"]),
+            _tool("mismatched", ["x", "y"], ["g"]),
+        ],
+    )
+
+    report = validate_registry(schema, {"mismatched": wrong})
+
+    assert not report.valid
+    assert _codes(report.errors) == ["UNREGISTERED_TOOL", "SIGNATURE_MISMATCH"]
+    assert report.errors[0].names == ("missing",)
+    assert report.errors[1].names == ("mismatched", "x", "y")
+
+
+def test_validate_registry_is_valid_for_a_compatible_registry() -> None:
+    report = validate_registry(_paraboloid(), {"paraboloid": _paraboloid_fn})
+
+    assert report == ValidationReport()
+    assert report.valid
+
+
+def test_validate_registry_carries_the_signature_warnings() -> None:
+    def kwargs_tool(**kwargs: float) -> None:
+        return None
+
+    schema = StudySchema(
+        variables=[_range("x"), StateVar(name="f")],
+        tools=[_tool("loose", ["x"], ["f"])],
+    )
+
+    report = validate_registry(schema, {"loose": kwargs_tool})
+
+    assert report.valid
+    assert _codes(report.warnings) == ["SIGNATURE_UNCHECKED"]
+
+
+def test_validate_study_registry_check_is_validate_registry() -> None:
+    def wrong(x: float) -> None:
+        return None
+
+    registry = {"paraboloid": wrong}
+    registry_report = validate_registry(_paraboloid(), registry)
+
+    study_report = _validate(_paraboloid(), registry=registry)
+
+    assert all(item in study_report.errors for item in registry_report.errors)
+    assert all(item in study_report.warnings for item in registry_report.warnings)
 
 
 def test_signature_mismatch_is_an_error() -> None:

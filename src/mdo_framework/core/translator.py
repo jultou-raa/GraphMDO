@@ -22,9 +22,8 @@ from mdo_framework.schema import (
     StateVar,
     StudySchema,
     StudyValidationError,
-    ValidationReport,
 )
-from mdo_framework.validation import registry_findings
+from mdo_framework.validation import validate_registry
 
 
 def to_design_value(spec: ParameterDefinition | None, value: Any) -> Any:
@@ -80,9 +79,9 @@ class GraphProblemBuilder:
                 Every bad tool is reported in the same error.
             ValueError: If two tools produce the same output.
         """
-        errors, _ = registry_findings(self.schema, tool_registry)
-        if errors:
-            raise StudyValidationError(ValidationReport(errors=tuple(errors)))
+        report = validate_registry(self.schema, tool_registry)
+        if not report.valid:
+            raise StudyValidationError(report)
 
         disciplines = [
             ToolComponent(

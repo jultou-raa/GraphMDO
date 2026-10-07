@@ -8,7 +8,7 @@ import asyncio
 import logging
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any, TypeAlias
 
@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, field_validator
 from mdo_framework.core.topology import build_variable_specs
 from mdo_framework.core.translator import GraphProblemBuilder, encode_tool_inputs
 from mdo_framework.schema import MAX_NAME_LENGTH, Scalar, StudySchema
+from mdo_framework.validation import validate_registry
 from services.errors import register_validation_handler
 
 # Configure logging
@@ -93,12 +94,13 @@ TOOL_REGISTRY: ToolRegistry = {"Paraboloid": paraboloid_func}
 class SchemaEnvelope:
     """Wraps a study schema with pre-computed metadata and its content hash."""
 
-    def __init__(self, schema: StudySchema):
+    def __init__(self, schema: StudySchema, registry: Mapping[str, Callable[..., Any]]):
         self.schema = schema
         self.known_vars = {variable.name for variable in schema.variables}
         self.variable_specs = build_variable_specs(schema)
         self.known_objectives = set(schema.producers())
         self.hash = schema.content_hash()
+        self.registry_report = validate_registry(schema, registry)
 
 
 # --- Providers ---
@@ -141,7 +143,9 @@ class SchemaProvider:
             try:
                 resp = await self.client.get(f"{GRAPH_SERVICE_URL}/schema")
                 resp.raise_for_status()
-                self.envelope = SchemaEnvelope(StudySchema.model_validate(resp.json()))
+                self.envelope = SchemaEnvelope(
+                    StudySchema.model_validate(resp.json()), TOOL_REGISTRY
+                )
                 self.expiry = current_time + CACHE_TTL
             except (httpx.RequestError, httpx.HTTPStatusError):
                 if self.envelope is not None:
@@ -343,6 +347,15 @@ async def evaluate(
     envelope = await schema_p.get_schema()
 
     # 1. Validation against Schema
+    if not envelope.registry_report.valid:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SCHEMA_INVALID",
+                "report": envelope.registry_report.model_dump(mode="json"),
+            },
+        )
+
     for obj in req.objectives:
         if obj not in envelope.known_objectives:
             raise HTTPException(status_code=422, detail=f"Unknown objective: {obj}")

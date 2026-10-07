@@ -37,6 +37,7 @@ from mdo_framework.schema import (
     ToolSpec,
     ValidationReport,
 )
+from services.execution.main import TOOL_REGISTRY
 from services.execution.main import app as execution_app
 from services.graph.main import app as graph_app
 from services.graph.main import get_graph_manager
@@ -836,7 +837,7 @@ class TestExecutionService(unittest.TestCase):
             "tools": [{"name": "tool", "outputs": None}],
         }
         with self.assertRaises(ValidationError):
-            SchemaEnvelope(StudySchema.model_validate(legacy))
+            SchemaEnvelope(StudySchema.model_validate(legacy), TOOL_REGISTRY)
 
     def test_schema_provider_rejects_legacy_payload(self):
         import asyncio
@@ -859,8 +860,9 @@ class TestExecutionService(unittest.TestCase):
     def test_schema_envelope_exposes_typed_schema(self):
         from services.execution.main import SchemaEnvelope
 
-        env = SchemaEnvelope(PARABOLOID_SCHEMA)
+        env = SchemaEnvelope(PARABOLOID_SCHEMA, TOOL_REGISTRY)
         self.assertIs(env.schema, PARABOLOID_SCHEMA)
+        self.assertTrue(env.registry_report.valid)
         self.assertEqual(env.known_vars, {"x", "y", "f_xy"})
         self.assertEqual(env.known_objectives, {"f_xy"})
         self.assertEqual(list(env.variable_specs), ["x", "y"])
@@ -911,7 +913,7 @@ class TestExecutionService(unittest.TestCase):
 
         mock_client = AsyncMock()
         provider = SchemaProvider(mock_client)
-        provider.envelope = SchemaEnvelope(StudySchema())
+        provider.envelope = SchemaEnvelope(StudySchema(), TOOL_REGISTRY)
         provider.expiry = 1e9  # Not expired initially
 
         async def test_run():
@@ -935,7 +937,7 @@ class TestExecutionService(unittest.TestCase):
         mock_client = AsyncMock()
         mock_client.get.side_effect = httpx.RequestError("Network error")
         provider = SchemaProvider(mock_client)
-        provider.envelope = SchemaEnvelope(StudySchema())
+        provider.envelope = SchemaEnvelope(StudySchema(), TOOL_REGISTRY)
         provider.expiry = 0  # force fetch
 
         async def test_run():
@@ -955,7 +957,7 @@ class TestExecutionService(unittest.TestCase):
         mock_client.get.return_value = mock_resp
 
         provider = SchemaProvider(mock_client)
-        provider.envelope = SchemaEnvelope(StudySchema())
+        provider.envelope = SchemaEnvelope(StudySchema(), TOOL_REGISTRY)
         provider.expiry = 0  # force fetch
 
         async def test_run():
@@ -975,7 +977,7 @@ class TestExecutionService(unittest.TestCase):
         mock_client.get.return_value = mock_resp
 
         provider = SchemaProvider(mock_client)
-        stale = SchemaEnvelope(PARABOLOID_SCHEMA)
+        stale = SchemaEnvelope(PARABOLOID_SCHEMA, TOOL_REGISTRY)
         provider.envelope = stale
         provider.expiry = 0  # force fetch
 
@@ -993,6 +995,99 @@ class TestExecutionService(unittest.TestCase):
                 self.assertIsNotNone(execution_app.state.problem_pool)
 
         asyncio.run(run_lifespan())
+
+
+class TestRegistryCheck(unittest.TestCase):
+    """The tool registry is checked once per schema version, before any problem."""
+
+    UNREGISTERED = StudySchema(
+        variables=PARABOLOID_SCHEMA.variables,
+        tools=[ToolSpec(name="Missing", inputs=["x", "y"], outputs=["f_xy"])],
+    )
+    MISMATCHED = StudySchema(
+        variables=[*PARABOLOID_SCHEMA.variables, RangeVar(name="z", lower=0, upper=1)],
+        tools=[ToolSpec(name="Paraboloid", inputs=["x", "y", "z"], outputs=["f_xy"])],
+    )
+    BODY = {"inputs": {"x": 1.0, "y": 2.0}, "objectives": ["f_xy"]}
+
+    def setUp(self):
+        from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
+
+        self.registry = TOOL_REGISTRY
+        self.mock_client = AsyncMock()
+        execution_app.state.schema_provider = SchemaProvider(self.mock_client)
+        execution_app.state.problem_pool = ProblemPool(TOOL_REGISTRY, size=1)
+        self.client = TestClient(execution_app)
+        for name in ("build_and_init", "execute_problem"):
+            patcher = patch(f"services.execution.main.{name}")
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+
+    def serve(self, schema):
+        response = MagicMock()
+        response.json.return_value = schema.model_dump(mode="json")
+        self.mock_client.get.return_value = response
+
+    def assert_schema_invalid(self, response, code, names):
+        self.assertEqual(response.status_code, 422, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["code"], "SCHEMA_INVALID")
+        self.assertFalse(detail["report"]["valid"])
+        finding = next(f for f in detail["report"]["errors"] if f["code"] == code)
+        self.assertEqual(finding["names"], names)
+        self.build_and_init.assert_not_called()
+        self.execute_problem.assert_not_called()
+
+    def test_unregistered_tool_is_rejected_before_any_problem_is_built(self):
+        self.serve(self.UNREGISTERED)
+
+        response = self.client.post("/evaluate", json=self.BODY)
+
+        self.assert_schema_invalid(response, "UNREGISTERED_TOOL", ["Missing"])
+
+    def test_signature_mismatch_is_rejected_before_any_problem_is_built(self):
+        self.serve(self.MISMATCHED)
+
+        response = self.client.post("/evaluate", json=self.BODY)
+
+        self.assert_schema_invalid(
+            response, "SIGNATURE_MISMATCH", ["Paraboloid", "x", "y", "z"]
+        )
+
+    def test_the_registry_is_checked_once_per_schema_version(self):
+        from mdo_framework.validation import validate_registry
+
+        self.serve(self.UNREGISTERED)
+
+        with patch(
+            "services.execution.main.validate_registry", wraps=validate_registry
+        ) as checked:
+            for _ in range(3):
+                self.client.post("/evaluate", json=self.BODY)
+
+        self.assertEqual(checked.call_count, 1)
+
+    def test_envelope_carries_the_registry_report(self):
+        from services.execution.main import SchemaEnvelope
+
+        valid = SchemaEnvelope(PARABOLOID_SCHEMA, self.registry)
+        invalid = SchemaEnvelope(self.UNREGISTERED, self.registry)
+
+        self.assertTrue(valid.registry_report.valid)
+        self.assertEqual(
+            [f.code for f in invalid.registry_report.errors], ["UNREGISTERED_TOOL"]
+        )
+
+    def test_provider_checks_the_schema_against_the_tool_registry(self):
+        import asyncio
+
+        self.serve(self.UNREGISTERED)
+        provider = execution_app.state.schema_provider
+        self.assertFalse(asyncio.run(provider.get_schema()).registry_report.valid)
+
+        with patch.dict(self.registry, {"Missing": self.registry["Paraboloid"]}):
+            provider.envelope = None
+            self.assertTrue(asyncio.run(provider.get_schema()).registry_report.valid)
 
 
 class TestProblemPool(unittest.TestCase):
@@ -1031,7 +1126,7 @@ class TestProblemPool(unittest.TestCase):
 
         from services.execution.main import SchemaEnvelope
 
-        envelope = SchemaEnvelope(PARABOLOID_SCHEMA)
+        envelope = SchemaEnvelope(PARABOLOID_SCHEMA, self.registry)
         self.pool.current_hash = envelope.hash
 
         async def run_test():
@@ -1070,7 +1165,8 @@ class TestProblemPool(unittest.TestCase):
                     StateVar(name="y"),
                 ],
                 tools=[ToolSpec(name="MissingTool", inputs=["x"], outputs=["y"])],
-            )
+            ),
+            self.registry,
         )
 
         async def run_test():
@@ -1089,7 +1185,7 @@ class TestProblemPool(unittest.TestCase):
 
         from services.execution.main import SchemaEnvelope
 
-        envelope = SchemaEnvelope(PARABOLOID_SCHEMA)
+        envelope = SchemaEnvelope(PARABOLOID_SCHEMA, self.registry)
 
         async def run_test():
             # Simply patch the get_instance logic to simulate a timeout directly
