@@ -1,0 +1,348 @@
+{
+  "$defs": {
+    "ChoiceVar": {
+      "additionalProperties": false,
+      "description": "Categorical design variable taking one of several homogeneous values.\n\nAttributes:\n    kind: Discriminator, always ``\"choice\"``.\n    name: Variable name.\n    choices: At least two unique values sharing one Python type.\n    initial: Optional starting value, one of ``choices``.\n    units: Optional free-form unit label.",
+      "properties": {
+        "choices": {
+          "items": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "title": "Choices",
+          "type": "array"
+        },
+        "initial": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Initial"
+        },
+        "kind": {
+          "const": "choice",
+          "default": "choice",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 50,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "units": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Units"
+        }
+      },
+      "required": [
+        "name",
+        "choices"
+      ],
+      "title": "ChoiceVar",
+      "type": "object"
+    },
+    "FixedParam": {
+      "additionalProperties": false,
+      "description": "Constant input passed unchanged to the tools that declare it.\n\nAttributes:\n    kind: Discriminator, always ``\"fixed\"``.\n    name: Variable name.\n    value: The constant value.\n    units: Optional free-form unit label.",
+      "properties": {
+        "kind": {
+          "const": "fixed",
+          "default": "fixed",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 50,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "units": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Units"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "title": "FixedParam",
+      "type": "object"
+    },
+    "RangeVar": {
+      "additionalProperties": false,
+      "description": "Continuous or integer design variable bounded by ``[lower, upper]``.\n\nAttributes:\n    kind: Discriminator, always ``\"range\"``.\n    name: Variable name.\n    lower: Inclusive lower bound.\n    upper: Inclusive upper bound, strictly above ``lower``.\n    value_type: ``\"int\"`` for integral values, ``\"float\"`` otherwise.\n    initial: Optional starting point within the bounds.\n    units: Optional free-form unit label.",
+      "properties": {
+        "initial": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Initial"
+        },
+        "kind": {
+          "const": "range",
+          "default": "range",
+          "title": "Kind",
+          "type": "string"
+        },
+        "lower": {
+          "title": "Lower",
+          "type": "number"
+        },
+        "name": {
+          "maxLength": 50,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "units": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Units"
+        },
+        "upper": {
+          "title": "Upper",
+          "type": "number"
+        },
+        "value_type": {
+          "default": "float",
+          "enum": [
+            "float",
+            "int"
+          ],
+          "title": "Value Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "lower",
+        "upper"
+      ],
+      "title": "RangeVar",
+      "type": "object"
+    },
+    "StateVar": {
+      "additionalProperties": false,
+      "description": "Variable produced by a tool (an output or a coupling variable).\n\nAttributes:\n    kind: Discriminator, always ``\"state\"``.\n    name: Variable name.\n    initial_guess: Optional scalar or non-empty list used to seed couplings.\n    units: Optional free-form unit label.",
+      "properties": {
+        "initial_guess": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "items": {
+                "type": "number"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Initial Guess"
+        },
+        "kind": {
+          "const": "state",
+          "default": "state",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 50,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "units": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Units"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "StateVar",
+      "type": "object"
+    },
+    "ToolSpec": {
+      "additionalProperties": false,
+      "description": "Tool (discipline) with its input and output variable names.\n\nAttributes:\n    name: Tool name.\n    fidelity: Fidelity level label.\n    inputs: Unique names of the variables the tool reads.\n    outputs: Unique names of the variables the tool produces.",
+      "properties": {
+        "fidelity": {
+          "default": "high",
+          "maxLength": 50,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Fidelity",
+          "type": "string"
+        },
+        "inputs": {
+          "default": [],
+          "items": {
+            "maxLength": 50,
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "Inputs",
+          "type": "array"
+        },
+        "name": {
+          "maxLength": 50,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "outputs": {
+          "default": [],
+          "items": {
+            "maxLength": 50,
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "Outputs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ToolSpec",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Typed, shared description of a study: variables and tools.\n\nVariable order is significant: design variables keep their declaration order.\n\nAttributes:\n    schema_version: Schema format version.\n    variables: Declared variables.\n    tools: Declared tools.",
+  "properties": {
+    "schema_version": {
+      "const": "1",
+      "default": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "tools": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ToolSpec"
+      },
+      "title": "Tools",
+      "type": "array"
+    },
+    "variables": {
+      "default": [],
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "choice": "#/$defs/ChoiceVar",
+            "fixed": "#/$defs/FixedParam",
+            "range": "#/$defs/RangeVar",
+            "state": "#/$defs/StateVar"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/RangeVar"
+          },
+          {
+            "$ref": "#/$defs/ChoiceVar"
+          },
+          {
+            "$ref": "#/$defs/FixedParam"
+          },
+          {
+            "$ref": "#/$defs/StateVar"
+          }
+        ]
+      },
+      "title": "Variables",
+      "type": "array"
+    }
+  },
+  "title": "StudySchema",
+  "type": "object"
+}
