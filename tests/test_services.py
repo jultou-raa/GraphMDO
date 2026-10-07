@@ -51,8 +51,9 @@ PARABOLOID_SCHEMA = StudySchema(
         RangeVar(name="x", lower=-10.0, upper=10.0),
         RangeVar(name="y", lower=-10.0, upper=10.0),
         StateVar(name="f_xy"),
+        StateVar(name="c_xy"),
     ],
-    tools=[ToolSpec(name="Paraboloid", inputs=["x", "y"], outputs=["f_xy"])],
+    tools=[ToolSpec(name="Paraboloid", inputs=["x", "y"], outputs=["f_xy", "c_xy"])],
 )
 PARABOLOID_PAYLOAD = PARABOLOID_SCHEMA.model_dump(mode="json")
 
@@ -627,6 +628,24 @@ class TestExecutionService(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(mock_client.get.call_count, 2)
 
+    def test_evaluate_demo_graph_with_the_default_registry(self):
+        from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
+
+        mock_client = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = PARABOLOID_PAYLOAD
+        mock_client.get.return_value = mock_resp
+        execution_app.state.schema_provider = SchemaProvider(mock_client)
+        execution_app.state.problem_pool = ProblemPool(TOOL_REGISTRY, size=1)
+
+        response = self.client.post(
+            "/evaluate",
+            json={"inputs": {"x": 3.0, "y": -4.0}, "objectives": ["f_xy", "c_xy"]},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["results"], {"f_xy": -15.0, "c_xy": 7.0})
+
     def test_evaluate_passes_non_numeric_fixed_values_to_the_tool(self):
         from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
 
@@ -936,8 +955,8 @@ class TestExecutionService(unittest.TestCase):
         env = SchemaEnvelope(PARABOLOID_SCHEMA, TOOL_REGISTRY)
         self.assertIs(env.schema, PARABOLOID_SCHEMA)
         self.assertTrue(env.registry_report.valid)
-        self.assertEqual(env.known_vars, {"x", "y", "f_xy"})
-        self.assertEqual(env.known_objectives, {"f_xy"})
+        self.assertEqual(env.known_vars, {"x", "y", "f_xy", "c_xy"})
+        self.assertEqual(env.known_objectives, {"f_xy", "c_xy"})
         self.assertEqual(list(env.variable_specs), ["x", "y"])
         self.assertEqual(env.hash, PARABOLOID_SCHEMA.content_hash())
 

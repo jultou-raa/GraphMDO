@@ -24,10 +24,11 @@ Use the Graph Service API to build your problem graph. Every variable body carri
 # Clear Graph
 curl -X POST http://localhost:8001/clear
 
-# Add Variables (x and y are design variables, f_xy is computed by the tool)
+# Add Variables (x and y are design variables, f_xy and c_xy are computed by the tool)
 curl -X POST http://localhost:8001/variables -d '{"kind": "range", "name": "x", "lower": 0.0, "upper": 10.0}' -H "Content-Type: application/json"
 curl -X POST http://localhost:8001/variables -d '{"kind": "range", "name": "y", "lower": 0.0, "upper": 10.0}' -H "Content-Type: application/json"
 curl -X POST http://localhost:8001/variables -d '{"kind": "state", "name": "f_xy"}' -H "Content-Type: application/json"
+curl -X POST http://localhost:8001/variables -d '{"kind": "state", "name": "c_xy"}' -H "Content-Type: application/json"
 
 # Add Tool
 curl -X POST http://localhost:8001/tools -d '{"name": "Paraboloid"}' -H "Content-Type: application/json"
@@ -36,6 +37,7 @@ curl -X POST http://localhost:8001/tools -d '{"name": "Paraboloid"}' -H "Content
 curl -X POST http://localhost:8001/connections/input -d '{"source": "x", "target": "Paraboloid"}' -H "Content-Type: application/json"
 curl -X POST http://localhost:8001/connections/input -d '{"source": "y", "target": "Paraboloid"}' -H "Content-Type: application/json"
 curl -X POST http://localhost:8001/connections/output -d '{"source": "Paraboloid", "target": "f_xy"}' -H "Content-Type: application/json"
+curl -X POST http://localhost:8001/connections/output -d '{"source": "Paraboloid", "target": "c_xy"}' -H "Content-Type: application/json"
 
 # Read the study back
 curl http://localhost:8001/schema
@@ -49,7 +51,7 @@ Send an optimization request. The Optimization Service will coordinate with the 
 
 The request does not include an explicit `parameters` section. Design variables are inferred from the study schema by traversing dependencies from the requested objectives and constraints.
 
-The built-in demo execution service only exposes the scalar `Paraboloid -> f_xy` output. If you want to optimize with explicit constraints over additional outputs, extend the execution-service tool registry with a callable returning those outputs.
+The built-in demo `Paraboloid` tool returns both `f_xy` and `c_xy = x - y`, so the graph above must declare both outputs: a tool's outputs must match what the function returns exactly (see the [tool function contract](../technical-reference/study-schema.md#tool-function-contract)). To optimize with other outputs, extend the execution-service tool registry with a callable returning them.
 
 ```bash
 curl -X POST http://localhost:8003/optimize \

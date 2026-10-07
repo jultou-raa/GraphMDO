@@ -37,8 +37,9 @@ SCHEMA = StudySchema(
         RangeVar(name="x", lower=0.0, upper=10.0),
         RangeVar(name="y", lower=0.0, upper=10.0),
         StateVar(name="f_xy"),
+        StateVar(name="c_xy"),
     ],
-    tools=[ToolSpec(name="Paraboloid", inputs=["x", "y"], outputs=["f_xy"])],
+    tools=[ToolSpec(name="Paraboloid", inputs=["x", "y"], outputs=["f_xy", "c_xy"])],
 )
 DOCUMENTED_PAYLOAD = {"objectives": [{"name": "f_xy", "minimize": True}]}
 
