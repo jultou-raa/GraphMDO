@@ -18,16 +18,16 @@ The Compose file already wires `GRAPH_SERVICE_URL` and `EXECUTION_SERVICE_URL`, 
 
 ### 2. Define Problem (Graph Service)
 
-Use the Graph Service API to build your problem graph.
+Use the Graph Service API to build your problem graph. Every variable body carries a `kind` (`range`, `choice`, `fixed` or `state`) that selects its type; see the [Study Schema](../technical-reference/study-schema.md) for the fields of each kind.
 
 ```bash
 # Clear Graph
 curl -X POST http://localhost:8001/clear
 
-# Add Variables
-curl -X POST http://localhost:8001/variables -d '{"name": "x", "lower": 0.0, "upper": 10.0}' -H "Content-Type: application/json"
-curl -X POST http://localhost:8001/variables -d '{"name": "y", "lower": 0.0, "upper": 10.0}' -H "Content-Type: application/json"
-curl -X POST http://localhost:8001/variables -d '{"name": "f_xy"}' -H "Content-Type: application/json"
+# Add Variables (x and y are design variables, f_xy is computed by the tool)
+curl -X POST http://localhost:8001/variables -d '{"kind": "range", "name": "x", "lower": 0.0, "upper": 10.0}' -H "Content-Type: application/json"
+curl -X POST http://localhost:8001/variables -d '{"kind": "range", "name": "y", "lower": 0.0, "upper": 10.0}' -H "Content-Type: application/json"
+curl -X POST http://localhost:8001/variables -d '{"kind": "state", "name": "f_xy"}' -H "Content-Type: application/json"
 
 # Add Tool
 curl -X POST http://localhost:8001/tools -d '{"name": "Paraboloid"}' -H "Content-Type: application/json"
@@ -36,13 +36,18 @@ curl -X POST http://localhost:8001/tools -d '{"name": "Paraboloid"}' -H "Content
 curl -X POST http://localhost:8001/connections/input -d '{"source": "x", "target": "Paraboloid"}' -H "Content-Type: application/json"
 curl -X POST http://localhost:8001/connections/input -d '{"source": "y", "target": "Paraboloid"}' -H "Content-Type: application/json"
 curl -X POST http://localhost:8001/connections/output -d '{"source": "Paraboloid", "target": "f_xy"}' -H "Content-Type: application/json"
+
+# Read the study back
+curl http://localhost:8001/schema
 ```
+
+`POST` creates and answers `201`; a name that already exists is rejected with `409`. `PUT /variables/{name}` and `PUT /tools/{name}` create or replace (`201` or `200`) and keep the node's order and connections, and `DELETE` removes a node (`404` if it does not exist). Connecting a name that does not exist is a `404`, and a second tool producing the same variable is a `409`.
 
 ### 3. Run Optimization (Optimization Service)
 
 Send an optimization request. The Optimization Service will coordinate with the Execution Service (which runs the tool) and Graph Service (for schema).
 
-The request does not include an explicit `parameters` section. Design variables are inferred from the graph schema by traversing dependencies from the requested objectives and constraints.
+The request does not include an explicit `parameters` section. Design variables are inferred from the study schema by traversing dependencies from the requested objectives and constraints.
 
 The built-in demo execution service only exposes the scalar `Paraboloid -> f_xy` output. If you want to optimize with explicit constraints over additional outputs, extend the execution-service tool registry with a callable returning those outputs.
 
@@ -73,7 +78,9 @@ You will receive a JSON response containing:
 
 Some deployments may also include optional metadata such as `serialized_client`.
 
-Before any tool runs, the study is validated against the graph schema. To check a request without running it, send the same body to `/validate`:
+### 4. Validate Before Running
+
+`/optimize` validates the study against the study schema before any tool runs. To get the same check without running anything, send the same body to `/validate`:
 
 ```bash
 curl -X POST http://localhost:8003/validate \
@@ -81,4 +88,55 @@ curl -X POST http://localhost:8003/validate \
      -d '{"objectives": [{"name": "f_xy", "minimize": true}]}'
 ```
 
-It answers `200` with `{"errors": [], "warnings": [], "valid": true}`, or lists the problems (for example `UNKNOWN_OUTPUT` or `PARAMETER_CONSTRAINT_INVALID`) in `errors`. `/optimize` returns the same report under `detail` with status `422` when the study is invalid, so nothing is evaluated. Malformed requests, such as non-finite numbers, empty `objectives` or names that break the name rule, are also rejected with `422`. Upstream graph or execution failures are returned as `502`.
+`/validate` always answers `200` with a report. A valid study has no errors:
+
+```json
+{"errors": [], "warnings": [], "valid": true}
+```
+
+Each finding has a stable `code`, a `message` and the `names` involved. For example, with `"parameter_constraints": ["x + z <= 1"]` added to the body above:
+
+```json
+{
+  "errors": [
+    {
+      "code": "PARAMETER_CONSTRAINT_INVALID",
+      "message": "invalid parameter constraint 'x + z <= 1': 'z' is not a design variable",
+      "names": ["x + z <= 1"]
+    }
+  ],
+  "warnings": [],
+  "valid": false
+}
+```
+
+`/optimize` runs the same preflight. When the study is invalid it answers `422` with the report under `detail`, and nothing is evaluated:
+
+```bash
+curl -X POST http://localhost:8003/optimize \
+     -H "Content-Type: application/json" \
+     -d '{"objectives": [{"name": "missing", "minimize": true}]}'
+```
+
+```json
+{
+  "detail": {
+    "errors": [
+      {
+        "code": "UNKNOWN_OUTPUT",
+        "message": "'missing' is not a declared variable",
+        "names": ["missing"]
+      }
+    ],
+    "warnings": [],
+    "valid": false
+  }
+}
+```
+
+Warnings (for example `UNUSED_VARIABLE`) do not block a run. All codes are listed in the [Study Schema](../technical-reference/study-schema.md#validating-a-study) reference. The Optimization Service has no tool registry, so tool-function problems are reported by the Execution Service instead (see [Microservices](../technical-reference/microservices.md)).
+
+Other failures:
+
+- Malformed requests, such as non-finite numbers, empty `objectives`, unknown fields or names that break the name rule, are rejected with `422`. In that case `detail` is a list of `{"loc", "msg", "type"}` entries that never echo the submitted values.
+- If the Graph Service cannot be reached or answers with an error (for example `409` because a variable node was stored without `kind`), the Optimization Service answers `502`. Transport and contract failures of the Execution Service during a run are `502` too.

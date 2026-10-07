@@ -13,6 +13,7 @@ GraphMDO bridges data engineering and MDO. It extracts topological data (solvers
 
 *   **Native Graph Formulation**: Uses [FalkorDB](https://falkordb.com/) to store problem definitions (variables, tools, dependencies) as a property graph.
 *   **Dynamic Problem Construction**: Automatically translates the graph topology into an executable [GEMSEO](https://gemseo.readthedocs.io/) MDO formulation.
+*   **Typed Study Contract**: A Pydantic `StudySchema` (with a published JSON Schema) describes the study, and `validate_study()` reports every problem with a stable code before any tool runs.
 *   **Multi-Fidelity Surrogates**: Integrates [SMT](https://smt.readthedocs.io/en/latest/) for Co-Kriging and other surrogate models.
 *   **Constrained Bayesian Optimization**: Leverages [Ax Platform](https://ax.dev/) for robust optimization, supporting GEMSEO objectives, inequality constraints, and mixed discrete/continuous parameters.
 
@@ -20,10 +21,12 @@ GraphMDO bridges data engineering and MDO. It extracts topological data (solvers
 
 The framework is divided into four sequential phases, each corresponding to a layer of abstraction:
 
-1. **Graph Layer** — FalkorDB stores the *Fundamental Problem Graph* (FPG): variables, tools, and directed connections.
-2. **Core Layer** — Python modules translate the graph schema into executable GEMSEO constructs (disciplines, design space, topology).
+1. **Graph Layer** — FalkorDB stores the *Fundamental Problem Graph* (FPG): typed variables, tools, and directed connections.
+2. **Core Layer** — Python modules read the graph as a typed `StudySchema`, validate it, and translate it into executable GEMSEO constructs (disciplines, design space, topology).
 3. **Execution Service** — A FastAPI microservice that manages a pool of GEMSEO `OptimizationProblem` instances and exposes an HTTP evaluation endpoint.
 4. **Optimization Layer** — Bayesian (Ax Platform) or DOE (GEMSEO Sobol) drivers run over the GEMSEO MDO scenario.
+
+The `StudySchema` (`mdo_framework.schema`) is the contract between the layers: variables are `RangeVar`, `ChoiceVar`, `FixedParam` or `StateVar`, and invalid studies are reported by `validate_study()` before any tool runs. See the [Study Schema reference](docs/technical-reference/study-schema.md).
 
 ```mermaid
 flowchart TD
@@ -48,6 +51,9 @@ flowchart TD
         C3["GemseoComponent\n(components.py)\nGEMSEO Discipline wrapper"]
         C4["SurrogateComponent\n(surrogates.py)\nSMT Co-Kriging"]
         C5["LocalEvaluator\n(evaluators.py)"]
+        C6["StudySchema + validate_study()\n(schema.py, validation.py)"]
+        C6 --> C1
+        C6 --> C2
         C2 --> C3
         C2 --> C4
         C3 --> C5
@@ -89,8 +95,7 @@ flowchart TD
     %% Cross-layer data flow
     U1 --> G1
     U2 --> C2
-    G2 -- "get_graph_schema()" --> C1
-    G2 -- "get_graph_schema()" --> C2
+    G2 -- "get_study_schema()" --> C6
     C1 -- "design parameters\n& bounds" --> O1
     C5 --> GS3
     GS1 --> O1
@@ -135,27 +140,30 @@ This project uses `uv` for dependency management.
 
 ### 1. Defining a Problem (Python API)
 
-You can programmatically build your MDO problem graph:
+You can programmatically build your MDO problem graph. Variables are typed models from `mdo_framework.schema`: `RangeVar` (bounded design variable), `ChoiceVar`, `FixedParam` and `StateVar` (a value computed by a tool).
 
 ```python
 from mdo_framework.db.graph_manager import GraphManager
+from mdo_framework.schema import RangeVar, StateVar, ToolNode
 
 gm = GraphManager()
 gm.clear_graph()
 
 # Define Variables
-gm.add_variable("x", value=1.0, lower=0.0, upper=10.0)
-gm.add_variable("y", value=2.0, lower=0.0, upper=10.0)
-gm.add_variable("z", value=0.0)
+gm.add_variable(RangeVar(name="x", lower=0.0, upper=10.0))
+gm.add_variable(RangeVar(name="y", lower=0.0, upper=10.0))
+gm.add_variable(StateVar(name="z"))
 
 # Define Tool
-gm.add_tool("MyTool")
+gm.add_tool(ToolNode(name="MyTool"))
 
 # Define Connections
 gm.connect_input_to_tool("x", "MyTool")
 gm.connect_input_to_tool("y", "MyTool")
 gm.connect_tool_to_output("MyTool", "z")
 ```
+
+Nodes stored without a `kind` by earlier versions are rejected with a `LEGACY_NODE` error: delete and recreate them with the typed API.
 
 ### 2. Running Optimization
 
@@ -166,6 +174,8 @@ from mdo_framework.core.translator import GraphProblemBuilder
 from mdo_framework.optimization.optimizer import BayesianOptimizer
 from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.core.topology import TopologicalAnalyzer
+from mdo_framework.schema import ObjectiveSpec
+from mdo_framework.validation import validate_study
 
 # Define tool implementation
 def my_tool_func(x, y):
@@ -176,18 +186,24 @@ tool_registry = {
     "MyTool": my_tool_func
 }
 
-# Build GEMSEO Problem from Graph
-schema = gm.get_graph_schema()
+# Read the graph as a typed StudySchema and check it before running
+schema = gm.get_study_schema()
+report = validate_study(
+    schema, objectives=[ObjectiveSpec(name="z")], registry=tool_registry
+)
+assert report.valid, report.errors
+
+# Build GEMSEO Problem from the schema
 builder = GraphProblemBuilder(schema)
 prob = builder.build_problem(tool_registry)
 
-# Resolve Topology mapping design_vars automatically from the graph schema
+# Resolve Topology mapping design variables automatically from the schema
 analyzer = TopologicalAnalyzer(schema)
-design_vars, _ = analyzer.resolve_dependencies(["z"])
-parameters = analyzer.extract_parameters(design_vars)
+resolved = analyzer.resolve_dependencies(["z"])
+parameters = analyzer.extract_parameters(resolved.design_variables)
 
 # Run Optimization
-evaluator = LocalEvaluator(prob)
+evaluator = LocalEvaluator(prob, builder.variable_specs)
 optimizer = BayesianOptimizer(
     evaluator=evaluator,
     parameters=parameters,

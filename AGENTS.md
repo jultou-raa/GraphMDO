@@ -25,12 +25,15 @@
 ## Current Codebase Overview
 
 -   `main.py` is the local paraboloid demo wiring `GraphManager` -> `GraphProblemBuilder` -> `LocalEvaluator` -> `BayesianOptimizer`.
+-   `src/mdo_framework/schema.py` defines the typed `StudySchema` contract (`RangeVar`, `ChoiceVar`, `FixedParam`, `StateVar`, `ToolNode`, `Finding`, `ValidationReport`, `StudyValidationError`).
+-   `src/mdo_framework/validation.py` holds `validate_study()` (preflight against a request) and `validate_registry()` (tool registry and signature checks); `core/dependencies.py` is the shared dependency walk.
 -   `src/mdo_framework/db/` contains the FalkorDB integration (`client.py`, `graph_manager.py`).
--   `src/mdo_framework/core/` contains graph-to-GEMSEO translation and execution helpers (`components.py`, `evaluators.py`, `surrogates.py`, `topology.py`, `translator.py`).
+-   `src/mdo_framework/core/` contains schema-to-GEMSEO translation and execution helpers (`components.py`, `dependencies.py`, `evaluators.py`, `surrogates.py`, `topology.py`, `translator.py`).
 -   `src/mdo_framework/optimization/` contains the optimizer orchestration (`optimizer.py`) and the Ax-backed algorithm library (`ax_algo_lib.py`).
--   `src/services/graph/main.py` exposes the Graph Service API: `/clear`, `/variables`, `/tools`, `/connections/input`, `/connections/output`, `/schema`.
--   `src/services/execution/main.py` exposes the Execution Service API: `/evaluate`, `/health`, plus schema caching and pooled problem instances.
--   `src/services/optimization/main.py` exposes the Optimization Service API: `/optimize`, `/health`.
+-   `src/services/graph/main.py` exposes the typed Graph Service API: `POST/PUT/DELETE` on `/variables` and `/tools`, `/connections/input`, `/connections/output`, `/schema`, `/clear`, `/health`. Conflicts return `409`, unknown nodes `404`, invalid bodies `422`.
+-   `src/services/execution/main.py` exposes the Execution Service API: `/evaluate`, `/health`, plus schema caching, a registry check on each loaded schema (`422` `SCHEMA_INVALID`), and pooled problem instances.
+-   `src/services/optimization/main.py` exposes the Optimization Service API: `/optimize` (with a `422` validation preflight), `/validate`, `/health`.
+-   `src/services/errors.py` registers the shared request-validation handler (`422` without echoing input) on all three services.
 -   `tests/` covers the core modules, services, database layer, optimizer, topology, translator, and the top-level demo entry point.
 -   `tests/e2e/` holds the seeded, non-mocked Ax + GEMSEO regression suite (marker `e2e`); open bugs are pinned there as strict xfails.
 
@@ -38,10 +41,10 @@
 
 1.  **Graph Layer**
     -   FalkorDB stores variables, tools, and directed data-flow edges.
-    -   `GraphManager.get_graph_schema()` is the canonical boundary exported to the rest of the system.
+    -   `GraphManager.get_study_schema()` returns the typed `StudySchema`, the canonical boundary exported to the rest of the system.
 
 2.  **Translation Layer**
-    -   `GraphProblemBuilder` builds GEMSEO problems from the graph schema.
+    -   `GraphProblemBuilder` builds GEMSEO problems from the `StudySchema`.
     -   `TopologicalAnalyzer` resolves dependencies and extracts optimization parameters from requested outputs.
 
 3.  **Evaluation Layer**
@@ -58,7 +61,9 @@
 
 ## Implementation Directives
 
--   **Graph Schema Is the Source of Truth**: Flow data from FalkorDB through `get_graph_schema()` into topology analysis, translation, and services.
+-   **StudySchema Is the Source of Truth**: Flow data from FalkorDB through `get_study_schema()` into validation, topology analysis, translation, and services. Do not reintroduce untyped dict schemas.
+-   **Validate Before Running**: Study-level checks belong in `validate_study()` and tool-registry checks in `validate_registry()`; add new findings there with a stable error code and document them in `docs/technical-reference/study-schema.md`.
+-   **Keep the Published JSON Schema in Sync**: After changing `schema.py`, regenerate `docs/technical-reference/study-schema.json` with the command printed by `tests/test_docs_schema.py`.
 -   **Preserve Design Variable Order**: Keep FalkorDB insertion order for design variables; do not sort parameter names alphabetically before execution or optimization.
 -   **Use Keyword-Based Tool Invocation**: Wrapped tool functions must receive named inputs, not positional fallbacks that can scramble graph-defined ordering.
 -   **Keep Optimization State Explicit**: Use `problem.optimum` and `trial_history` as the authoritative optimization outputs; avoid hidden cross-object attributes.
