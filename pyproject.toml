@@ -19,6 +19,7 @@ dependencies = [
     "lxml>=6.0.2",
     "networkx<3.5",
     "numpy<2.4",
+    "pydantic>=2.11",
     "pymoo>=0.6.1.6",
     "scipy<1.15.2",
     "smt>=2.11.1",
