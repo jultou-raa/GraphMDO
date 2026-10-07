@@ -48,10 +48,6 @@ SELLAR_REGISTRY = {
 SELLAR_X0 = {"x": 5.0, "z1": 0.0, "z2": 5.0}  # box centre
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="#40, #42: coupled tools fail without a 'value' on y1/y2",
-)
 def test_sellar_without_coupling_values(build_optimizer):
     optimizer, evaluator = build_optimizer(
         SELLAR_SCHEMA,
