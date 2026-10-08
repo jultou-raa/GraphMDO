@@ -5,6 +5,7 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
 # ruff: noqa: E402
+import json
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -17,46 +18,237 @@ try:
 except ImportError:
     torch = None
 
-# Pre-patch GraphManager to avoid DB connection during import of services.graph.main
-gm_patcher = patch("mdo_framework.db.graph_manager.GraphManager")
-MockGraphManager = gm_patcher.start()
-# Set the mock instance that will be assigned to 'gm' in main.py
-mock_gm_instance = MockGraphManager.return_value
+from fakes.falkordb import FakeGraph
 
-# Now safe to import
+from mdo_framework.core.topology import ResolvedInputs
+from mdo_framework.db.graph_manager import GraphManager
 from mdo_framework.optimization.optimizer import (
     OptimizationConfigurationError,
     RemoteEvaluationTransportError,
 )
+from mdo_framework.schema import (
+    ChoiceVar,
+    Finding,
+    FixedParam,
+    RangeVar,
+    StateVar,
+    StudySchema,
+    StudyValidationError,
+    ToolNode,
+    ToolSpec,
+    ValidationReport,
+)
+from services.execution.main import TOOL_REGISTRY
 from services.execution.main import app as execution_app
 from services.graph.main import app as graph_app
+from services.graph.main import get_graph_manager
 from services.optimization.main import app as optimization_app
+
+X_BODY = {"kind": "range", "name": "x", "lower": -10.0, "upper": 10.0}
+
+PARABOLOID_SCHEMA = StudySchema(
+    variables=[
+        RangeVar(name="x", lower=-10.0, upper=10.0),
+        RangeVar(name="y", lower=-10.0, upper=10.0),
+        StateVar(name="f_xy"),
+    ],
+    tools=[ToolSpec(name="Paraboloid", inputs=["x", "y"], outputs=["f_xy"])],
+)
+PARABOLOID_PAYLOAD = PARABOLOID_SCHEMA.model_dump(mode="json")
+
+SERVICE_VARIABLES = (
+    RangeVar(name="x", lower=0.0, upper=1.0),
+    RangeVar(name="y", lower=0.0, upper=1.0),
+)
+SERVICE_SCHEMA = StudySchema(
+    variables=[*SERVICE_VARIABLES, StateVar(name="f_xy"), StateVar(name="g_xy")],
+    tools=[ToolSpec(name="ToolA", inputs=["x", "y"], outputs=["f_xy", "g_xy"])],
+)
+SERVICE_PAYLOAD = SERVICE_SCHEMA.model_dump(mode="json")
+SERVICE_RESOLVED = ResolvedInputs(
+    design_variables=SERVICE_VARIABLES, fixed_parameters=(), tools=("ToolA",)
+)
 
 
 class TestGraphService(unittest.TestCase):
     def setUp(self):
+        self.graph = FakeGraph()
+        self.manager = GraphManager(graph=self.graph)
+        graph_app.dependency_overrides[get_graph_manager] = lambda: self.manager
+        self.addCleanup(graph_app.dependency_overrides.clear)
         self.client = TestClient(graph_app)
-        self.mock_gm = mock_gm_instance  # The instance created at module level
+
+    def build_paraboloid(self):
+        self.manager.add_variable(RangeVar(name="x", lower=-10.0, upper=10.0))
+        self.manager.add_variable(RangeVar(name="y", lower=-10.0, upper=10.0))
+        self.manager.add_variable(StateVar(name="f_xy"))
+        self.manager.add_tool(ToolNode(name="Paraboloid"))
+        self.manager.connect_input_to_tool("x", "Paraboloid")
+        self.manager.connect_input_to_tool("y", "Paraboloid")
+        self.manager.connect_tool_to_output("Paraboloid", "f_xy")
 
     def test_create_variable(self):
-        # The endpoint calls gm.add_variable
-        response = self.client.post("/variables", json={"name": "x", "value": 1.0})
-        self.assertEqual(response.status_code, 200)
-        self.mock_gm.add_variable.assert_called_with(
-            "x",
-            1.0,
-            None,
-            None,
-            "continuous",
-            None,
-            "float",
+        response = self.client.post("/variables", json=X_BODY)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json(), {"status": "created", "variable": "x"})
+        self.assertEqual(
+            self.manager.get_variables(), [RangeVar(name="x", lower=-10.0, upper=10.0)]
         )
 
-    def test_get_schema(self):
-        self.mock_gm.get_graph_schema.return_value = {"tools": [], "variables": []}
+    def test_create_variable_of_every_kind(self):
+        bodies = [
+            (X_BODY, RangeVar(name="x", lower=-10.0, upper=10.0)),
+            (
+                {"kind": "choice", "name": "m", "choices": ["a", "b"]},
+                ChoiceVar(name="m", choices=["a", "b"]),
+            ),
+            (
+                {"kind": "fixed", "name": "g", "value": 9.81},
+                FixedParam(name="g", value=9.81),
+            ),
+            (
+                {"kind": "state", "name": "f", "initial_guess": [1.0, 2.0]},
+                StateVar(name="f", initial_guess=[1.0, 2.0]),
+            ),
+        ]
+        for body, expected in bodies:
+            with self.subTest(kind=body["kind"]):
+                response = self.client.post("/variables", json=body)
+                self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            self.manager.get_variables(), [expected for _, expected in bodies]
+        )
+
+    def test_create_existing_variable_conflicts(self):
+        self.client.post("/variables", json=X_BODY)
+        response = self.client.post(
+            "/variables", json={"kind": "fixed", "name": "x", "value": 1}
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.json(),
+            {"detail": {"error": "exists", "label": "Variable", "name": "x"}},
+        )
+        self.assertEqual(
+            self.manager.get_variables(), [RangeVar(name="x", lower=-10.0, upper=10.0)]
+        )
+
+    def test_create_variable_rejects_invalid_bodies(self):
+        bodies = {
+            "no kind": {"name": "x", "lower": 0.0, "upper": 1.0},
+            "unknown kind": {"kind": "continuous", "name": "x"},
+            "legacy field": {**X_BODY, "param_type": "range"},
+            "inverted bounds": {**X_BODY, "lower": 5.0, "upper": 1.0},
+            "bad name": {**X_BODY, "name": "not a name"},
+        }
+        for label, body in bodies.items():
+            with self.subTest(label):
+                response = self.client.post("/variables", json=body)
+                self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.manager.get_variables(), [])
+
+    def test_create_variable_rejects_a_nan_bound(self):
+        response = self.client.post(
+            "/variables",
+            content='{"kind": "range", "name": "x", "lower": NaN, "upper": 1.0}',
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["detail"][0]["type"], "finite_number")
+        self.assertEqual(self.manager.get_variables(), [])
+
+    def test_put_variable_creates_then_replaces(self):
+        created = self.client.put("/variables/x", json=X_BODY)
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json(), {"status": "created", "variable": "x"})
+
+        replaced = self.client.put("/variables/x", json={**X_BODY, "upper": 20.0})
+        self.assertEqual(replaced.status_code, 200)
+        self.assertEqual(replaced.json(), {"status": "replaced", "variable": "x"})
+        self.assertEqual(
+            self.manager.get_variables(), [RangeVar(name="x", lower=-10.0, upper=20.0)]
+        )
+
+    def test_put_variable_rejects_a_name_that_differs_from_the_path(self):
+        response = self.client.put("/variables/other", json=X_BODY)
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("'other'", response.json()["detail"])
+        self.assertEqual(self.manager.get_variables(), [])
+
+    def test_put_variable_rejects_an_invalid_body(self):
+        response = self.client.put("/variables/x", json={"name": "x"})
+        self.assertEqual(response.status_code, 422)
+
+    def test_put_variable_refuses_to_turn_a_produced_variable_into_an_input(self):
+        self.build_paraboloid()
+        response = self.client.put(
+            "/variables/f_xy", json={"kind": "fixed", "name": "f_xy", "value": 1.0}
+        )
+        self.assertEqual(response.status_code, 409)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["error"], "role_conflict")
+        self.assertEqual(detail["variable"], "f_xy")
+        self.assertIn("Paraboloid", detail["message"])
+        self.assertEqual(
+            self.manager.get_study_schema().variable("f_xy"), StateVar(name="f_xy")
+        )
+
+    def test_delete_variable(self):
+        self.build_paraboloid()
+        response = self.client.delete("/variables/x")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "deleted", "variable": "x"})
+        self.assertEqual(self.manager.get_tool_inputs("Paraboloid"), ["y"])
+
+    def test_delete_missing_variable_is_not_found(self):
+        response = self.client.delete("/variables/ghost")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            {
+                "detail": {
+                    "missing": [{"label": "Variable", "name": "ghost"}],
+                    "hint": None,
+                }
+            },
+        )
+
+    def test_get_schema_of_an_empty_graph(self):
         response = self.client.get("/schema")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"tools": [], "variables": []})
+        self.assertEqual(
+            response.json(), {"schema_version": "1", "variables": [], "tools": []}
+        )
+
+    def test_get_schema_returns_the_typed_study(self):
+        self.build_paraboloid()
+        response = self.client.get("/schema")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            StudySchema.model_validate(response.json()),
+            StudySchema(
+                variables=[
+                    RangeVar(name="x", lower=-10.0, upper=10.0),
+                    RangeVar(name="y", lower=-10.0, upper=10.0),
+                    StateVar(name="f_xy"),
+                ],
+                tools=[
+                    ToolSpec(name="Paraboloid", inputs=["x", "y"], outputs=["f_xy"])
+                ],
+            ),
+        )
+        self.assertEqual(response.json()["variables"][0]["kind"], "range")
+
+    def test_get_schema_reports_legacy_nodes_as_a_conflict(self):
+        self.graph.add_raw_node("Variable", name="old", param_type="continuous")
+        response = self.client.get("/schema")
+        self.assertEqual(response.status_code, 409)
+        report = response.json()["detail"]
+        self.assertFalse(report["valid"])
+        self.assertEqual(
+            [(error["code"], error["names"]) for error in report["errors"]],
+            [("LEGACY_NODE", ["old"])],
+        )
 
     def test_health_ok_when_falkordb_answers(self):
         with patch("services.graph.main.ping_database") as ping:
@@ -83,40 +275,246 @@ class TestGraphService(unittest.TestCase):
         client_cls.return_value.client.connection.ping.assert_called_once()
 
     def test_clear_graph(self):
+        self.build_paraboloid()
         response = self.client.post("/clear")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "cleared")
-        self.mock_gm.clear_graph.assert_called()
+        self.assertEqual(response.json(), {"status": "cleared"})
+        self.assertEqual(self.manager.get_study_schema(), StudySchema())
 
     def test_create_tool(self):
-        response = self.client.post(
-            "/tools",
-            json={"name": "ToolA", "fidelity": "high"},
+        response = self.client.post("/tools", json={"name": "ToolA", "fidelity": "low"})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json(), {"status": "created", "tool": "ToolA"})
+        self.assertEqual(
+            self.manager.get_tools(), [ToolNode(name="ToolA", fidelity="low")]
         )
+
+    def test_create_tool_defaults_to_high_fidelity(self):
+        self.client.post("/tools", json={"name": "ToolA"})
+        self.assertEqual(self.manager.get_tools(), [ToolNode(name="ToolA")])
+
+    def test_create_existing_tool_conflicts(self):
+        self.client.post("/tools", json={"name": "ToolA"})
+        response = self.client.post("/tools", json={"name": "ToolA", "fidelity": "low"})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.json(),
+            {"detail": {"error": "exists", "label": "Tool", "name": "ToolA"}},
+        )
+        self.assertEqual(self.manager.get_tools(), [ToolNode(name="ToolA")])
+
+    def test_create_tool_rejects_invalid_bodies(self):
+        bodies = {
+            "unknown field": {"name": "ToolA", "version": "1.2"},
+            "connections in body": {"name": "ToolA", "inputs": ["x"]},
+            "bad name": {"name": "not a name"},
+            "no name": {"fidelity": "low"},
+        }
+        for label, body in bodies.items():
+            with self.subTest(label):
+                response = self.client.post("/tools", json=body)
+                self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.manager.get_tools(), [])
+
+    def test_put_tool_creates_then_replaces(self):
+        created = self.client.put("/tools/ToolA", json={"name": "ToolA"})
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json(), {"status": "created", "tool": "ToolA"})
+
+        replaced = self.client.put(
+            "/tools/ToolA", json={"name": "ToolA", "fidelity": "low"}
+        )
+        self.assertEqual(replaced.status_code, 200)
+        self.assertEqual(replaced.json(), {"status": "replaced", "tool": "ToolA"})
+        self.assertEqual(
+            self.manager.get_tools(), [ToolNode(name="ToolA", fidelity="low")]
+        )
+
+    def test_put_tool_rejects_a_name_that_differs_from_the_path(self):
+        response = self.client.put("/tools/other", json={"name": "ToolA"})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("'other'", response.json()["detail"])
+        self.assertEqual(self.manager.get_tools(), [])
+
+    def test_delete_tool(self):
+        self.build_paraboloid()
+        response = self.client.delete("/tools/Paraboloid")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "created")
-        self.assertEqual(response.json()["tool"], "ToolA")
-        self.mock_gm.add_tool.assert_called_with("ToolA", "high")
+        self.assertEqual(response.json(), {"status": "deleted", "tool": "Paraboloid"})
+        self.assertEqual(self.manager.get_tools(), [])
+
+    def test_delete_missing_tool_is_not_found(self):
+        response = self.client.delete("/tools/ghost")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json(),
+            {"detail": {"missing": [{"label": "Tool", "name": "ghost"}], "hint": None}},
+        )
 
     def test_connect_input(self):
+        self.manager.add_variable(RangeVar(name="varX", lower=0.0, upper=1.0))
+        self.manager.add_tool(ToolNode(name="ToolA"))
         response = self.client.post(
-            "/connections/input",
-            json={"source": "varX", "target": "ToolA"},
+            "/connections/input", json={"source": "varX", "target": "ToolA"}
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "connected")
-        self.assertEqual(response.json()["type"], "input")
-        self.mock_gm.connect_input_to_tool.assert_called_with("varX", "ToolA")
+        self.assertEqual(response.json(), {"status": "connected", "type": "input"})
+        self.assertEqual(self.manager.get_tool_inputs("ToolA"), ["varX"])
 
     def test_connect_output(self):
+        self.manager.add_variable(StateVar(name="varY"))
+        self.manager.add_tool(ToolNode(name="ToolA"))
         response = self.client.post(
-            "/connections/output",
-            json={"source": "ToolA", "target": "varY"},
+            "/connections/output", json={"source": "ToolA", "target": "varY"}
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "connected")
-        self.assertEqual(response.json()["type"], "output")
-        self.mock_gm.connect_tool_to_output.assert_called_with("ToolA", "varY")
+        self.assertEqual(response.json(), {"status": "connected", "type": "output"})
+        self.assertEqual(self.manager.get_tool_outputs("ToolA"), ["varY"])
+
+    def test_connecting_a_missing_node_is_not_found(self):
+        self.build_paraboloid()
+        cases = [
+            ("/connections/input", "ghost", "Paraboloid", [("Variable", "ghost")]),
+            ("/connections/input", "x", "ghost", [("Tool", "ghost")]),
+            ("/connections/output", "Paraboloid", "ghost", [("Variable", "ghost")]),
+            ("/connections/output", "ghost", "f_xy", [("Tool", "ghost")]),
+        ]
+        for path, source, target, missing in cases:
+            with self.subTest(path=path, source=source, target=target):
+                response = self.client.post(
+                    path, json={"source": source, "target": target}
+                )
+                self.assertEqual(response.status_code, 404)
+                self.assertEqual(
+                    response.json(),
+                    {
+                        "detail": {
+                            "missing": [
+                                {"label": label, "name": name}
+                                for label, name in missing
+                            ],
+                            "hint": None,
+                        }
+                    },
+                )
+
+    def test_swapped_connection_arguments_come_with_a_hint(self):
+        self.build_paraboloid()
+        response = self.client.post(
+            "/connections/input", json={"source": "Paraboloid", "target": "f_xy"}
+        )
+        self.assertEqual(response.status_code, 404)
+        detail = response.json()["detail"]
+        self.assertEqual(
+            detail["missing"],
+            [
+                {"label": "Variable", "name": "Paraboloid"},
+                {"label": "Tool", "name": "f_xy"},
+            ],
+        )
+        self.assertIn("connect_tool_to_output", detail["hint"])
+
+    def test_second_producer_of_a_variable_conflicts(self):
+        self.build_paraboloid()
+        self.manager.add_tool(ToolNode(name="Other"))
+        response = self.client.post(
+            "/connections/output", json={"source": "Other", "target": "f_xy"}
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.json(),
+            {
+                "detail": {
+                    "error": "duplicate_producer",
+                    "variable": "f_xy",
+                    "producers": ["Paraboloid", "Other"],
+                }
+            },
+        )
+
+    def test_design_variable_as_tool_output_conflicts(self):
+        self.build_paraboloid()
+        response = self.client.post(
+            "/connections/output", json={"source": "Paraboloid", "target": "x"}
+        )
+        self.assertEqual(response.status_code, 409)
+        detail = response.json()["detail"]
+        self.assertEqual((detail["error"], detail["variable"]), ("role_conflict", "x"))
+        self.assertIn("kind 'state'", detail["message"])
+
+    def test_variable_that_is_input_and_output_of_a_tool_conflicts(self):
+        self.build_paraboloid()
+        response = self.client.post(
+            "/connections/input", json={"source": "f_xy", "target": "Paraboloid"}
+        )
+        self.assertEqual(response.status_code, 409)
+        detail = response.json()["detail"]
+        self.assertEqual(
+            (detail["error"], detail["variable"]), ("role_conflict", "f_xy")
+        )
+
+    def test_connection_bodies_are_strict(self):
+        for path in ("/connections/input", "/connections/output"):
+            for body in (
+                {"source": "a"},
+                {"source": "a", "target": "b", "weight": 1},
+            ):
+                with self.subTest(path=path, body=body):
+                    response = self.client.post(path, json=body)
+                    self.assertEqual(response.status_code, 422)
+
+
+class TestSharedValidationHandler(unittest.TestCase):
+    """Every service answers a body holding NaN with 422, not a 500."""
+
+    def setUp(self):
+        manager = GraphManager(graph=FakeGraph())
+        graph_app.dependency_overrides[get_graph_manager] = lambda: manager
+        self.addCleanup(graph_app.dependency_overrides.clear)
+        execution_app.state.schema_provider = None
+        execution_app.state.problem_pool = None
+
+    def post_raw(self, app, path, text):
+        return TestClient(app).post(
+            path, content=text, headers={"Content-Type": "application/json"}
+        )
+
+    def assert_unprocessable(self, response, error_type):
+        self.assertEqual(response.status_code, 422, response.text)
+        errors = response.json()["detail"]
+        self.assertIn(error_type, [error["type"] for error in errors])
+        for error in errors:
+            self.assertEqual(set(error), {"loc", "msg", "type"})
+
+    def test_graph_service_rejects_nan(self):
+        response = self.post_raw(
+            graph_app,
+            "/variables",
+            '{"kind": "range", "name": "x", "lower": NaN, "upper": 1.0}',
+        )
+        self.assert_unprocessable(response, "finite_number")
+
+    def test_execution_service_rejects_nan(self):
+        response = self.post_raw(
+            execution_app, "/evaluate", '{"inputs": {"x": 1.0}, "objectives": [NaN]}'
+        )
+        self.assert_unprocessable(response, "string_type")
+
+    def test_execution_service_rejects_a_nan_input_value(self):
+        response = self.post_raw(
+            execution_app,
+            "/evaluate",
+            '{"inputs": {"x": NaN}, "objectives": ["f_xy"]}',
+        )
+        self.assert_unprocessable(response, "finite_number")
+
+    def test_optimization_service_rejects_nan(self):
+        response = self.post_raw(
+            optimization_app,
+            "/optimize",
+            '{"objectives": [{"name": "f_xy"}], "n_steps": NaN}',
+        )
+        self.assert_unprocessable(response, "finite_number")
 
 
 class TestExecutionService(unittest.TestCase):
@@ -175,12 +573,7 @@ class TestExecutionService(unittest.TestCase):
 
             mock_resp = MagicMock()
             mock_resp.status_code = 200
-            mock_resp.json.return_value = {
-                "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
-                ],
-                "variables": [{"name": "x"}, {"name": "y"}],
-            }
+            mock_resp.json.return_value = PARABOLOID_PAYLOAD
             mock_resp.raise_for_status = MagicMock()
             mock_client.get.return_value = mock_resp
 
@@ -211,6 +604,55 @@ class TestExecutionService(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(mock_client.get.call_count, 2)
 
+    def test_evaluate_passes_non_numeric_fixed_values_to_the_tool(self):
+        from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
+
+        received = []
+
+        def tool(x, material, flag, count, rho):
+            received.append(
+                {"material": material, "flag": flag, "count": count, "rho": rho}
+            )
+            return x * rho * count
+
+        schema = StudySchema(
+            variables=[
+                RangeVar(name="x", lower=0.0, upper=1.0),
+                FixedParam(name="material", value="steel"),
+                FixedParam(name="flag", value=True),
+                FixedParam(name="count", value=3),
+                FixedParam(name="rho", value=1.225),
+                StateVar(name="f"),
+            ],
+            tools=[
+                ToolSpec(
+                    name="T",
+                    inputs=["x", "material", "flag", "count", "rho"],
+                    outputs=["f"],
+                )
+            ],
+        )
+        mock_client = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = schema.model_dump(mode="json")
+        mock_client.get.return_value = mock_resp
+        execution_app.state.schema_provider = SchemaProvider(mock_client)
+        execution_app.state.problem_pool = ProblemPool(TOOL_REGISTRY, size=1)
+
+        with patch.dict(TOOL_REGISTRY, {"T": tool}):
+            response = self.client.post(
+                "/evaluate", json={"inputs": {"x": 0.5}, "objectives": ["f"]}
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertAlmostEqual(response.json()["results"]["f"], 0.5 * 1.225 * 3)
+        expected = {"material": "steel", "flag": True, "count": 3, "rho": 1.225}
+        self.assertEqual(received, [expected])
+        self.assertEqual(
+            {name: type(value) for name, value in received[0].items()},
+            {name: type(value) for name, value in expected.items()},
+        )
+
     def test_evaluate_unknown_objective_input(self):
         from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
 
@@ -222,7 +664,7 @@ class TestExecutionService(unittest.TestCase):
             mock_client = AsyncMock()
             mock_resp = MagicMock()
             mock_resp.status_code = 200
-            mock_resp.json.return_value = {"tools": [], "variables": [{"name": "x"}]}
+            mock_resp.json.return_value = PARABOLOID_PAYLOAD
             mock_client.get.return_value = mock_resp
             execution_app.state.schema_provider = SchemaProvider(mock_client)
             execution_app.state.problem_pool = ProblemPool(TOOL_REGISTRY, size=1)
@@ -241,6 +683,7 @@ class TestExecutionService(unittest.TestCase):
                 json={"inputs": {"unknown_var": 1.0}, "objectives": ["f_xy"]},
             )
             self.assertEqual(response.status_code, 422)
+            self.assertIn("Unknown inputs", response.json()["detail"])
 
     def test_evaluate_payload_limits(self):
         # inputs > 100
@@ -291,12 +734,7 @@ class TestExecutionService(unittest.TestCase):
             mock_client = AsyncMock()
             mock_resp = MagicMock()
             mock_resp.status_code = 200
-            mock_resp.json.return_value = {
-                "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
-                ],
-                "variables": [{"name": "x"}, {"name": "y"}],
-            }
+            mock_resp.json.return_value = PARABOLOID_PAYLOAD
             mock_client.get.return_value = mock_resp
             execution_app.state.schema_provider = SchemaProvider(mock_client)
             execution_app.state.problem_pool = ProblemPool(TOOL_REGISTRY, size=1)
@@ -323,12 +761,7 @@ class TestExecutionService(unittest.TestCase):
             mock_client = AsyncMock()
             mock_resp = MagicMock()
             mock_resp.status_code = 200
-            mock_resp.json.return_value = {
-                "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
-                ],
-                "variables": [{"name": "x"}, {"name": "y"}],
-            }
+            mock_resp.json.return_value = PARABOLOID_PAYLOAD
             mock_client.get.return_value = mock_resp
             execution_app.state.schema_provider = SchemaProvider(mock_client)
             # Patch discard_instance to verify it's called
@@ -445,30 +878,45 @@ class TestExecutionService(unittest.TestCase):
         asyncio.run(test_timeout())
 
     def test_schema_envelope_invalid_format(self):
+        from pydantic import ValidationError
+
         from services.execution.main import SchemaEnvelope
 
-        with self.assertRaises(ValueError):
-            # Pass a type that causes TypeError during iteration
-            SchemaEnvelope(
-                {
-                    "variables": [{"name": "x"}],
-                    "tools": [{"name": "tool", "outputs": None}],
-                },
-            )
+        legacy = {
+            "variables": [{"name": "x"}],
+            "tools": [{"name": "tool", "outputs": None}],
+        }
+        with self.assertRaises(ValidationError):
+            SchemaEnvelope(StudySchema.model_validate(legacy), TOOL_REGISTRY)
 
-    def test_schema_envelope_dict_output(self):
+    def test_schema_provider_rejects_legacy_payload(self):
+        import asyncio
+
+        from services.execution.main import SchemaProvider
+
+        mock_client = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "variables": [{"name": "x"}],
+            "tools": [{"name": "tool", "inputs": ["x"], "outputs": []}],
+        }
+        mock_client.get.return_value = mock_resp
+        provider = SchemaProvider(mock_client)
+
+        with self.assertRaises(Exception) as context:
+            asyncio.run(provider.get_schema())
+        self.assertEqual(context.exception.status_code, 502)
+
+    def test_schema_envelope_exposes_typed_schema(self):
         from services.execution.main import SchemaEnvelope
 
-        # Covers line 109 dict objective mapping
-        env = SchemaEnvelope(
-            {
-                "variables": [{"name": "x"}],
-                "tools": [
-                    {"name": "tool", "outputs": [{"name": "obj1", "type": "float"}]}
-                ],
-            }
-        )
-        self.assertIn("obj1", env.known_objectives)
+        env = SchemaEnvelope(PARABOLOID_SCHEMA, TOOL_REGISTRY)
+        self.assertIs(env.schema, PARABOLOID_SCHEMA)
+        self.assertTrue(env.registry_report.valid)
+        self.assertEqual(env.known_vars, {"x", "y", "f_xy"})
+        self.assertEqual(env.known_objectives, {"f_xy"})
+        self.assertEqual(list(env.variable_specs), ["x", "y"])
+        self.assertEqual(env.hash, PARABOLOID_SCHEMA.content_hash())
 
     def test_to_float_integer(self):
         from services.execution.main import to_float
@@ -488,12 +936,7 @@ class TestExecutionService(unittest.TestCase):
             mock_client = AsyncMock()
             mock_resp = MagicMock()
             mock_resp.status_code = 200
-            mock_resp.json.return_value = {
-                "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
-                ],
-                "variables": [{"name": "x"}, {"name": "y"}],
-            }
+            mock_resp.json.return_value = PARABOLOID_PAYLOAD
             mock_client.get.return_value = mock_resp
             execution_app.state.schema_provider = SchemaProvider(mock_client)
 
@@ -520,7 +963,7 @@ class TestExecutionService(unittest.TestCase):
 
         mock_client = AsyncMock()
         provider = SchemaProvider(mock_client)
-        provider.envelope = SchemaEnvelope({"variables": [], "tools": []})
+        provider.envelope = SchemaEnvelope(StudySchema(), TOOL_REGISTRY)
         provider.expiry = 1e9  # Not expired initially
 
         async def test_run():
@@ -544,7 +987,7 @@ class TestExecutionService(unittest.TestCase):
         mock_client = AsyncMock()
         mock_client.get.side_effect = httpx.RequestError("Network error")
         provider = SchemaProvider(mock_client)
-        provider.envelope = SchemaEnvelope({"variables": [], "tools": []})
+        provider.envelope = SchemaEnvelope(StudySchema(), TOOL_REGISTRY)
         provider.expiry = 0  # force fetch
 
         async def test_run():
@@ -564,7 +1007,7 @@ class TestExecutionService(unittest.TestCase):
         mock_client.get.return_value = mock_resp
 
         provider = SchemaProvider(mock_client)
-        provider.envelope = SchemaEnvelope({"variables": [], "tools": []})
+        provider.envelope = SchemaEnvelope(StudySchema(), TOOL_REGISTRY)
         provider.expiry = 0  # force fetch
 
         async def test_run():
@@ -572,6 +1015,24 @@ class TestExecutionService(unittest.TestCase):
             self.assertEqual(res, provider.envelope)
 
         asyncio.run(test_run())
+
+    def test_schema_provider_legacy_payload_fallback(self):
+        import asyncio
+
+        from services.execution.main import SchemaEnvelope, SchemaProvider
+
+        mock_client = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"variables": [{"name": "x"}], "tools": []}
+        mock_client.get.return_value = mock_resp
+
+        provider = SchemaProvider(mock_client)
+        stale = SchemaEnvelope(PARABOLOID_SCHEMA, TOOL_REGISTRY)
+        provider.envelope = stale
+        provider.expiry = 0  # force fetch
+
+        res = asyncio.run(provider.get_schema())
+        self.assertIs(res, stale)
 
     def test_lifespan_initialization(self):
         import asyncio
@@ -584,6 +1045,99 @@ class TestExecutionService(unittest.TestCase):
                 self.assertIsNotNone(execution_app.state.problem_pool)
 
         asyncio.run(run_lifespan())
+
+
+class TestRegistryCheck(unittest.TestCase):
+    """The tool registry is checked once per schema version, before any problem."""
+
+    UNREGISTERED = StudySchema(
+        variables=PARABOLOID_SCHEMA.variables,
+        tools=[ToolSpec(name="Missing", inputs=["x", "y"], outputs=["f_xy"])],
+    )
+    MISMATCHED = StudySchema(
+        variables=[*PARABOLOID_SCHEMA.variables, RangeVar(name="z", lower=0, upper=1)],
+        tools=[ToolSpec(name="Paraboloid", inputs=["x", "y", "z"], outputs=["f_xy"])],
+    )
+    BODY = {"inputs": {"x": 1.0, "y": 2.0}, "objectives": ["f_xy"]}
+
+    def setUp(self):
+        from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
+
+        self.registry = TOOL_REGISTRY
+        self.mock_client = AsyncMock()
+        execution_app.state.schema_provider = SchemaProvider(self.mock_client)
+        execution_app.state.problem_pool = ProblemPool(TOOL_REGISTRY, size=1)
+        self.client = TestClient(execution_app)
+        for name in ("build_and_init", "execute_problem"):
+            patcher = patch(f"services.execution.main.{name}")
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+
+    def serve(self, schema):
+        response = MagicMock()
+        response.json.return_value = schema.model_dump(mode="json")
+        self.mock_client.get.return_value = response
+
+    def assert_schema_invalid(self, response, code, names):
+        self.assertEqual(response.status_code, 422, response.text)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["code"], "SCHEMA_INVALID")
+        self.assertFalse(detail["report"]["valid"])
+        finding = next(f for f in detail["report"]["errors"] if f["code"] == code)
+        self.assertEqual(finding["names"], names)
+        self.build_and_init.assert_not_called()
+        self.execute_problem.assert_not_called()
+
+    def test_unregistered_tool_is_rejected_before_any_problem_is_built(self):
+        self.serve(self.UNREGISTERED)
+
+        response = self.client.post("/evaluate", json=self.BODY)
+
+        self.assert_schema_invalid(response, "UNREGISTERED_TOOL", ["Missing"])
+
+    def test_signature_mismatch_is_rejected_before_any_problem_is_built(self):
+        self.serve(self.MISMATCHED)
+
+        response = self.client.post("/evaluate", json=self.BODY)
+
+        self.assert_schema_invalid(
+            response, "SIGNATURE_MISMATCH", ["Paraboloid", "x", "y", "z"]
+        )
+
+    def test_the_registry_is_checked_once_per_schema_version(self):
+        from mdo_framework.validation import validate_registry
+
+        self.serve(self.UNREGISTERED)
+
+        with patch(
+            "services.execution.main.validate_registry", wraps=validate_registry
+        ) as checked:
+            for _ in range(3):
+                self.client.post("/evaluate", json=self.BODY)
+
+        self.assertEqual(checked.call_count, 1)
+
+    def test_envelope_carries_the_registry_report(self):
+        from services.execution.main import SchemaEnvelope
+
+        valid = SchemaEnvelope(PARABOLOID_SCHEMA, self.registry)
+        invalid = SchemaEnvelope(self.UNREGISTERED, self.registry)
+
+        self.assertTrue(valid.registry_report.valid)
+        self.assertEqual(
+            [f.code for f in invalid.registry_report.errors], ["UNREGISTERED_TOOL"]
+        )
+
+    def test_provider_checks_the_schema_against_the_tool_registry(self):
+        import asyncio
+
+        self.serve(self.UNREGISTERED)
+        provider = execution_app.state.schema_provider
+        self.assertFalse(asyncio.run(provider.get_schema()).registry_report.valid)
+
+        with patch.dict(self.registry, {"Missing": self.registry["Paraboloid"]}):
+            provider.envelope = None
+            self.assertTrue(asyncio.run(provider.get_schema()).registry_report.valid)
 
 
 class TestProblemPool(unittest.TestCase):
@@ -622,14 +1176,7 @@ class TestProblemPool(unittest.TestCase):
 
         from services.execution.main import SchemaEnvelope
 
-        envelope = SchemaEnvelope(
-            {
-                "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
-                ],
-                "variables": [{"name": "x"}, {"name": "y"}],
-            },
-        )
+        envelope = SchemaEnvelope(PARABOLOID_SCHEMA, self.registry)
         self.pool.current_hash = envelope.hash
 
         async def run_test():
@@ -662,10 +1209,14 @@ class TestProblemPool(unittest.TestCase):
         from services.execution.main import SchemaEnvelope
 
         envelope = SchemaEnvelope(
-            {
-                "tools": [{"name": "MissingTool", "inputs": ["x"], "outputs": ["y"]}],
-                "variables": [{"name": "x"}],
-            },
+            StudySchema(
+                variables=[
+                    RangeVar(name="x", lower=-10.0, upper=10.0),
+                    StateVar(name="y"),
+                ],
+                tools=[ToolSpec(name="MissingTool", inputs=["x"], outputs=["y"])],
+            ),
+            self.registry,
         )
 
         async def run_test():
@@ -684,14 +1235,7 @@ class TestProblemPool(unittest.TestCase):
 
         from services.execution.main import SchemaEnvelope
 
-        envelope = SchemaEnvelope(
-            {
-                "tools": [
-                    {"name": "Paraboloid", "inputs": ["x", "y"], "outputs": ["f_xy"]},
-                ],
-                "variables": [{"name": "x"}, {"name": "y"}],
-            },
-        )
+        envelope = SchemaEnvelope(PARABOLOID_SCHEMA, self.registry)
 
         async def run_test():
             # Simply patch the get_instance logic to simulate a timeout directly
@@ -751,7 +1295,7 @@ class TestProblemPool(unittest.TestCase):
                 side_effect=Exception("Failed Init"),
             ):
                 # This should catch the exception and log instead of crashing
-                await self.pool._replenish_one("hash1", {"tools": []})
+                await self.pool._replenish_one("hash1", StudySchema())
 
         asyncio.run(run_test())
 
@@ -763,7 +1307,7 @@ class TestOptimizationService(unittest.TestCase):
 
         # Default mock response for schema fetch
         self.mock_resp = MagicMock()
-        self.mock_resp.json.return_value = {"tools": [], "variables": []}
+        self.mock_resp.json.return_value = StudySchema().model_dump(mode="json")
         self.mock_client.get.return_value = self.mock_resp
 
         self.client = TestClient(optimization_app)
@@ -772,31 +1316,10 @@ class TestOptimizationService(unittest.TestCase):
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
     def test_optimize(self, mock_resolve, mock_optimize):
         mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "variables": [
-                {
-                    "name": "x",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-                {
-                    "name": "y",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-            ],
-            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        }
+        mock_resp.json.return_value = SERVICE_PAYLOAD
 
         self.mock_client.get.return_value = mock_resp
-        mock_resolve.return_value = (
-            ["x", "y"],
-            [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        )
+        mock_resolve.return_value = SERVICE_RESOLVED
 
         # Mock result of optimization
         mock_optimize.return_value = {
@@ -827,26 +1350,8 @@ class TestOptimizationService(unittest.TestCase):
     def test_optimize_tensor_conversion(self, mock_resolve, mock_optimize):
         import torch
 
-        self.mock_resp.json.return_value = {
-            "variables": [
-                {
-                    "name": "x",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-                {
-                    "name": "y",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-            ],
-            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        }
-        mock_resolve.return_value = (["x", "y"], [])
+        self.mock_resp.json.return_value = SERVICE_PAYLOAD
+        mock_resolve.return_value = SERVICE_RESOLVED
 
         # Mock result of optimization
         mock_optimize.return_value = {
@@ -873,31 +1378,10 @@ class TestOptimizationService(unittest.TestCase):
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
     def test_optimize_exception(self, mock_resolve, mock_optimize):
         mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "variables": [
-                {
-                    "name": "x",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-                {
-                    "name": "y",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-            ],
-            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        }
+        mock_resp.json.return_value = SERVICE_PAYLOAD
 
         optimization_app.state.client.get.return_value = mock_resp
-        mock_resolve.return_value = (
-            ["x", "y"],
-            [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        )
+        mock_resolve.return_value = SERVICE_RESOLVED
 
         # Mock result of optimization
         mock_optimize.side_effect = Exception("Optimization Failed")
@@ -916,26 +1400,8 @@ class TestOptimizationService(unittest.TestCase):
     def test_optimize_tensor_conversion_nested(self, mock_resolve, mock_optimize):
         import numpy as np
 
-        self.mock_resp.json.return_value = {
-            "variables": [
-                {
-                    "name": "x",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-                {
-                    "name": "y",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-            ],
-            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        }
-        mock_resolve.return_value = (["x", "y"], [])
+        self.mock_resp.json.return_value = SERVICE_PAYLOAD
+        mock_resolve.return_value = SERVICE_RESOLVED
 
         # Mock result of optimization
         mock_optimize.return_value = {
@@ -958,14 +1424,14 @@ class TestOptimizationService(unittest.TestCase):
         response = self.client.post("/optimize", json=payload)
         self.assertEqual(response.status_code, 200)
 
-    def test_optimize_invalid_payload(self):
+    def test_optimize_requires_an_objective(self):
         payload = {
             "objectives": [],
             "n_steps": 1,
             "n_init": 1,
         }
         response = self.client.post("/optimize", json=payload)
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 422)
 
     def test_optimize_tensor_lists(self):
         # A simple check for the internal to_list method inside optimize route
@@ -976,31 +1442,10 @@ class TestOptimizationService(unittest.TestCase):
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
     def test_optimize_exception2(self, mock_resolve, mock_init):
         mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "variables": [
-                {
-                    "name": "x",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-                {
-                    "name": "y",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-            ],
-            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        }
+        mock_resp.json.return_value = SERVICE_PAYLOAD
 
         optimization_app.state.client.get.return_value = mock_resp
-        mock_resolve.return_value = (
-            ["x", "y"],
-            [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        )
+        mock_resolve.return_value = SERVICE_RESOLVED
 
         # Mock result of optimization
         mock_init.side_effect = Exception("Initialization Failed")
@@ -1017,26 +1462,8 @@ class TestOptimizationService(unittest.TestCase):
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
     def test_optimize_with_constraints_service(self, mock_resolve, mock_optimize):
-        self.mock_resp.json.return_value = {
-            "variables": [
-                {
-                    "name": "x",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-                {
-                    "name": "y",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-            ],
-            "tools": [{"name": "ToolA", "inputs": ["x", "y"], "outputs": ["f_xy"]}],
-        }
-        mock_resolve.return_value = (["x", "y"], [])
+        self.mock_resp.json.return_value = SERVICE_PAYLOAD
+        mock_resolve.return_value = SERVICE_RESOLVED
 
         mock_optimize.return_value = {
             "best_parameters": {"x": 0.5, "y": 0.5},
@@ -1053,6 +1480,267 @@ class TestOptimizationService(unittest.TestCase):
 
         response = self.client.post("/optimize", json=payload)
         self.assertEqual(response.status_code, 200)
+
+
+class TestStudyPreflight(unittest.TestCase):
+    """``/validate`` and the 422 preflight of ``/optimize``."""
+
+    VALID_BODY = {
+        "objectives": [{"name": "f_xy"}],
+        "constraints": [{"name": "g_xy", "bound": 0.0}],
+        "parameter_constraints": ["x + y <= 1.5"],
+        "n_steps": 1,
+        "n_init": 1,
+    }
+    INVALID_STUDIES = {
+        "unknown objective": (
+            {"objectives": [{"name": "missing"}]},
+            "UNKNOWN_OUTPUT",
+        ),
+        "unusable parameter constraint": (
+            {"objectives": [{"name": "f_xy"}], "parameter_constraints": ["x + z <= 1"]},
+            "PARAMETER_CONSTRAINT_INVALID",
+        ),
+        "constraint on a design variable": (
+            {
+                "objectives": [{"name": "f_xy"}],
+                "constraints": [{"name": "x", "bound": 0.5}],
+            },
+            "NOT_PRODUCED",
+        ),
+    }
+
+    def setUp(self):
+        self.mock_client = AsyncMock()
+        optimization_app.state.client = self.mock_client
+        self.serve(SERVICE_PAYLOAD)
+        self.client = TestClient(optimization_app)
+        for target in ("RemoteEvaluator", "BayesianOptimizer"):
+            patcher = patch(f"services.optimization.main.{target}")
+            setattr(self, target, patcher.start())
+            self.addCleanup(patcher.stop)
+
+    def serve(self, payload):
+        response = MagicMock()
+        response.json.return_value = payload
+        self.mock_client.get.return_value = response
+
+    def assert_nothing_ran(self):
+        self.RemoteEvaluator.assert_not_called()
+        self.BayesianOptimizer.assert_not_called()
+
+    def test_validate_accepts_a_valid_study(self):
+        response = self.client.post("/validate", json=self.VALID_BODY)
+
+        self.assertEqual(response.status_code, 200)
+        report = response.json()
+        self.assertTrue(report["valid"])
+        self.assertEqual(report["errors"], [])
+        self.assert_nothing_ran()
+
+    def test_validate_reports_an_invalid_study_with_status_200(self):
+        for label, (body, code) in self.INVALID_STUDIES.items():
+            with self.subTest(label):
+                response = self.client.post("/validate", json=body)
+
+                self.assertEqual(response.status_code, 200)
+                report = response.json()
+                self.assertFalse(report["valid"])
+                self.assertIn(code, [item["code"] for item in report["errors"]])
+        self.assert_nothing_ran()
+
+    def test_validate_accepts_a_study_with_non_numeric_fixed_parameters(self):
+        self.serve(
+            StudySchema(
+                variables=[
+                    *SERVICE_VARIABLES,
+                    FixedParam(name="material", value="steel"),
+                    FixedParam(name="flag", value=True),
+                    StateVar(name="f_xy"),
+                ],
+                tools=[
+                    ToolSpec(
+                        name="ToolA",
+                        inputs=["x", "y", "material", "flag"],
+                        outputs=["f_xy"],
+                    )
+                ],
+            ).model_dump(mode="json")
+        )
+
+        response = self.client.post(
+            "/validate", json={"objectives": [{"name": "f_xy"}]}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["valid"])
+
+    def test_validate_reports_a_schema_that_does_not_parse(self):
+        payloads = {
+            "legacy node without a kind": (
+                {"variables": [{"name": "x"}], "tools": []},
+                "SCHEMA_INVALID",
+            ),
+            "duplicate variable": (
+                {
+                    "variables": [
+                        {"kind": "state", "name": "f"},
+                        {"kind": "state", "name": "f"},
+                    ]
+                },
+                "DUPLICATE_NAME",
+            ),
+        }
+        for label, (payload, code) in payloads.items():
+            with self.subTest(label):
+                self.serve(payload)
+
+                response = self.client.post("/validate", json=self.VALID_BODY)
+
+                self.assertEqual(response.status_code, 200)
+                report = response.json()
+                self.assertFalse(report["valid"])
+                self.assertIn(code, [item["code"] for item in report["errors"]])
+
+    def test_validate_is_bad_gateway_when_the_graph_service_is_down(self):
+        self.mock_client.get.side_effect = httpx.ConnectError("graph service down")
+
+        response = self.client.post("/validate", json=self.VALID_BODY)
+
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("Failed to fetch graph schema", response.json()["detail"])
+
+    def test_validate_takes_the_body_of_optimize(self):
+        response = self.client.post("/validate", json={"objectives": []})
+
+        self.assertEqual(response.status_code, 422)
+
+    def test_optimize_rejects_an_invalid_study_before_running_anything(self):
+        for label, (body, code) in self.INVALID_STUDIES.items():
+            with self.subTest(label):
+                response = self.client.post("/optimize", json=body)
+
+                self.assertEqual(response.status_code, 422)
+                report = response.json()["detail"]
+                self.assertEqual(
+                    report, self.client.post("/validate", json=body).json()
+                )
+                self.assertIn(code, [item["code"] for item in report["errors"]])
+        self.assert_nothing_ran()
+
+    def test_optimize_rejects_a_schema_that_does_not_parse(self):
+        self.serve({"variables": [{"name": "x"}], "tools": []})
+
+        response = self.client.post("/optimize", json=self.VALID_BODY)
+
+        self.assertEqual(response.status_code, 422)
+        codes = [item["code"] for item in response.json()["detail"]["errors"]]
+        self.assertIn("SCHEMA_INVALID", codes)
+        self.assert_nothing_ran()
+
+    def test_optimize_is_bad_gateway_when_the_graph_service_is_down(self):
+        self.mock_client.get.side_effect = httpx.ConnectError("graph service down")
+
+        response = self.client.post("/optimize", json=self.VALID_BODY)
+
+        self.assertEqual(response.status_code, 502)
+        self.assert_nothing_ran()
+
+    def test_every_upstream_failure_is_a_bad_gateway(self):
+        request = httpx.Request("GET", "http://graph/schema")
+        status_error = httpx.HTTPStatusError(
+            "Server error", request=request, response=httpx.Response(500)
+        )
+        not_json = json.JSONDecodeError("Expecting value", "<html>", 0)
+
+        def fail_get(error):
+            self.mock_client.get.side_effect = error
+
+        def fail_status(response):
+            response.raise_for_status.side_effect = status_error
+
+        def fail_json(response):
+            response.json.side_effect = not_json
+
+        cases = {
+            "timeout": lambda response: fail_get(httpx.ReadTimeout("slow")),
+            "connection error": lambda response: fail_get(httpx.ConnectError("down")),
+            "non-2xx status": fail_status,
+            "2xx body that is not JSON": fail_json,
+        }
+        for path in ("/validate", "/optimize"):
+            for label, break_upstream in cases.items():
+                with self.subTest(path=path, upstream=label):
+                    response = MagicMock()
+                    self.mock_client.get.side_effect = None
+                    self.mock_client.get.return_value = response
+                    break_upstream(response)
+
+                    result = self.client.post(path, json=self.VALID_BODY)
+
+                    self.assertEqual(result.status_code, 502, result.text)
+                    self.assertIn("graph", result.json()["detail"].lower())
+        self.assert_nothing_ran()
+
+    def test_json_that_is_not_a_study_is_reported_not_a_bad_gateway(self):
+        self.serve({"variables": "not a list"})
+
+        validated = self.client.post("/validate", json=self.VALID_BODY)
+        optimized = self.client.post("/optimize", json=self.VALID_BODY)
+
+        self.assertEqual(validated.status_code, 200)
+        self.assertFalse(validated.json()["valid"])
+        self.assertEqual(optimized.status_code, 422)
+        self.assertEqual(optimized.json()["detail"], validated.json())
+        self.assert_nothing_ran()
+
+    def test_optimize_rejects_non_finite_numbers_and_bad_names(self):
+        bodies = {
+            "NaN constraint bound": (
+                '{"objectives": [{"name": "f_xy"}],'
+                ' "constraints": [{"name": "g_xy", "bound": NaN}]}'
+            ),
+            "infinite constraint bound": (
+                '{"objectives": [{"name": "f_xy"}],'
+                ' "constraints": [{"name": "g_xy", "bound": Infinity}]}'
+            ),
+            "NaN objective threshold": (
+                '{"objectives": [{"name": "f_xy", "threshold": NaN}]}'
+            ),
+            "objective name that is not an identifier": (
+                '{"objectives": [{"name": "1f"}]}'
+            ),
+        }
+        for path in ("/optimize", "/validate"):
+            for label, text in bodies.items():
+                with self.subTest(path=path, body=label):
+                    response = self.client.post(
+                        path,
+                        content=text,
+                        headers={"Content-Type": "application/json"},
+                    )
+
+                    self.assertEqual(response.status_code, 422, response.text)
+                    self.assertIsInstance(response.json()["detail"], list)
+        self.assert_nothing_ran()
+
+    def test_optimize_runs_a_valid_study(self):
+        self.BayesianOptimizer.return_value.optimize.return_value = {
+            "best_parameters": {"x": 0.5, "y": 0.5},
+            "best_objectives": {"f_xy": 0.0},
+            "history": [],
+        }
+
+        response = self.client.post("/optimize", json=self.VALID_BODY)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["best_parameters"], {"x": 0.5, "y": 0.5})
+        arguments = self.BayesianOptimizer.call_args.kwargs
+        self.assertEqual(arguments["objectives"], [{"name": "f_xy", "minimize": True}])
+        self.assertEqual(
+            arguments["constraints"], [{"name": "g_xy", "bound": 0.0, "op": "<="}]
+        )
+        self.assertEqual(arguments["parameter_constraints"], ["x + y <= 1.5"])
 
 
 class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
@@ -1115,44 +1803,34 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
         client = TestClient(optimization_app)
 
         payload = {
-            "objectives": [{"name": "obj1"}],
+            "objectives": [{"name": "f_xy"}],
             "n_steps": 1,
             "n_init": 1,
         }
 
         # 1. Fetch schema failure (502)
-        mock_client.get.side_effect = Exception("Network down")
+        mock_client.get.side_effect = httpx.ConnectError("Network down")
         response = client.post("/optimize", json=payload)
         self.assertEqual(response.status_code, 502)
         mock_client.get.side_effect = None
 
-        # 2. Dependency resolution failure (400)
+        # 2. Dependency resolution failure (422 with the report)
         mock_resp = MagicMock()
-        mock_resp.json.return_value = {"variables": [], "tools": []}
+        mock_resp.json.return_value = SERVICE_PAYLOAD
         mock_client.get.return_value = mock_resp
-        mock_resolve.side_effect = ValueError("Unresolved dep")
+        mock_resolve.side_effect = StudyValidationError(
+            ValidationReport(
+                errors=(Finding(code="NOT_PRODUCED", message="'f_xy' has no producer"),)
+            )
+        )
 
         response = client.post("/optimize", json=payload)
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["detail"]["errors"][0]["code"], "NOT_PRODUCED")
         mock_resolve.side_effect = None
+        mock_resolve.return_value = SERVICE_RESOLVED
 
-        # 3. No design variables found (400)
-        mock_resolve.return_value = ([], [])
-        response = client.post("/optimize", json=payload)
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("No independent design variables", response.json()["detail"])
-
-        # 4. Extract parameters failure (400)
-        mock_resolve.return_value = (["x"], [])
-        with patch(
-            "mdo_framework.core.topology.TopologicalAnalyzer.extract_parameters",
-            return_value=None,
-        ):
-            response = client.post("/optimize", json=payload)
-            self.assertEqual(response.status_code, 400)
-            self.assertIn("Failed to extract parameter", response.json()["detail"])
-
-        # 5. Catch-all Internal Server Error (500)
+        # 3. Catch-all Internal Server Error (500)
         # Hit via to_jsonable or return block by returning None from optimize
         with (
             patch(
@@ -1160,9 +1838,8 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
                 return_value=[
                     {
                         "name": "x",
-                        "param_type": "range",
-                        "lower": 0.0,
-                        "upper": 1.0,
+                        "type": "range",
+                        "bounds": [0.0, 1.0],
                         "value_type": "float",
                     },
                 ],
@@ -1176,6 +1853,22 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 500)
             self.assertIn("Optimization failed", response.json()["detail"])
 
+    async def test_optimize_resolves_real_dependencies(self):
+        mock_client = AsyncMock()
+        optimization_app.state.client = mock_client
+        client = TestClient(optimization_app)
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = SERVICE_PAYLOAD
+        mock_client.get.return_value = mock_resp
+
+        payload = {"objectives": [{"name": "unknown"}], "n_steps": 1, "n_init": 1}
+        response = client.post("/optimize", json=payload)
+
+        self.assertEqual(response.status_code, 422)
+        codes = [item["code"] for item in response.json()["detail"]["errors"]]
+        self.assertIn("UNKNOWN_OUTPUT", codes)
+
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
     async def test_optimize_exception_mapping(self, mock_resolve):
         mock_client = AsyncMock()
@@ -1183,20 +1876,9 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
         client = TestClient(optimization_app)
 
         mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "variables": [
-                {
-                    "name": "x",
-                    "param_type": "range",
-                    "lower": 0.0,
-                    "upper": 1.0,
-                    "value_type": "float",
-                },
-            ],
-            "tools": [{"name": "ToolA", "inputs": ["x"], "outputs": ["f_xy"]}],
-        }
+        mock_resp.json.return_value = SERVICE_PAYLOAD
         mock_client.get.return_value = mock_resp
-        mock_resolve.return_value = (["x"], [])
+        mock_resolve.return_value = SERVICE_RESOLVED
 
         payload = {
             "objectives": [{"name": "f_xy"}],

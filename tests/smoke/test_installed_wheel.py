@@ -5,6 +5,7 @@ from importlib.metadata import version
 from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.core.translator import GraphProblemBuilder
 from mdo_framework.optimization.optimizer import BayesianOptimizer
+from mdo_framework.schema import RangeVar, StateVar, StudySchema, ToolSpec
 
 
 def test_installed_wheel_runs_a_real_optimization(tmp_path, monkeypatch) -> None:
@@ -18,30 +19,17 @@ def test_installed_wheel_runs_a_real_optimization(tmp_path, monkeypatch) -> None
             "c_xy": x - y,
         }
 
-    schema = {
-        "tools": [
-            {
-                "name": "P",
-                "fidelity": "high",
-                "inputs": ["x", "y"],
-                "outputs": ["f_xy", "c_xy"],
-            }
+    schema = StudySchema(
+        variables=[
+            *(RangeVar(name=name, lower=-10.0, upper=10.0) for name in ("x", "y")),
+            *(StateVar(name=name) for name in ("f_xy", "c_xy")),
         ],
-        "variables": [
-            {
-                "name": name,
-                "lower": -10.0,
-                "upper": 10.0,
-                "param_type": "continuous",
-                "value_type": "float",
-            }
-            for name in ("x", "y")
-        ]
-        + [{"name": name} for name in ("f_xy", "c_xy")],
-    }
-    problem = GraphProblemBuilder(schema).build_problem({"P": paraboloid})
+        tools=[ToolSpec(name="P", inputs=["x", "y"], outputs=["f_xy", "c_xy"])],
+    )
+    builder = GraphProblemBuilder(schema)
+    problem = builder.build_problem({"P": paraboloid})
     optimizer = BayesianOptimizer(
-        LocalEvaluator(problem),
+        LocalEvaluator(problem, builder.variable_specs),
         [
             {"name": name, "type": "range", "bounds": [-10.0, 10.0]}
             for name in ("x", "y")

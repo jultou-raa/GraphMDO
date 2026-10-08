@@ -10,6 +10,7 @@ import httpx
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 import services.execution.main as execution
 from mdo_framework.core.components import ToolComponent, to_tool_value
@@ -17,33 +18,27 @@ from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.core.topology import TopologicalAnalyzer
 from mdo_framework.core.translator import GraphProblemBuilder
 from mdo_framework.optimization.parameter_codec import ParameterValueError
+from mdo_framework.schema import (
+    ChoiceVar,
+    RangeVar,
+    StateVar,
+    StudySchema,
+    ToolSpec,
+)
 
-FLOAT_OUT = {"param_type": "continuous", "value_type": "float"}
-GEARBOX_VARIABLES = [
-    {"name": "x", "lower": 0.0, "upper": 1.0, **FLOAT_OUT},
-    {
-        "name": "gear",
-        "param_type": "choice",
-        "choices": [10, 20, 30],
-        "value_type": "int",
-    },
-    {"name": "n", "lower": 1, "upper": 5, "param_type": "range", "value_type": "int"},
-    {
-        "name": "material",
-        "param_type": "choice",
-        "choices": ["aluminum", "composite"],
-        "value_type": "str",
-    },
-]
+GEARBOX_SCHEMA = StudySchema(
+    variables=[
+        RangeVar(name="x", lower=0.0, upper=1.0),
+        ChoiceVar(name="gear", choices=[10, 20, 30]),
+        RangeVar(name="n", lower=1, upper=5, value_type="int"),
+        ChoiceVar(name="material", choices=["aluminum", "composite"]),
+        StateVar(name="f"),
+    ],
+    tools=[
+        ToolSpec(name="T", inputs=["x", "gear", "n", "material"], outputs=["f"]),
+    ],
+)
 DENSITY = {"aluminum": 0.2, "composite": 0.1}
-
-
-def gearbox_schema(names: list[str]) -> dict:
-    variables = [v for v in GEARBOX_VARIABLES if v["name"] in names]
-    return {
-        "tools": [{"name": "T", "fidelity": "high", "inputs": names, "outputs": ["f"]}],
-        "variables": variables + [{"name": "f", **FLOAT_OUT}],
-    }
 
 
 class RecordingTool:
@@ -57,13 +52,12 @@ class RecordingTool:
 
 
 def build_local(tool):
-    names = [v["name"] for v in GEARBOX_VARIABLES]
-    schema = gearbox_schema(names)
-    analyzer = TopologicalAnalyzer(schema)
-    parameters = analyzer.extract_parameters(analyzer.resolve_dependencies(["f"])[0])
-    builder = GraphProblemBuilder(schema)
+    analyzer = TopologicalAnalyzer(GEARBOX_SCHEMA)
+    resolved = analyzer.resolve_dependencies(["f"])
+    parameters = analyzer.extract_parameters(resolved.design_variables)
+    builder = GraphProblemBuilder(GEARBOX_SCHEMA)
     mda = builder.build_problem({"T": tool})
-    return schema, parameters, LocalEvaluator(mda, builder.variable_specs)
+    return GEARBOX_SCHEMA, parameters, LocalEvaluator(mda, builder.variable_specs)
 
 
 def test_to_tool_value_decodes_specs():
@@ -101,11 +95,19 @@ def test_tool_component_receives_declared_values():
     assert type(received["n"]) is int
 
 
-def test_builder_rejects_undeclared_choice_default():
-    schema = gearbox_schema(["gear"])
-    schema["variables"][0] = {**schema["variables"][0], "value": 15}
-    with pytest.raises(ParameterValueError):
-        GraphProblemBuilder(schema).build_problem({"T": lambda gear: gear})
+def test_choice_initial_must_be_declared_and_is_not_a_default():
+    with pytest.raises(ValidationError, match="initial"):
+        ChoiceVar(name="gear", choices=[10, 20, 30], initial=15)
+
+    schema = StudySchema(
+        variables=[
+            ChoiceVar(name="gear", choices=[10, 20, 30], initial=20),
+            StateVar(name="f"),
+        ],
+        tools=[ToolSpec(name="T", inputs=["gear"], outputs=["f"])],
+    )
+    mda = GraphProblemBuilder(schema).build_problem({"T": lambda gear: gear})
+    assert "gear" not in mda.default_input_data
 
 
 def test_local_and_execution_service_pass_identical_tool_inputs(monkeypatch):
@@ -114,7 +116,8 @@ def test_local_and_execution_service_pass_identical_tool_inputs(monkeypatch):
     remote_tool = RecordingTool()
     registry = {"T": remote_tool}
     monkeypatch.setattr(execution, "TOOL_REGISTRY", registry)
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=schema))
+    payload = schema.model_dump(mode="json")
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
 
     point = {"x": 0.25, "gear": 30, "n": 4, "material": "composite"}
     local_f = evaluator.evaluate(point, ["f"])["f"]

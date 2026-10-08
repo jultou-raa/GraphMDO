@@ -2,6 +2,7 @@ from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.core.translator import GraphProblemBuilder
 from mdo_framework.db.graph_manager import GraphManager
 from mdo_framework.optimization.optimizer import BayesianOptimizer
+from mdo_framework.schema import RangeVar, StateVar, ToolNode
 
 
 # --- Sellar Problem Functions ---
@@ -30,13 +31,13 @@ def main():
 
     # 2. Populate Graph (Paraboloid Problem)
     # Variables
-    gm.add_variable("x", lower=-10.0, upper=10.0)
-    gm.add_variable("y", lower=-10.0, upper=10.0)
-    gm.add_variable("f_xy")
-    gm.add_variable("c_xy")
+    gm.add_variable(RangeVar(name="x", lower=-10.0, upper=10.0))
+    gm.add_variable(RangeVar(name="y", lower=-10.0, upper=10.0))
+    gm.add_variable(StateVar(name="f_xy"))
+    gm.add_variable(StateVar(name="c_xy"))
 
     # Tool
-    gm.add_tool("Paraboloid")
+    gm.add_tool(ToolNode(name="Paraboloid"))
 
     # Connections
     # Input -> Tool
@@ -53,7 +54,8 @@ def main():
 
     # 3. Translate to GEMSEO
     print("Translating Graph to GEMSEO OptimizationProblem...")
-    builder = GraphProblemBuilder(gm.get_graph_schema())
+    schema = gm.get_study_schema()
+    builder = GraphProblemBuilder(schema)
 
     try:
         prob = builder.build_problem(TOOL_REGISTRY)
@@ -66,11 +68,9 @@ def main():
 
     from mdo_framework.core.topology import TopologicalAnalyzer
 
-    schema = gm.get_graph_schema()
-
     analyzer = TopologicalAnalyzer(schema)
-    design_vars, _ = analyzer.resolve_dependencies(["f_xy"])
-    parameters = analyzer.extract_parameters(design_vars)
+    resolved = analyzer.resolve_dependencies(["f_xy", "c_xy"])
+    parameters = analyzer.extract_parameters(resolved.design_variables)
 
     evaluator = LocalEvaluator(prob, builder.variable_specs)
 

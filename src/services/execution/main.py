@@ -5,12 +5,10 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
 import asyncio
-import hashlib
-import json
 import logging
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any, TypeAlias
 
@@ -22,6 +20,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from mdo_framework.core.topology import build_variable_specs
 from mdo_framework.core.translator import GraphProblemBuilder, encode_tool_inputs
+from mdo_framework.schema import MAX_NAME_LENGTH, Scalar, StudySchema
+from mdo_framework.validation import validate_registry
+from services.errors import register_validation_handler
 
 # Configure logging
 logger = logging.getLogger("uvicorn.error")
@@ -56,7 +57,7 @@ def paraboloid_func(x: float, y: float) -> float:
 
 
 def build_and_init(
-    schema: dict[str, Any],
+    schema: StudySchema,
     registry: dict[str, Callable[..., Any]],
 ) -> Any:
     """Instantiates builder and creates problem in a worker thread."""
@@ -87,35 +88,19 @@ def to_float(val: Any) -> float:
 # --- Tool Registry ---
 ToolRegistry: TypeAlias = dict[str, Callable[..., Any]]
 TOOL_REGISTRY: ToolRegistry = {"Paraboloid": paraboloid_func}
-InputScalar: TypeAlias = bool | int | float | str
 
 
 # --- Domain Models ---
 class SchemaEnvelope:
-    """Wraps raw schema data with pre-parsed metadata and hashing."""
+    """Wraps a study schema with pre-computed metadata and its content hash."""
 
-    def __init__(self, raw_data: dict[str, Any]):
-        self.data = raw_data
-        try:
-            variables = raw_data.get("variables", [])
-            self.known_vars = {v["name"] for v in variables}
-            self.variable_specs = build_variable_specs(raw_data)
-
-            self.known_objectives: set[str] = set()
-            for tool in raw_data.get("tools", []):
-                for out in tool.get("outputs", []):
-                    if isinstance(out, dict):
-                        self.known_objectives.add(out["name"])
-                    else:
-                        self.known_objectives.add(str(out))
-        except (KeyError, TypeError) as e:
-            logger.error("Failed to parse schema structure.", exc_info=True)
-            raise ValueError("Schema format is invalid.") from e
-
-        # Stable hash for memoization
-        # Note: In production, consider using a faster/more stable serializer like orjson
-        serialized = json.dumps(raw_data, sort_keys=True)
-        self.hash = hashlib.sha256(serialized.encode()).hexdigest()
+    def __init__(self, schema: StudySchema, registry: Mapping[str, Callable[..., Any]]):
+        self.schema = schema
+        self.known_vars = {variable.name for variable in schema.variables}
+        self.variable_specs = build_variable_specs(schema)
+        self.known_objectives = set(schema.producers())
+        self.hash = schema.content_hash()
+        self.registry_report = validate_registry(schema, registry)
 
 
 # --- Providers ---
@@ -158,7 +143,9 @@ class SchemaProvider:
             try:
                 resp = await self.client.get(f"{GRAPH_SERVICE_URL}/schema")
                 resp.raise_for_status()
-                self.envelope = SchemaEnvelope(resp.json())
+                self.envelope = SchemaEnvelope(
+                    StudySchema.model_validate(resp.json()), TOOL_REGISTRY
+                )
                 self.expiry = current_time + CACHE_TTL
             except (httpx.RequestError, httpx.HTTPStatusError):
                 if self.envelope is not None:
@@ -174,7 +161,7 @@ class SchemaProvider:
                         detail="Graph Service unavailable.",
                     )
             except ValueError:
-                # Malformed schema data
+                # Malformed JSON or a payload that is not a valid StudySchema
                 logger.error("Graph Service returned an invalid schema.", exc_info=True)
                 if self.envelope is not None:
                     self.expiry = current_time + CACHE_BACKOFF
@@ -222,10 +209,10 @@ class ProblemPool:
             except asyncio.QueueEmpty:
                 break
 
-    async def _replenish_one(self, schema_hash: str, schema_data: dict[str, Any]):
+    async def _replenish_one(self, schema_hash: str, schema: StudySchema):
         """Builds one replacement instance if the schema hasn't changed."""
         try:
-            inst = await asyncio.to_thread(build_and_init, schema_data, self.registry)
+            inst = await asyncio.to_thread(build_and_init, schema, self.registry)
             async with self.lock:
                 if self.current_hash == schema_hash:
                     await self.pool.put(inst)
@@ -238,7 +225,7 @@ class ProblemPool:
         if hasattr(instance, "cleanup"):
             await asyncio.to_thread(instance.cleanup)
 
-        task = asyncio.create_task(self._replenish_one(envelope.hash, envelope.data))
+        task = asyncio.create_task(self._replenish_one(envelope.hash, envelope.schema))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
@@ -255,7 +242,7 @@ class ProblemPool:
                 # This could be slow if build_and_init is expensive, but it's a deliberate
                 # serialization point to prevent concurrent rebuilds.
                 tasks = [
-                    asyncio.to_thread(build_and_init, envelope.data, self.registry)
+                    asyncio.to_thread(build_and_init, envelope.schema, self.registry)
                     for _ in range(self.size)
                 ]
 
@@ -310,21 +297,22 @@ async def get_problem_pool(request: Request) -> ProblemPool:
 
 # --- Request Models ---
 class EvaluateRequest(BaseModel):
-    inputs: dict[str, InputScalar]
+    inputs: dict[str, Scalar]
     objectives: list[str] = Field(..., min_length=1)
 
     @field_validator("inputs")
     @classmethod
-    def validate_inputs(cls, v: dict[str, InputScalar]) -> dict[str, InputScalar]:
+    def validate_inputs(cls, v: dict[str, Scalar]) -> dict[str, Scalar]:
         if not v:
             raise ValueError("At least one input is required.")
         if len(v) > 100:
             raise ValueError("Too many inputs (max 100 allowed).")
         for key in v:
-            if len(key) > 50:
+            if len(key) > MAX_NAME_LENGTH:
                 preview = key[:20]
                 raise ValueError(
-                    f"Input key '{preview}...' exceeds maximum length of 50.",
+                    f"Input key '{preview}...' exceeds maximum length of "
+                    f"{MAX_NAME_LENGTH}.",
                 )
         return v
 
@@ -345,6 +333,7 @@ async def lifespan(app_instance: FastAPI):
 
 
 app = FastAPI(title="Execution Service", lifespan=lifespan)
+register_validation_handler(app)
 
 
 # --- Endpoints ---
@@ -358,6 +347,15 @@ async def evaluate(
     envelope = await schema_p.get_schema()
 
     # 1. Validation against Schema
+    if not envelope.registry_report.valid:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SCHEMA_INVALID",
+                "report": envelope.registry_report.model_dump(mode="json"),
+            },
+        )
+
     for obj in req.objectives:
         if obj not in envelope.known_objectives:
             raise HTTPException(status_code=422, detail=f"Unknown objective: {obj}")

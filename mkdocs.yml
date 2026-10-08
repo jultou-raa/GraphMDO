@@ -32,8 +32,11 @@ nav:
     - Running Optimization: user-guide/running-optimization.md
   - Technical Reference:
     - Architecture: technical-reference/architecture.md
+    - Study Schema: technical-reference/study-schema.md
     - Microservices: technical-reference/microservices.md
   - API Reference:
+    - Schema: api/schema.md
+    - Validation: api/validation.md
     - Core:
       - Translator: api/core/translator.md
       - Components: api/core/components.md

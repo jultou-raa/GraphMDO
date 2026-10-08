@@ -9,64 +9,34 @@ Choice and integer values reach tools exactly as declared in the graph.
 import pytest
 
 from mdo_framework.optimization.optimizer import BayesianOptimizer
+from mdo_framework.schema import ChoiceVar, RangeVar, StateVar, StudySchema, ToolSpec
 
 pytestmark = pytest.mark.e2e
 
-FLOAT = {"param_type": "continuous", "value_type": "float"}
 MINIMIZE_F = [{"name": "f", "minimize": True}]
 DENSITY = {"aluminum": 0.2, "composite": 0.1}
-GEARBOX_SCHEMA = {
-    "tools": [
-        {
-            "name": "T",
-            "fidelity": "high",
-            "inputs": ["x", "gear", "n", "material"],
-            "outputs": ["f"],
-        }
+GEARBOX_SCHEMA = StudySchema(
+    variables=[
+        RangeVar(name="x", lower=0.0, upper=1.0),
+        ChoiceVar(name="gear", choices=[10, 20, 30]),
+        RangeVar(name="n", lower=1, upper=5, value_type="int"),
+        ChoiceVar(name="material", choices=["aluminum", "composite"]),
+        StateVar(name="f"),
     ],
-    "variables": [
-        {"name": "x", "lower": 0.0, "upper": 1.0, **FLOAT},
-        {
-            "name": "gear",
-            "param_type": "choice",
-            "choices": [10, 20, 30],
-            "value_type": "int",
-        },
-        {
-            "name": "n",
-            "lower": 1,
-            "upper": 5,
-            "param_type": "range",
-            "value_type": "int",
-        },
-        {
-            "name": "material",
-            "param_type": "choice",
-            "choices": ["aluminum", "composite"],
-            "value_type": "str",
-        },
-        {"name": "f", **FLOAT},
-    ],
-}
+    tools=[ToolSpec(name="T", inputs=["x", "gear", "n", "material"], outputs=["f"])],
+)
 
 
-def choice_schema(choices: list, value_type: str) -> dict:
+def choice_schema(choices: list) -> StudySchema:
     """One tool T(x, c) -> f, with x a float on [0, 1] and c a choice."""
-    return {
-        "tools": [
-            {"name": "T", "fidelity": "high", "inputs": ["x", "c"], "outputs": ["f"]}
+    return StudySchema(
+        variables=[
+            RangeVar(name="x", lower=0.0, upper=1.0),
+            ChoiceVar(name="c", choices=choices),
+            StateVar(name="f"),
         ],
-        "variables": [
-            {"name": "x", "lower": 0.0, "upper": 1.0, **FLOAT},
-            {
-                "name": "c",
-                "param_type": "choice",
-                "choices": choices,
-                "value_type": value_type,
-            },
-            {"name": "f", **FLOAT},
-        ],
-    }
+        tools=[ToolSpec(name="T", inputs=["x", "c"], outputs=["f"])],
+    )
 
 
 def gearbox(x, gear, n, material):
@@ -92,22 +62,15 @@ class RecordingExecutionService:
 
 
 @pytest.mark.parametrize(
-    ("choices", "value_type"),
-    [
-        (["a", "b", "c"], "str"),
-        ([0.5, 2.0, 8.0], "float"),
-        ([1, 2, 3], "int"),
-        ([True, False], "bool"),
-    ],
+    "choices",
+    [["a", "b", "c"], [0.5, 2.0, 8.0], [1, 2, 3], [True, False]],
     ids=["str", "float", "int", "bool"],
 )
-def test_choice_values_round_trip(build_optimizer, recorded, choices, value_type):
+def test_choice_values_round_trip(build_optimizer, recorded, choices):
     # A continuous x keeps the space from being exhausted (#74).
     offsets = dict(zip(choices, [1.0, 0.0, 2.0]))  # choices[1] is best
     tool = recorded(lambda x, c: (x - 0.8) ** 2 + offsets[c])
-    optimizer, _ = build_optimizer(
-        choice_schema(choices, value_type), {"T": tool}, MINIMIZE_F
-    )
+    optimizer, _ = build_optimizer(choice_schema(choices), {"T": tool}, MINIMIZE_F)
 
     result = optimizer.optimize(n_steps=3, n_init=3)
 

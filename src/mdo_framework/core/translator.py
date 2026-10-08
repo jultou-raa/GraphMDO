@@ -4,11 +4,12 @@ License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import numpy as np
 from gemseo.mda.factory import MDAFactory
+from gemseo.utils.discipline import check_disciplines_consistency
 
 from mdo_framework.core.components import ToolComponent
 from mdo_framework.core.topology import build_variable_specs
@@ -16,6 +17,13 @@ from mdo_framework.optimization.parameter_codec import (
     ParameterDefinition,
     value_to_index,
 )
+from mdo_framework.schema import (
+    FixedParam,
+    StateVar,
+    StudySchema,
+    StudyValidationError,
+)
+from mdo_framework.validation import validate_registry
 
 
 def to_design_value(spec: ParameterDefinition | None, value: Any) -> Any:
@@ -41,75 +49,75 @@ def encode_tool_inputs(
 
 
 class GraphProblemBuilder:
-    """Builds a GEMSEO MDA/Scenario from a graph schema dictionary."""
+    """Builds a GEMSEO MDA from a typed study schema."""
 
-    def __init__(self, schema: dict[str, Any]):
-        """Initializes the builder with the given graph schema.
+    def __init__(self, schema: StudySchema):
+        """Initializes the builder with the given study schema.
 
         Args:
-            schema: A dictionary containing 'tools' and 'variables' definitions.
-                   Produced by GraphManager.get_graph_schema().
+            schema: Typed description of the variables and tools, as returned
+                by ``GraphManager.get_study_schema()``.
         """
         self.schema = schema
         self.variable_specs = build_variable_specs(schema)
 
-    def build_problem(self, tool_registry: dict[str, Callable]) -> Any:
-        """Constructs a GEMSEO MDA from the parsed schema.
+    def build_problem(self, tool_registry: Mapping[str, Callable]) -> Any:
+        """Constructs a GEMSEO MDA from the study schema.
+
+        Fixed parameter values and coupling initial guesses become the default
+        inputs of the MDA; design variables have no default.
 
         Args:
             tool_registry: Dictionary mapping tool names to Python functions.
 
         Returns:
             An instantiated GEMSEO MDA Discipline object.
+
+        Raises:
+            StudyValidationError: If a tool has no registered function or the
+                registered function cannot take the tool's inputs by keyword.
+                Every bad tool is reported in the same error.
+            ValueError: If two tools produce the same output.
         """
-        tools = self.schema.get("tools", [])
-        disciplines = []
+        report = validate_registry(self.schema, tool_registry)
+        if not report.valid:
+            raise StudyValidationError(report)
 
-        # Add components
-        for tool in tools:
-            name = tool["name"]
-            func = tool_registry.get(name)
-
-            if not func:
-                raise ValueError(f"Tool function for '{name}' not found in registry.")
-
-            inputs = tool.get("inputs", [])
-            outputs = tool.get("outputs", [])
-
-            # Wrap the function in our custom GEMSEO Discipline
-            comp = ToolComponent(
-                name=name,
-                func=func,
-                inputs=inputs,
-                outputs=outputs,
+        disciplines = [
+            ToolComponent(
+                name=tool.name,
+                func=tool_registry[tool.name],
+                inputs=tool.inputs,
+                outputs=tool.outputs,
                 specs={
                     in_name: self.variable_specs[in_name]
-                    for in_name in inputs
+                    for in_name in tool.inputs
                     if in_name in self.variable_specs
                 },
             )
-            disciplines.append(comp)
+            for tool in self.schema.tools
+        ]
+        check_disciplines_consistency(disciplines, False, True)
 
-        # Create an MDA (Multidisciplinary Design Analysis) to handle the coupling
-        # We use 'MDAChain' by default which can handle sequential execution
-        # and incorporates an 'MDAGaussSeidel' if cycles exist.
-        mda_factory = MDAFactory()
-        mda = mda_factory.create("MDAChain", disciplines=disciplines)
+        # MDAChain picks the sub-MDAs itself (MDAJacobi for coupled disciplines).
+        mda = MDAFactory().create("MDAChain", disciplines=disciplines)
 
-        # We can extract default values from schema and store them
-        # to be used later in execution
-        self.default_inputs = {}
-        variables = self.schema.get("variables", [])
-        for var in variables:
-            val = var.get("value")
-            if val is not None:
-                spec = self.variable_specs[var["name"]]
-                self.default_inputs[var["name"]] = np.atleast_1d(
-                    to_design_value(spec, val)
-                )
-
-        for var_name, var_val in self.default_inputs.items():
-            if var_name in mda.input_grammar:
-                mda.default_input_data[var_name] = var_val
+        for name, value in self._seed_values().items():
+            if name in mda.input_grammar:
+                mda.default_input_data[name] = value
 
         return mda
+
+    def _seed_values(self) -> dict[str, np.ndarray]:
+        defaults = {}
+        for variable in self.schema.variables:
+            if isinstance(variable, FixedParam):
+                spec = self.variable_specs.get(variable.name)
+                defaults[variable.name] = np.atleast_1d(
+                    to_design_value(spec, variable.value)
+                )
+            elif isinstance(variable, StateVar) and variable.initial_guess is not None:
+                defaults[variable.name] = np.atleast_1d(
+                    np.asarray(variable.initial_guess, dtype=float)
+                )
+        return defaults

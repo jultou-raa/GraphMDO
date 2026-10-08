@@ -4,115 +4,146 @@ License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
-from typing import Any
+from collections.abc import Sequence
+from dataclasses import dataclass
+
+from mdo_framework.core.dependencies import walk_dependencies
+from mdo_framework.optimization.parameter_codec import ParameterDefinition
+from mdo_framework.schema import (
+    ChoiceVar,
+    DesignVariable,
+    FixedParam,
+    RangeVar,
+    StudySchema,
+    StudyValidationError,
+    ValidationReport,
+)
+from mdo_framework.validation import dependency_findings
+
+
+@dataclass(frozen=True)
+class ResolvedInputs:
+    """Inputs and tools required to evaluate a set of target outputs.
+
+    All tuples follow the declaration order of the schema.
+
+    Attributes:
+        design_variables: Bounded or choice inputs the optimizer may vary.
+        fixed_parameters: Valued inputs that keep their value.
+        tools: Names of the tools to execute.
+    """
+
+    design_variables: tuple[DesignVariable, ...]
+    fixed_parameters: tuple[FixedParam, ...]
+    tools: tuple[str, ...]
 
 
 class TopologicalAnalyzer:
-    """Analyzes a KADMOS/CMDOWS-style graph schema recursively to extract
-    the independent design variables and sub-graph components required
-    to evaluate a specific target output.
-    """
+    """Resolves which inputs and tools a set of target outputs depends on."""
 
-    def __init__(self, schema: dict[str, Any]):
-        """Initializes the analyzer with the provided graph schema.
+    def __init__(self, schema: StudySchema):
+        """Initializes the analyzer with the study schema.
 
         Args:
-            schema: Dictionary representing the full graph tools and variables.
+            schema: Typed description of the variables and tools.
 
         """
         self.schema = schema
-        self.tools = {t["name"]: t for t in schema.get("tools", [])}
-        self.variables = {v["name"]: v for v in schema.get("variables", [])}
 
-        # Build reverse lookup: variable name -> list of tools that output it
-        self.var_sources = {}
-        for tool_name, tool_data in self.tools.items():
-            for out_var in tool_data.get("outputs", []):
-                if out_var not in self.var_sources:
-                    self.var_sources[out_var] = []
-                self.var_sources[out_var].append(tool_name)
+    def resolve_dependencies(self, target_outputs: Sequence[str]) -> ResolvedInputs:
+        """Resolve all dependencies needed to compute ``target_outputs``.
 
-    def resolve_dependencies(
-        self,
-        target_outputs: list[str],
-    ) -> tuple[list[str], list[dict[str, Any]]]:
-        """Recursively resolve all dependencies needed to compute target_outputs.
-        Returns a tuple containing:
-            1. A list of independent design variables (inputs without any tool source).
-            2. A list of tool configurations required for execution.
+        Args:
+            target_outputs: Names of the variables to compute.
+
+        Returns:
+            The design variables, fixed parameters and tools that the targets
+            depend on, in schema order.
+
+        Raises:
+            StudyValidationError: If a target is unknown or not produced by a
+                tool, or a required tool consumes a state no tool produces.
+                Every finding is reported in the same error.
         """
-        visited_tool_names: set[str] = set()
-        visited_tools: list[str] = []
-        required_input_names: set[str] = set()
-        required_inputs: list[str] = []
+        walk = walk_dependencies(self.schema, target_outputs)
+        errors = dependency_findings(walk)
+        if errors:
+            raise StudyValidationError(ValidationReport(errors=tuple(errors)))
+        return ResolvedInputs(
+            design_variables=walk.design_variables,
+            fixed_parameters=walk.fixed_parameters,
+            tools=walk.tools,
+        )
 
-        def _traverse(var_name: str):
-            sources = self.var_sources.get(var_name, [])
-
-            # If there are no sources, this is an independent input (design variable)
-            if not sources:
-                if var_name not in required_input_names:
-                    required_input_names.add(var_name)
-                    required_inputs.append(var_name)
-                return
-
-            # Traverse upstream through tools producing this variable
-            for source_tool in sources:
-                if source_tool not in visited_tool_names:
-                    visited_tool_names.add(source_tool)
-                    visited_tools.append(source_tool)
-                    tool_data = self.tools[source_tool]
-                    for input_var in tool_data.get("inputs", []):
-                        _traverse(input_var)
-
-        for out in target_outputs:
-            if out not in self.variables:
-                raise ValueError(f"Target output '{out}' is not defined in the graph.")
-            _traverse(out)
-
-        # Map variable names back to definitions to maintain schema structure format
-        req_tools = [self.tools[t] for t in visited_tools]
-
-        return required_inputs, req_tools
-
-    def extract_parameters(self, design_vars: list[str]) -> list[dict[str, Any]]:
-        """Formats design variables into Ax-Platform ready parameter structures."""
-        parameters = []
-        for var_name in design_vars:
-            var_data = self.variables.get(var_name)
-            if not var_data:
-                continue
-            parameters.append(variable_to_parameter(var_data))
-
-        return parameters
+    def extract_parameters(
+        self, design_variables: Sequence[DesignVariable]
+    ) -> list[ParameterDefinition]:
+        """Format design variables into optimizer-ready parameter definitions."""
+        return [to_parameter_definition(variable) for variable in design_variables]
 
 
-def variable_to_parameter(var_data: dict[str, Any]) -> dict[str, Any]:
-    """Converts a graph-schema variable into a parameter definition.
+def to_parameter_definition(variable: DesignVariable) -> ParameterDefinition:
+    """Converts a design variable into a parameter definition.
 
     The definition is shared by the optimizer (Ax/GEMSEO design space) and the
     tool boundary, so both decode choice indices and integers identically.
     """
-    name = var_data["name"]
-    value_type = var_data.get("value_type", "float")
-    if var_data.get("param_type", "continuous") == "choice":
+    if isinstance(variable, RangeVar):
         return {
-            "name": name,
-            "type": "choice",
-            "values": var_data.get("choices", []),
-            "value_type": value_type,
+            "name": variable.name,
+            "type": "range",
+            "bounds": [variable.lower, variable.upper],
+            "value_type": variable.value_type,
         }
     return {
-        "name": name,
-        "type": "range",
-        "bounds": [var_data.get("lower", 0.0), var_data.get("upper", 1.0)],
+        "name": variable.name,
+        "type": "choice",
+        "values": list(variable.choices),
+        "value_type": variable.value_type,
+    }
+
+
+def to_fixed_parameter_definition(variable: FixedParam) -> ParameterDefinition | None:
+    """Converts a fixed parameter into a parameter definition, if it needs one.
+
+    GEMSEO only carries numbers, so a ``str`` or ``bool`` value travels as the
+    index of a one-value choice and an ``int`` value is pinned by a degenerate
+    integer range. The tool then receives the declared value and type. Floats
+    need no definition.
+    """
+    value = variable.value
+    if isinstance(value, bool):
+        value_type = "bool"
+    elif isinstance(value, str):
+        value_type = "str"
+    elif isinstance(value, int):
+        return {
+            "name": variable.name,
+            "type": "range",
+            "bounds": [value, value],
+            "value_type": "int",
+        }
+    else:
+        return None
+    return {
+        "name": variable.name,
+        "type": "choice",
+        "values": [value],
         "value_type": value_type,
     }
 
 
-def build_variable_specs(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Maps every schema variable name to its parameter definition."""
-    return {
-        var_data["name"]: variable_to_parameter(var_data)
-        for var_data in schema.get("variables", [])
-    }
+def build_variable_specs(schema: StudySchema) -> dict[str, ParameterDefinition]:
+    """Maps design variables and non-float fixed parameters to their definitions.
+
+    Entries follow the declaration order of the schema.
+    """
+    specs: dict[str, ParameterDefinition] = {}
+    for variable in schema.variables:
+        if isinstance(variable, RangeVar | ChoiceVar):
+            specs[variable.name] = to_parameter_definition(variable)
+        elif isinstance(variable, FixedParam):
+            definition = to_fixed_parameter_definition(variable)
+            if definition is not None:
+                specs[variable.name] = definition
+    return specs

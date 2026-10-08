@@ -21,25 +21,19 @@ from mdo_framework.core.topology import TopologicalAnalyzer
 from mdo_framework.core.translator import GraphProblemBuilder
 from mdo_framework.optimization import ax_algo_lib
 from mdo_framework.optimization.optimizer import BayesianOptimizer
+from mdo_framework.schema import RangeVar, StateVar, StudySchema, ToolSpec
 
 SEED = 0
-FLOAT = {"param_type": "continuous", "value_type": "float"}
-SHIFTED_PARABOLOID_SCHEMA = {  # box centre x0 = (-3, 3) is far from the optimum
-    "tools": [
-        {
-            "name": "Paraboloid",
-            "fidelity": "high",
-            "inputs": ["x", "y"],
-            "outputs": ["f_xy", "c_xy"],
-        }
+# The box centre x0 = (-3, 3) is far from the optimum.
+SHIFTED_PARABOLOID_SCHEMA = StudySchema(
+    variables=[
+        RangeVar(name="x", lower=-10.0, upper=4.0),
+        RangeVar(name="y", lower=-4.0, upper=10.0),
+        StateVar(name="f_xy"),
+        StateVar(name="c_xy"),
     ],
-    "variables": [
-        {"name": "x", "lower": -10.0, "upper": 4.0, **FLOAT},
-        {"name": "y", "lower": -4.0, "upper": 10.0, **FLOAT},
-        {"name": "f_xy", **FLOAT},
-        {"name": "c_xy", **FLOAT},
-    ],
-}
+    tools=[ToolSpec(name="Paraboloid", inputs=["x", "y"], outputs=["f_xy", "c_xy"])],
+)
 
 
 def paraboloid(x: float, y: float) -> dict[str, float]:
@@ -118,21 +112,21 @@ def build_optimizer() -> Callable[..., tuple[BayesianOptimizer, LocalEvaluator]]
     """Graph schema -> topology -> GEMSEO problem -> local evaluator -> optimizer."""
 
     def build(
-        schema: dict[str, Any],
+        schema: StudySchema,
         registry: dict[str, Callable[..., Any]],
         objectives: list[dict[str, Any]],
         constraints: list[dict[str, Any]] | None = None,
     ) -> tuple[BayesianOptimizer, LocalEvaluator]:
         outputs = [output["name"] for output in objectives + (constraints or [])]
         analyzer = TopologicalAnalyzer(schema)
-        design_variables, _ = analyzer.resolve_dependencies(outputs)
+        resolved = analyzer.resolve_dependencies(outputs)
         builder = GraphProblemBuilder(schema)
         evaluator = LocalEvaluator(
             builder.build_problem(registry), builder.variable_specs
         )
         optimizer = BayesianOptimizer(
             evaluator,
-            analyzer.extract_parameters(design_variables),
+            analyzer.extract_parameters(resolved.design_variables),
             objectives,
             constraints,
         )

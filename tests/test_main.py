@@ -5,10 +5,16 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
 import importlib.util
+import io
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
+
+from fakes.falkordb import FakeGraph
+
+from mdo_framework.db.graph_manager import GraphManager
 
 
 def _load_main_module():
@@ -25,29 +31,30 @@ main_module = _load_main_module()
 
 
 class TestMainIntegration(unittest.TestCase):
-    @patch("mdo_framework.db.graph_manager.GraphManager")
-    def test_main_execution(self, mock_gm_cls):
-        """Verify main() runs without raising, using a mocked GraphManager."""
-        mock_gm = MagicMock()
-        mock_gm_cls.return_value = mock_gm
-        mock_gm.get_graph_schema.return_value = {
-            "tools": [
-                {
-                    "name": "Paraboloid",
-                    "fidelity": "high",
-                    "inputs": ["x", "y"],
-                    "outputs": ["f_xy"],
-                },
-            ],
-            "variables": [
-                {"name": "x", "value": 0.0},
-                {"name": "y", "value": 0.0},
-                {"name": "f_xy"},
-            ],
-        }
+    def test_main_builds_the_typed_paraboloid_and_optimizes_it(self):
+        """main() runs the whole demo on a graph that only accepts typed models."""
+        graph = FakeGraph()
+        output = io.StringIO()
 
-        with patch.object(main_module, "GraphManager", mock_gm_cls):
-            try:
-                main_module.main()
-            except Exception as e:
-                self.fail(f"main.py raised an Exception unexpectedly: {e}")
+        with (
+            patch.object(
+                main_module, "GraphManager", lambda: GraphManager(graph=graph)
+            ),
+            redirect_stdout(output),
+        ):
+            main_module.main()
+
+        text = output.getvalue()
+        self.assertIn("Paraboloid Inputs: ['x', 'y']", text)
+        self.assertIn("Optimization Complete.", text)
+        self.assertNotIn("failed", text)
+
+        schema = GraphManager(graph=graph).get_study_schema()
+        self.assertEqual(
+            [(variable.kind, variable.name) for variable in schema.variables],
+            [("range", "x"), ("range", "y"), ("state", "f_xy"), ("state", "c_xy")],
+        )
+        self.assertEqual(
+            [(tool.name, tool.inputs, tool.outputs) for tool in schema.tools],
+            [("Paraboloid", ["x", "y"], ["f_xy", "c_xy"])],
+        )
