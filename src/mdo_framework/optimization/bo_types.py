@@ -30,7 +30,7 @@ from mdo_framework.schema import (
 from mdo_framework.validation import LinearConstraint
 
 StopReason = Literal[
-    "budget", "max_time", "search_space_exhausted", "consecutive_failures"
+    "budget", "max_time", "search_space_exhausted", "consecutive_failures", "aborted"
 ]
 TrialStatus = Literal["completed", "failed", "abandoned"]
 Phase = Literal["x0", "init", "bo"]
