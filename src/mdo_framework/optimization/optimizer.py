@@ -18,6 +18,10 @@ from gemseo.typing import StrKeyMapping
 
 from mdo_framework.core.errors import EvaluationError, evaluation_error_from_payload
 from mdo_framework.optimization.ax_algo_lib import AxObjectiveDict
+from mdo_framework.optimization.errors import (
+    OptimizationConfigurationError,
+    OptimizationExecutionError,
+)
 from mdo_framework.optimization.parameter_codec import (
     ParameterDefinitionError,
     ParameterValueError,
@@ -36,14 +40,6 @@ ScalarValue: TypeAlias = bool | int | float | str
 AX_OBJECTIVE_KEYS = frozenset(
     AxObjectiveDict.__required_keys__ | AxObjectiveDict.__optional_keys__
 )
-
-
-class OptimizationConfigurationError(ValueError):
-    """Raised when the optimization request is invalid for the current backend."""
-
-
-class OptimizationExecutionError(RuntimeError):
-    """Raised when optimization cannot produce a valid result."""
 
 
 class RemoteEvaluationTransportError(RuntimeError):
