@@ -352,7 +352,8 @@ class BaseBOLibrary(BaseOptimizationLibrary):
         A point already evaluated in this run, successfully or not, is not
         evaluated again, nor recorded: the backend is told the outcome it had.
         A point GEMSEO's database already holds from an earlier run is not
-        recorded either.
+        recorded either. An abandoned point was never evaluated, so proposing
+        it again within the request evaluates it.
 
         Returns:
             The reason to stop the run, ``None`` to go on.

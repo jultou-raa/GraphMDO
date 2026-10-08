@@ -853,6 +853,18 @@ def test_surplus_candidates_neither_reset_failures_nor_use_init_slots():
     assert evaluated == ["init"] * 3 + ["bo"] * 3
 
 
+def test_an_abandoned_point_proposed_again_is_evaluated():
+    library = ScriptedLibrary([{"x": 1.0}, {"x": 2.0}, {"x": 2.0}, {"x": 3.0}], extra=1)
+    study = make_study(quadratic, [X], library=library)
+
+    result = study.run(n_init=1, n_steps=1)
+
+    assert study.calls == [{"x": 1.0}, {"x": 2.0}]
+    statuses = [r.outcome.status for r in result.records]
+    assert statuses == ["completed", "abandoned", "completed", "abandoned"]
+    assert result.evaluations["bo"] == 1
+
+
 def test_a_repeated_failed_proposal_is_told_but_neither_evaluated_nor_recorded():
     def tool(x):
         raise RuntimeError("always")
