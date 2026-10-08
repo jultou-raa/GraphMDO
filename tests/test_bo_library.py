@@ -832,6 +832,27 @@ def test_candidates_beyond_the_requested_count_are_abandoned():
     assert result.records[1].outcome.reason == "surplus"
 
 
+def test_surplus_candidates_neither_reset_failures_nor_use_init_slots():
+    def tool(x):
+        raise RuntimeError("always")
+
+    failing = ScriptedLibrary([{"x": float(i)} for i in range(1, 9)], extra=1)
+    study = make_study(tool, [X], library=failing)
+
+    result = study.run(n_init=3, n_steps=3, max_consecutive_failures=2)
+
+    assert result.stop_reason == "consecutive_failures"
+    assert len(study.calls) == 2
+
+    library = ScriptedLibrary([{"x": 0.5 * i} for i in range(1, 13)], extra=1)
+    study = make_study(quadratic, [X], library=library)
+
+    result = study.run(n_init=3, n_steps=3)
+
+    evaluated = [r.phase for r in result.records if r.outcome.status != "abandoned"]
+    assert evaluated == ["init"] * 3 + ["bo"] * 3
+
+
 def test_a_repeated_failed_proposal_is_told_but_neither_evaluated_nor_recorded():
     def tool(x):
         raise RuntimeError("always")

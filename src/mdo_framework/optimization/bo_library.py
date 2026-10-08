@@ -338,7 +338,12 @@ class BaseBOLibrary(BaseOptimizationLibrary):
                 return "search_space_exhausted"
 
     def _next_phase(self) -> Phase:
-        started = sum(1 for record in self._records if record.phase != "x0")
+        # Only evaluated candidates use the initial design's slots.
+        started = sum(
+            1
+            for record in self._records
+            if record.phase != "x0" and record.outcome.status != "abandoned"
+        )
         return "init" if started < self._settings.n_init else "bo"
 
     def _try(self, candidate: Candidate, phase: Phase) -> StopReason | None:
@@ -400,8 +405,11 @@ class BaseBOLibrary(BaseOptimizationLibrary):
             self._tell(candidate, outcome)
 
     def _failures_in_a_row(self) -> int:
+        # Abandoned candidates were never evaluated: they do not end a streak.
         count = 0
         for record in reversed(self._records):
+            if record.outcome.status == "abandoned":
+                continue
             if record.outcome.status != "failed":
                 break
             count += 1
