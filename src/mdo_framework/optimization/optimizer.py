@@ -13,6 +13,7 @@ import numpy as np
 from gemseo import create_scenario
 from gemseo.algos.design_space import DesignSpace
 from gemseo.core.discipline import Discipline
+from gemseo.core.discipline.base_discipline import CacheType
 from gemseo.typing import StrKeyMapping
 
 from mdo_framework.core.errors import EvaluationError, evaluation_error_from_payload
@@ -364,11 +365,13 @@ class _FailureRecorder(Discipline):
     """Runs a discipline and keeps the evaluation errors it raises.
 
     GEMSEO's DOE skips a sample whose evaluation raises a ``ValueError`` and
-    only logs it, so the typed error would otherwise be lost.
+    only logs it, so the typed error would otherwise be lost. The recorder
+    never caches: caching is the wrapped discipline's own policy.
     """
 
     def __init__(self, discipline: Discipline) -> None:
         super().__init__(name=discipline.name)
+        self.set_cache(CacheType.NONE)
         self._discipline = discipline
         self.failures: list[EvaluationError] = []
         self.input_grammar.update_from_names(discipline.input_grammar.names)

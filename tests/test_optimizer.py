@@ -788,3 +788,23 @@ def test_explore_keeps_the_samples_that_evaluate(tmp_path, monkeypatch):
     inputs = history.get_view(variable_names="x").to_numpy().ravel()
     assert 0 < len(inputs) < 8
     assert (inputs <= 0.5).all()
+
+
+def test_failure_recorder_never_caches_a_non_deterministic_tool():
+    from mdo_framework.core.components import ToolComponent
+    from mdo_framework.optimization.optimizer import _FailureRecorder
+
+    calls = []
+
+    def noisy(x):
+        calls.append(x)
+        return x + len(calls)
+
+    tool = ToolComponent("T", noisy, ["x"], ["f"], deterministic=False)
+    recorder = _FailureRecorder(tool)
+
+    first = recorder.execute({"x": np.array([0.5])})["f"]
+    second = recorder.execute({"x": np.array([0.5])})["f"]
+
+    assert len(calls) == 2
+    assert first != second
