@@ -158,7 +158,7 @@ Output of a tool, or a coupling variable.
 | `initial_guess` | `float` (finite), non-empty list of `float` (finite), or `null` | `null` | A list must contain at least one value. Seeds the multidisciplinary analysis of a coupling. |
 | `units` | `str` or `null` | `null` | None. |
 
-`initial` is the declared starting value of a design variable. It is checked by the preflight (bounds, and `INITIAL_OUT_OF_SPACE` against linear parameter constraints). The optimizer does not use it yet and starts from the centre of the design space.
+`initial` is the declared starting value of a design variable. It is checked by the preflight (bounds, and `INITIAL_OUT_OF_SPACE` against linear parameter constraints). The optimizer starts from the declared `initial` values, from the centre of the bounds for the variables without one, or, when no variable declares one and that centre violates a parameter constraint, from the Chebyshev centre of the constraints. This start point x0 is evaluated when `evaluate_x0=True`, or by default when every design variable declares an `initial`; it then adds one evaluation to the `n_init + n_steps` budget (see [Architecture](architecture.md#bayesian-optimization)).
 
 ### Roles
 
