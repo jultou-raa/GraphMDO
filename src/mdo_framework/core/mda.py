@@ -120,10 +120,7 @@ class StrictMDAChain(MDAChain):
     def _solve(self) -> None:
         super()._solve()
         for mda in self.inner_mdas:
-            residual = mda.io.data.get(self.NORMALIZED_RESIDUAL_NORM)
-            if residual is None:
-                continue
-            last = float(residual[-1])
+            last = float(mda.io.data[self.NORMALIZED_RESIDUAL_NORM][-1])
             # A NaN residual compares false, so it is rejected too.
             if not last <= self._residual_limit:
                 couplings = ", ".join(sorted(mda.coupling_structure.strong_couplings))
