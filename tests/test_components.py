@@ -15,6 +15,7 @@ from gemseo.core.grammars.errors import InvalidDataError
 from mdo_framework.core.components import ToolComponent
 from mdo_framework.core.errors import (
     EvaluationError,
+    InfeasiblePointError,
     ToolError,
     ToolExecutionError,
     ToolOutputError,
@@ -292,6 +293,19 @@ def test_the_original_message_is_kept() -> None:
 
     with pytest.raises(ToolExecutionError, match="solver diverged at step 7"):
         _run_a(_component(failing, ["f"]))
+
+
+def test_an_infeasible_point_keeps_its_class_and_gets_the_tool_name() -> None:
+    def mesher(a: float) -> float:
+        raise InfeasiblePointError("mesh cannot be generated")
+
+    with pytest.raises(InfeasiblePointError) as exc_info:
+        _run_a(_component(mesher, ["f"]))
+
+    error = exc_info.value
+    assert error.code == "POINT_INFEASIBLE"
+    assert error.tool == "tool"
+    assert str(error) == "Tool 'tool': mesh cannot be generated"
 
 
 @pytest.mark.parametrize("signal", [KeyboardInterrupt, SystemExit, MemoryError])

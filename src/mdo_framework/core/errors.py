@@ -68,6 +68,16 @@ class ToolOutputError(ToolError):
     code: ClassVar[str] = "OUTPUT_INVALID"
 
 
+class InfeasiblePointError(ToolError):
+    """A tool declares that it cannot compute this point, e.g. a failed mesh.
+
+    Tools raise it themselves to report a point outside their domain of
+    validity, which is a point failure rather than a tool crash.
+    """
+
+    code: ClassVar[str] = "POINT_INFEASIBLE"
+
+
 class MDANotConvergedError(EvaluationError):
     """The coupled tools did not reach a fixed point within the MDA limits."""
 
@@ -81,6 +91,7 @@ _ERRORS_BY_CODE: dict[str, type[EvaluationError]] = {
         EvaluationError,
         ToolExecutionError,
         ToolOutputError,
+        InfeasiblePointError,
         MDANotConvergedError,
     )
 }
