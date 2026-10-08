@@ -10,6 +10,7 @@ from unittest.mock import patch
 import numpy as np
 
 from mdo_framework.core.errors import ToolExecutionError, ToolOutputError
+from mdo_framework.core.mda import MDASettings, StrictMDAChain
 from mdo_framework.core.translator import GraphProblemBuilder
 from mdo_framework.schema import (
     FixedParam,
@@ -75,7 +76,7 @@ class TestTranslator(unittest.TestCase):
 
         mda = builder.build_problem(tool_registry)
 
-        self.assertEqual(mda.name, "MDAChain")
+        self.assertIsInstance(mda, StrictMDAChain)
         self.assertIs(builder.schema, schema)
 
         # Fixed values become the defaults of the MDA inputs
@@ -116,15 +117,25 @@ class TestTranslator(unittest.TestCase):
 
 class TestMdaDefaults(unittest.TestCase):
     def test_coupling_initial_guess_is_a_default_and_seeds_the_solve(self):
-        schema = coupled_schema(y=StateVar(name="y", initial_guess=1.0))
+        schema = coupled_schema(c=StateVar(name="c", initial_guess=1.0))
         mda = GraphProblemBuilder(schema).build_problem(COUPLED_REGISTRY)
 
-        np.testing.assert_array_equal(mda.default_input_data["c"], np.array([0.5]))
-        np.testing.assert_array_equal(mda.default_input_data["y"], np.array([1.0]))
+        np.testing.assert_array_equal(mda.default_input_data["c"], np.array([1.0]))
         out = mda.execute({"x": np.array([3.0])})
         # y = x + 0.5 c and c = 0.5 y  ->  y = 4, c = 2
         self.assertAlmostEqual(float(np.asarray(out["y"]).flat[0]), 4.0, places=3)
         self.assertAlmostEqual(float(np.asarray(out["c"]).flat[0]), 2.0, places=3)
+
+    def test_sequential_solve_needs_only_the_guess_of_the_coupling_read_first(self):
+        schema = coupled_schema(y=StateVar(name="y", initial_guess=1.0))
+
+        sequential = GraphProblemBuilder(schema).build_problem(COUPLED_REGISTRY)
+        jacobi = GraphProblemBuilder(schema).build_problem(
+            COUPLED_REGISTRY, MDASettings(inner_mda_name="MDAJacobi")
+        )
+
+        self.assertNotIn("y", sequential.default_input_data)
+        np.testing.assert_array_equal(jacobi.default_input_data["y"], np.array([1.0]))
 
     def test_vector_initial_guess_keeps_its_shape(self):
         schema = coupled_schema(c=StateVar(name="c", initial_guess=[1.0, 2.0]))
@@ -303,6 +314,7 @@ class TestToolOptions(unittest.TestCase):
 
         self.assertEqual(len(calls), 3)
         self.assertIsNone(discipline.cache)
+        self.assertIsNone(mda.cache)
 
     def test_arg_map_renames_the_graph_input_for_the_function(self):
         mda = GraphProblemBuilder(self.schema(arg_map={"x": "a"})).build_problem(
@@ -474,7 +486,7 @@ class TestRegistryErrors(unittest.TestCase):
             {"T": lambda x, scale=2.0: x * scale}
         )
 
-        self.assertEqual(mda.name, "MDAChain")
+        self.assertIsInstance(mda, StrictMDAChain)
 
 
 class TestConsistencyCheck(unittest.TestCase):

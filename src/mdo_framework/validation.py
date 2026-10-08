@@ -7,7 +7,7 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import inspect
 import math
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 from warnings import catch_warnings, simplefilter
@@ -331,6 +331,37 @@ def validate_registry(
         else:
             errors.extend(_collision_findings(tool))
     return ValidationReport(errors=tuple(errors), warnings=tuple(warnings))
+
+
+def thread_safety_findings(
+    schema: StudySchema, couplings: Collection[str]
+) -> list[Finding]:
+    """Flag the coupled tools that do not declare ``thread_safe``.
+
+    A tool belongs to a coupled group when it produces a coupling variable;
+    a tool that only reads one runs outside the group.
+
+    Args:
+        schema: Study whose tools are checked.
+        couplings: Names of the coupling variables, as returned by
+            ``walk_dependencies``.
+
+    Returns:
+        One ``TOOL_NOT_THREAD_SAFE`` finding per such tool, in tool order.
+    """
+    return [
+        Finding(
+            code="TOOL_NOT_THREAD_SAFE",
+            message=(
+                f"tool '{tool.name}' is in a coupled group evaluated in parallel "
+                "but is not declared thread_safe; set thread_safe=True on the "
+                "tool or run the MDA sequentially"
+            ),
+            names=(tool.name,),
+        )
+        for tool in schema.tools
+        if not tool.thread_safe and any(name in couplings for name in tool.outputs)
+    ]
 
 
 def _unknown_input_findings(tool: ToolSpec) -> list[Finding]:
