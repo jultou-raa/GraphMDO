@@ -99,6 +99,8 @@ def test_payload_message_has_no_tool_prefix():
         {"code": "TOOL_FAILED", "message": 3, "tool": None},
         {"code": "TOOL_FAILED", "message": "m", "tool": 3},
         {"message": "m"},
+        {"code": [], "message": "m", "tool": None},
+        {"code": {"a": 1}, "message": "m", "tool": None},
         "TOOL_FAILED",
         None,
     ],

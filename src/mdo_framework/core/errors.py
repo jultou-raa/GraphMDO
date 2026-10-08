@@ -98,10 +98,13 @@ def evaluation_error_from_payload(payload: Any) -> EvaluationError | None:
     """
     if not isinstance(payload, Mapping):
         return None
-    error_class = _ERRORS_BY_CODE.get(payload.get("code"))
+    code = payload.get("code")
     message = payload.get("message")
     tool = payload.get("tool")
-    if error_class is None or not isinstance(message, str):
+    if not isinstance(code, str) or not isinstance(message, str):
+        return None
+    error_class = _ERRORS_BY_CODE.get(code)
+    if error_class is None:
         return None
     if tool is not None and not isinstance(tool, str):
         return None
