@@ -4,6 +4,8 @@ License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
+import contextlib
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -18,7 +20,6 @@ from mdo_framework.core.errors import (
     ToolOutputError,
 )
 from mdo_framework.core.evaluators import LocalEvaluator
-from mdo_framework.optimization.ax_algo_lib import MAX_STALLED_GENERATIONS
 from mdo_framework.optimization.optimizer import (
     BayesianOptimizer,
     OptimizationConfigurationError,
@@ -28,10 +29,20 @@ from mdo_framework.optimization.optimizer import (
     RemoteEvaluationTransportError,
     RemoteEvaluator,
 )
+from mdo_framework.schema import (
+    ChoiceVar,
+    ConstraintSpec,
+    ObjectiveSpec,
+    RangeVar,
+)
 
 
 class OptimizerTestCase(unittest.TestCase):
     def setUp(self):
+        # Runs write their XDSM and plots in the working directory.
+        workdir = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(contextlib.chdir(workdir))
+
         class MockDisc(Discipline):
             def __init__(self):
                 super().__init__(name="MockDisc")
@@ -44,43 +55,18 @@ class OptimizerTestCase(unittest.TestCase):
                 }
 
             def _run(self, input_data):
-                self.local_data["f_xy"] = np.array([1.0])
-                self.local_data["g_xy"] = np.array([0.0])
+                x, y, c = (input_data[name] for name in ("x", "y", "c"))
+                self.local_data["f_xy"] = (x - 0.25) ** 2 + (y - 0.5) ** 2 + c
+                self.local_data["g_xy"] = x - y
 
         self.mock_prob = MockDisc()
         self.evaluator = LocalEvaluator(self.mock_prob)
-        self.parameters = [
-            {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
-            {"name": "y", "type": "range", "bounds": [0.0, 1.0]},
-            {"name": "c", "type": "range", "bounds": [0.0, 1.0]},
+        self.design_variables = [
+            RangeVar(name="x", lower=0.0, upper=1.0),
+            RangeVar(name="y", lower=0.0, upper=1.0),
+            RangeVar(name="c", lower=0.0, upper=1.0),
         ]
-        self.objectives = [{"name": "f_xy", "minimize": True}]
-
-    def _configure_ax_client(
-        self,
-        mock_client_cls,
-        *,
-        next_trials=None,
-        best_parameters=None,
-        best_metrics=None,
-        pareto_front=None,
-    ):
-        client = mock_client_cls.return_value
-        client.get_next_trials.return_value = next_trials or {
-            0: {"x": 0.5, "y": 0.5, "c": 0.0}
-        }
-        client._to_json_snapshot.return_value = {}
-        client.to_json_snapshot.return_value = "{}"
-        client.get_best_parameterization.return_value = (
-            best_parameters or {"x": 0.5, "y": 0.5, "c": 0.0},
-            best_metrics or ({"f_xy": (42.0, None)}, None),
-            0,
-            "0_0",
-        )
-        client.get_pareto_frontier.return_value = (
-            [] if pareto_front is None else pareto_front
-        )
-        return client
+        self.objectives = [ObjectiveSpec(name="f_xy")]
 
 
 class TestLocalEvaluator(OptimizerTestCase):
@@ -328,72 +314,66 @@ class TestOptimizerHelpers(OptimizerTestCase):
     def test_build_design_space_contracts(self):
         from mdo_framework.optimization.optimizer import _build_design_space
 
-        invalid_cases = [
-            [{"name": "x", "type": "range", "bounds": [0.0]}],
-            [{"name": "x", "type": "categorical"}],
-            [{"name": "x", "type": "choice", "values": []}],
-        ]
-
-        for parameters in invalid_cases:
-            with self.subTest(parameters=parameters):
-                with self.assertRaises(OptimizationConfigurationError):
-                    _build_design_space(parameters)
-
         design_space = _build_design_space(
             [
-                {
-                    "name": "count",
-                    "type": "range",
-                    "bounds": [0, 5],
-                    "value_type": "int",
-                }
+                RangeVar(name="count", lower=0, upper=5, value_type="int"),
+                RangeVar(name="x", lower=-1.0, upper=2.0),
+                ChoiceVar(name="c", choices=["A", "B", "C"]),
             ]
         )
+
+        self.assertEqual(design_space.variable_names, ["count", "x", "c"])
         self.assertEqual(float(design_space.get_lower_bound("count")[0]), 0.0)
         self.assertEqual(float(design_space.get_upper_bound("count")[0]), 5.0)
+        self.assertEqual(float(design_space.get_upper_bound("x")[0]), 2.0)
+        self.assertEqual(float(design_space.get_lower_bound("c")[0]), 0.0)
+        self.assertEqual(float(design_space.get_upper_bound("c")[0]), 2.0)
+        self.assertEqual(
+            [design_space.get_type(name)[0] for name in ("count", "x", "c")],
+            ["i", "f", "i"],
+        )
 
     def test_optimizer_rejects_empty_objectives(self):
         with self.assertRaisesRegex(
             OptimizationConfigurationError, "At least one objective is required"
         ):
-            BayesianOptimizer(self.evaluator, self.parameters, [])
+            BayesianOptimizer(self.evaluator, self.design_variables, [])
 
-    def test_optimizer_rejects_objective_without_name(self):
+    def test_optimizer_rejects_empty_design_variables(self):
         with self.assertRaisesRegex(
-            OptimizationConfigurationError, "missing the required 'name' key"
+            OptimizationConfigurationError, "At least one design variable"
         ):
-            BayesianOptimizer(self.evaluator, self.parameters, [{"minimize": True}])
+            BayesianOptimizer(self.evaluator, [], self.objectives)
 
-    def test_extract_best_objectives_contracts(self):
-        from mdo_framework.optimization.optimizer import _extract_best_objectives
-
-        class BrokenOptimum:
-            @property
-            def objective(self):
-                raise RuntimeError("no objective")
-
-        objectives = _extract_best_objectives(
-            BrokenOptimum(),
-            ["f_xy", "g_xy"],
-            fallback_metrics={"f_xy": 1.0, "g_xy": 2.0},
-        )
-        self.assertEqual(objectives, {"f_xy": 1.0, "g_xy": 2.0})
-
-        class PartialOptimum:
-            objective = np.array([1.0])
-
-        with self.assertRaises(OptimizationExecutionError):
-            _extract_best_objectives(
-                PartialOptimum(),
-                ["f_xy", "g_xy"],
-                fallback_metrics={"f_xy": 1.0},
+    def test_optimizer_rejects_unknown_algorithm(self):
+        with self.assertRaisesRegex(
+            OptimizationConfigurationError, "Unknown algorithm 'nope'"
+        ):
+            BayesianOptimizer(
+                self.evaluator,
+                self.design_variables,
+                self.objectives,
+                algorithm="nope",
             )
 
-    def test_optimizer_helper_error_wrapping(self):
-        from mdo_framework.optimization.optimizer import (
-            _decode_parameter_value,
-            _get_optimization_history,
+    def test_bonsai_is_only_accepted_by_a_backend_that_supports_it(self):
+        with self.assertRaisesRegex(OptimizationConfigurationError, "use_bonsai"):
+            BayesianOptimizer(
+                self.evaluator,
+                self.design_variables,
+                self.objectives,
+                use_bonsai=True,
+                algorithm="BO_RandomSearch",
+            )
+        BayesianOptimizer(
+            self.evaluator,
+            self.design_variables,
+            self.objectives,
+            use_bonsai=True,
         )
+
+    def test_optimizer_helper_error_wrapping(self):
+        from mdo_framework.optimization.optimizer import _decode_parameter_value
 
         with self.assertRaises(OptimizationConfigurationError):
             _decode_parameter_value({"name": "c", "type": "choice", "values": []}, 0)
@@ -404,235 +384,356 @@ class TestOptimizerHelpers(OptimizerTestCase):
                 True,
             )
 
-        self.assertEqual(_get_optimization_history(None, object()), [])
-        self.assertEqual(
-            _get_optimization_history(None, MagicMock(trial_history=[{"ok": True}])),
-            [{"ok": True}],
-        )
+
+class _CountingEvaluator:
+    """Evaluator without a GEMSEO problem: it drives the RemoteDiscipline path."""
+
+    def __init__(self, function=None):
+        self.function = function or (lambda parameters: {"f_xy": parameters["x"]})
+        self.calls: list[dict] = []
+
+    def evaluate(self, parameters, objectives):
+        self.calls.append(dict(parameters))
+        return self.function(parameters)
 
 
 class TestBayesianOptimizer(OptimizerTestCase):
-    @patch("mdo_framework.optimization.ax_algo_lib.Client")
-    def test_optimize_basic(self, mock_client_cls):
-        self._configure_ax_client(mock_client_cls)
-
-        optimizer = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
-        result = optimizer.optimize(n_steps=1, n_init=2)
-
-        self.assertIn("best_parameters", result)
-        self.assertIn("best_objectives", result)
-        self.assertEqual(result["best_parameters"]["x"], 0.5)
-
-    @patch("mdo_framework.optimization.ax_algo_lib.Client")
-    def test_optimize_with_constraints(self, mock_client_cls):
-        self._configure_ax_client(mock_client_cls)
-
-        optimizer = BayesianOptimizer(
-            self.evaluator,
-            self.parameters,
-            self.objectives,
-            constraints=[{"name": "g_xy", "op": "<=", "bound": 0.0}],
+    def _optimizer(self, **kwargs):
+        kwargs.setdefault("algorithm", "BO_RandomSearch")
+        return BayesianOptimizer(
+            kwargs.pop("evaluator", self.evaluator),
+            kwargs.pop("design_variables", self.design_variables),
+            kwargs.pop("objectives", self.objectives),
+            **kwargs,
         )
-        result = optimizer.optimize(n_steps=2, n_init=2)
 
-        self.assertIn("best_parameters", result)
-        # The mocked Ax client re-proposes one design: x0, that design, then
-        # the stall guard stops after MAX_STALLED_GENERATIONS cache hits.
-        self.assertEqual(len(result["history"]), 2 + MAX_STALLED_GENERATIONS)
+    def test_budgets_are_validated_before_any_tool_call(self):
+        evaluator = _CountingEvaluator()
+        optimizer = self._optimizer(evaluator=evaluator)
 
-    @patch("mdo_framework.optimization.ax_algo_lib.Client")
-    def test_optimize_with_parameter_constraints(self, mock_client_cls):
-        client = self._configure_ax_client(mock_client_cls)
+        for name in ("n_steps", "n_init", "max_consecutive_failures"):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    OptimizationConfigurationError, f"{name} must be >= 1"
+                ):
+                    optimizer.optimize(**{name: 0})
 
-        optimizer = BayesianOptimizer(
-            self.evaluator,
-            self.parameters,
-            self.objectives,
-            parameter_constraints=["x <= y"],
+        self.assertEqual(evaluator.calls, [])
+
+    def test_optimize_returns_the_result_contract(self):
+        result = self._optimizer().optimize(n_steps=3, n_init=2, seed=0)
+
+        self.assertEqual(
+            set(result),
+            {
+                "best_parameters",
+                "best_objectives",
+                "feasible",
+                "constraints",
+                "pareto_front",
+                "history",
+                "stop_reason",
+                "evaluations",
+            },
         )
-        result = optimizer.optimize(n_steps=1, n_init=1)
+        self.assertEqual(result["stop_reason"], "budget")
+        self.assertEqual(
+            result["evaluations"], {"x0": 0, "init": 2, "bo": 3, "failed": 0}
+        )
+        self.assertEqual(len(result["history"]), 5)
+        self.assertEqual(result["constraints"], {})
+        self.assertEqual(result["pareto_front"], [])
+        self.assertTrue(result["feasible"])
+        objectives = [entry["objectives"]["f_xy"] for entry in result["history"]]
+        self.assertEqual(result["best_objectives"], {"f_xy": min(objectives)})
+        best = result["history"][int(np.argmin(objectives))]
+        self.assertEqual(result["best_parameters"], best["parameters"])
 
-        self.assertEqual(result["best_parameters"]["x"], 0.5)
-        client.configure_experiment.assert_called()
-        call_kwargs = client.configure_experiment.call_args.kwargs
-        self.assertEqual(call_kwargs["parameter_constraints"], ["x <= y"])
+    def test_the_start_point_is_only_evaluated_on_request(self):
+        optimizer = self._optimizer()
 
-    @patch("mdo_framework.optimization.ax_algo_lib.Client")
-    def test_optimize_multi_objective_with_bonsai(self, mock_client_cls):
-        pareto_front = [
-            (
-                {"x": 0.5, "y": 0.5, "c": "B"},
-                ({"f_xy": (42.0, None), "g_xy": (10.0, None)}, None),
-                0,
-                "0_0",
+        default = optimizer.optimize(n_steps=1, n_init=1, seed=0)
+        with_x0 = optimizer.optimize(n_steps=1, n_init=1, evaluate_x0=True, seed=0)
+
+        self.assertEqual(len(default["history"]), 2)
+        self.assertEqual(len(with_x0["history"]), 3)
+        self.assertEqual(with_x0["history"][0]["phase"], "x0")
+        self.assertEqual(
+            with_x0["history"][0]["parameters"], {"x": 0.5, "y": 0.5, "c": 0.5}
+        )
+        self.assertEqual(with_x0["evaluations"]["x0"], 1)
+
+    def test_declared_initial_values_enable_the_start_point(self):
+        design_variables = [
+            RangeVar(name="x", lower=0.0, upper=1.0, initial=0.2),
+            RangeVar(name="y", lower=0.0, upper=1.0, initial=0.8),
+            RangeVar(name="c", lower=0.0, upper=1.0, initial=0.0),
+        ]
+
+        result = self._optimizer(design_variables=design_variables).optimize(
+            n_steps=1, n_init=1, seed=0
+        )
+
+        self.assertEqual(result["history"][0]["phase"], "x0")
+        self.assertEqual(
+            result["history"][0]["parameters"], {"x": 0.2, "y": 0.8, "c": 0.0}
+        )
+
+    def test_constraints_report_margin_tolerance_and_feasibility(self):
+        constraints = [ConstraintSpec(name="g_xy", bound=0.0, tolerance=0.05)]
+
+        result = self._optimizer(constraints=constraints).optimize(
+            n_steps=6, n_init=4, seed=0
+        )
+
+        self.assertTrue(result["feasible"])
+        constraint = result["constraints"]["g_xy"]
+        best = result["best_parameters"]
+        self.assertAlmostEqual(constraint["value"], best["x"] - best["y"])
+        self.assertAlmostEqual(constraint["margin"], -constraint["value"])
+        self.assertTrue(constraint["satisfied"])
+        self.assertEqual(constraint["tolerance"], 0.05)
+        for entry in result["history"]:
+            self.assertEqual(
+                entry["constraints"]["g_xy"]["satisfied"],
+                entry["constraints"]["g_xy"]["margin"] >= -0.05,
             )
-        ]
-        self._configure_ax_client(
-            mock_client_cls,
-            next_trials={0: {"x": 0.5, "y": 0.5, "c": "B"}},
-            best_parameters={"x": 0.5, "y": 0.5, "c": "B"},
-            best_metrics=({"f_xy": (42.0, None), "g_xy": (10.0, None)}, None),
-            pareto_front=pareto_front,
+
+    def test_greater_equal_constraints_use_the_user_value(self):
+        constraints = [ConstraintSpec(name="g_xy", op=">=", bound=0.2)]
+
+        result = self._optimizer(constraints=constraints).optimize(
+            n_steps=6, n_init=4, seed=0
         )
 
-        parameters = [
-            {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
-            {"name": "y", "type": "range", "bounds": [0.0, 1.0]},
-            {"name": "c", "type": "choice", "values": ["A", "B"]},
-        ]
+        for entry in result["history"]:
+            value = entry["constraints"]["g_xy"]["value"]
+            self.assertAlmostEqual(
+                value, entry["parameters"]["x"] - entry["parameters"]["y"]
+            )
+            self.assertAlmostEqual(entry["constraints"]["g_xy"]["margin"], value - 0.2)
+        if result["feasible"]:
+            self.assertGreaterEqual(result["constraints"]["g_xy"]["value"], 0.2)
+
+    def test_an_infeasible_problem_is_flagged(self):
+        constraints = [ConstraintSpec(name="g_xy", bound=-2.0)]
+
+        result = self._optimizer(constraints=constraints).optimize(
+            n_steps=2, n_init=2, seed=0
+        )
+
+        self.assertFalse(result["feasible"])
+        self.assertFalse(result["constraints"]["g_xy"]["satisfied"])
+        self.assertEqual(
+            result["best_parameters"],
+            min(
+                result["history"],
+                key=lambda entry: entry["constraints"]["g_xy"]["value"] + 2.0,
+            )["parameters"],
+        )
+
+    def test_maximisation_uses_the_user_direction(self):
+        objectives = [ObjectiveSpec(name="f_xy", minimize=False)]
+
+        result = self._optimizer(objectives=objectives).optimize(
+            n_steps=3, n_init=2, seed=0
+        )
+
+        values = [entry["objectives"]["f_xy"] for entry in result["history"]]
+        self.assertEqual(result["best_objectives"], {"f_xy": max(values)})
+        self.assertTrue(all(value >= 0.0 for value in values))
+
+    def test_multi_objective_reports_a_pareto_front_of_user_values(self):
         objectives = [
-            {"name": "f_xy", "minimize": True},
-            {"name": "g_xy", "minimize": False, "threshold": 100.0},
+            ObjectiveSpec(name="f_xy"),
+            ObjectiveSpec(name="g_xy", minimize=False, threshold=-1.0),
         ]
 
-        optimizer = BayesianOptimizer(
-            self.evaluator,
-            parameters,
-            objectives,
-            use_bonsai=True,
-        )
-        result = optimizer.optimize(n_steps=1, n_init=2)
-
-        self.assertIn("best_parameters", result)
-        self.assertEqual(result["best_parameters"]["x"], 0.5)
-        self.assertEqual(result["best_objectives"]["g_xy"], 10.0)
-
-    @patch("mdo_framework.optimization.ax_algo_lib.Client")
-    def test_optimize_remote_evaluator_and_choices(self, mock_client_cls):
-        self._configure_ax_client(
-            mock_client_cls,
-            next_trials={
-                0: {"x": 0.5, "c_str": "B", "c_single": "A", "c_num_single": 42}
-            },
-            best_parameters={
-                "x": 0.5,
-                "c_str": "B",
-                "c_single": "A",
-                "c_num_single": 42,
-            },
-            best_metrics={"f_xy": 42.0},
+        result = self._optimizer(objectives=objectives).optimize(
+            n_steps=5, n_init=3, seed=0
         )
 
-        mock_evaluator = RemoteEvaluator("http://test")
-        mock_evaluator.evaluate = MagicMock(
-            side_effect=lambda parameters, objectives: {
-                "f_xy": 0.0 if parameters["c_str"] == "B" else 1.0
-            }
-        )
-
-        parameters = [
-            {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
-            {"name": "c_str", "type": "choice", "values": ["A", "B", "C"]},
-            {"name": "c_single", "type": "choice", "values": ["A"]},
-            {"name": "c_num_single", "type": "choice", "values": [42]},
+        front = result["pareto_front"]
+        self.assertGreaterEqual(len(front), 1)
+        self.assertEqual(set(result["best_objectives"]), {"f_xy", "g_xy"})
+        history = [
+            (entry["objectives"]["f_xy"], entry["objectives"]["g_xy"])
+            for entry in result["history"]
         ]
-
-        optimizer = BayesianOptimizer(mock_evaluator, parameters, self.objectives)
-        result = optimizer.optimize(n_steps=1, n_init=1)
-
-        self.assertEqual(result["best_parameters"]["x"], 0.5)
-        evaluated_parameters = mock_evaluator.evaluate.call_args.args[0]
-        self.assertIn(evaluated_parameters["c_str"], ["A", "B", "C"])
-        self.assertEqual(evaluated_parameters["c_single"], "A")
-        self.assertEqual(evaluated_parameters["c_num_single"], 42)
-
-    @patch("mdo_framework.optimization.ax_algo_lib.Client")
-    def test_fidelity_parameter_emits_warning(self, mock_client_cls):
-        self._configure_ax_client(mock_client_cls)
-
-        optimizer = BayesianOptimizer(
-            self.evaluator,
-            self.parameters,
-            self.objectives,
-            fidelity_parameter="x",
+        for point in front:
+            f, g = point["objectives"]["f_xy"], point["objectives"]["g_xy"]
+            self.assertIn((f, g), history)
+            self.assertFalse(
+                any(f2 <= f and g2 >= g and (f2 < f or g2 > g) for f2, g2 in history)
+            )
+        self.assertIn(
+            {
+                "parameters": result["best_parameters"],
+                "objectives": result["best_objectives"],
+            },
+            front,
         )
 
-        with self.assertWarns(UserWarning):
-            result = optimizer.optimize(n_steps=1, n_init=1)
+    def test_a_failing_tool_is_a_failed_trial_not_an_abort(self):
+        def fails_above_half(parameters):
+            if parameters["x"] > 0.5:
+                raise ToolExecutionError("mesh failed", tool="Mesher")
+            return {"f_xy": parameters["x"]}
 
-        self.assertIn("best_parameters", result)
+        evaluator = _CountingEvaluator(fails_above_half)
+        design_variables = [RangeVar(name="x", lower=0.0, upper=1.0)]
 
-    @patch("mdo_framework.optimization.ax_algo_lib.Client")
-    def test_optimize_pareto_none(self, mock_client_cls):
-        self._configure_ax_client(mock_client_cls)
-        mock_client_cls.return_value.get_pareto_frontier.return_value = None
+        result = self._optimizer(
+            evaluator=evaluator, design_variables=design_variables
+        ).optimize(n_steps=6, n_init=6, max_consecutive_failures=12, seed=0)
 
-        optimizer = BayesianOptimizer(
-            self.evaluator,
-            self.parameters,
-            [{"name": "f_xy", "minimize": True}, {"name": "g_xy", "minimize": False}],
+        statuses = {entry["status"] for entry in result["history"]}
+        self.assertEqual(statuses, {"completed", "failed"})
+        for entry in result["history"]:
+            if entry["status"] == "failed":
+                self.assertIn("TOOL_FAILED", entry["reason"])
+                self.assertEqual(entry["objectives"], {})
+        self.assertLessEqual(result["best_parameters"]["x"], 0.5)
+        self.assertEqual(
+            result["evaluations"]["failed"],
+            sum(entry["status"] == "failed" for entry in result["history"]),
         )
 
-        with self.assertRaises(OptimizationExecutionError):
-            optimizer.optimize(n_steps=1, n_init=2)
+    def test_no_completed_trial_raises_with_the_partial_result(self):
+        def always_fails(parameters):
+            raise ToolExecutionError("mesh failed", tool="Mesher")
 
-    @patch("mdo_framework.optimization.ax_algo_lib.Client")
-    def test_optimize_wraps_best_parameterization_failures(self, mock_client_cls):
-        client = self._configure_ax_client(mock_client_cls)
-        client.get_best_parameterization.side_effect = Exception("Optimization failed")
+        optimizer = self._optimizer(evaluator=_CountingEvaluator(always_fails))
 
-        optimizer = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
+        with self.assertRaisesRegex(
+            OptimizationExecutionError, "consecutive_failures.*mesh failed"
+        ) as raised:
+            optimizer.optimize(n_steps=5, n_init=5, max_consecutive_failures=2)
 
-        with self.assertRaises(OptimizationExecutionError):
-            optimizer.optimize(n_steps=1, n_init=2)
+        partial = raised.exception.partial_result
+        self.assertEqual(partial["stop_reason"], "consecutive_failures")
+        self.assertIsNone(partial["best_parameters"])
+        self.assertFalse(partial["feasible"])
+        self.assertEqual(
+            [entry["status"] for entry in partial["history"]], ["failed", "failed"]
+        )
 
-    @patch("mdo_framework.optimization.ax_algo_lib.AxOptimizationLibrary")
-    def test_optimize_wraps_algorithm_execution_failures(self, mock_algo_cls):
-        mock_algo = MagicMock()
-        mock_algo.execute.side_effect = Exception("Algo failed")
-        mock_algo_cls.return_value = mock_algo
+    def test_an_unexpected_error_aborts_and_keeps_the_history(self):
+        def breaks_on_third_call(parameters):
+            if len(evaluator.calls) == 3:
+                raise RuntimeError("boom")
+            return {"f_xy": parameters["x"]}
 
-        optimizer = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
+        evaluator = _CountingEvaluator(breaks_on_third_call)
+        optimizer = self._optimizer(evaluator=evaluator)
 
-        with self.assertRaises(OptimizationExecutionError):
+        with self.assertRaisesRegex(OptimizationExecutionError, "boom") as raised:
+            optimizer.optimize(n_steps=4, n_init=4, seed=0)
+
+        partial = raised.exception.partial_result
+        self.assertEqual(partial["stop_reason"], "aborted")
+        self.assertEqual(
+            [entry["status"] for entry in partial["history"]], ["completed"] * 2
+        )
+        self.assertIsNotNone(partial["best_parameters"])
+
+    def test_remote_errors_keep_their_type_and_carry_the_partial_result(self):
+        def unreachable_on_third_call(parameters):
+            if len(evaluator.calls) == 3:
+                raise RemoteEvaluationTransportError("service down")
+            return {"f_xy": parameters["x"]}
+
+        evaluator = _CountingEvaluator(unreachable_on_third_call)
+        optimizer = self._optimizer(evaluator=evaluator)
+
+        with self.assertRaises(RemoteEvaluationTransportError) as raised:
+            optimizer.optimize(n_steps=4, n_init=4, seed=0)
+
+        self.assertEqual(len(raised.exception.partial_result["history"]), 2)
+
+    def test_configuration_errors_before_the_run_have_no_partial_result(self):
+        optimizer = self._optimizer(parameter_constraints=["x <=== y"])
+
+        with self.assertRaises(OptimizationConfigurationError) as raised:
             optimizer.optimize(n_steps=1, n_init=1)
 
-    @patch("mdo_framework.optimization.ax_algo_lib.AxOptimizationLibrary.execute")
-    def test_optimize_requires_valid_optimum(self, mock_execute):
-        with patch(
-            "mdo_framework.optimization.optimizer.create_scenario"
-        ) as mock_create_scenario:
-            mock_problem = MagicMock(optimum=None)
-            mock_scenario = MagicMock()
-            mock_scenario.formulation.optimization_problem = mock_problem
-            mock_create_scenario.return_value = mock_scenario
+        self.assertIsNone(raised.exception.partial_result)
 
-            optimizer = BayesianOptimizer(
-                self.evaluator, self.parameters, self.objectives
-            )
-
-            with self.assertRaises(OptimizationExecutionError):
-                optimizer.optimize(n_steps=1, n_init=1)
-
-        mock_execute.assert_called_once()
-
-    def test_optimize_raises_when_optimum_objectives_are_unreadable(self):
-        objective_sets = [
-            self.objectives,
-            [{"name": "f_xy", "minimize": True}, {"name": "g_xy", "minimize": False}],
+    def test_choices_are_decoded_for_a_remote_evaluator(self):
+        evaluator = _CountingEvaluator(
+            lambda parameters: {"f_xy": 0.0 if parameters["c_str"] == "B" else 1.0}
+        )
+        design_variables = [
+            RangeVar(name="x", lower=0.0, upper=1.0),
+            ChoiceVar(name="c_str", choices=["A", "B", "C"]),
+            ChoiceVar(name="c_num", choices=[42, 7]),
         ]
 
-        class DummyOptimum:
-            design = np.array([0.5, 0.5, 0.5])
+        result = self._optimizer(
+            evaluator=evaluator, design_variables=design_variables
+        ).optimize(n_steps=4, n_init=4, seed=0)
 
-            @property
-            def objective(self):
-                raise TypeError("Bang!")
+        for call in evaluator.calls:
+            self.assertIn(call["c_str"], ["A", "B", "C"])
+            self.assertIn(call["c_num"], [42, 7])
+        self.assertEqual(result["best_parameters"]["c_str"], "B")
 
-        for objectives in objective_sets:
-            with self.subTest(objectives=objectives):
-                optimizer = BayesianOptimizer(
-                    self.evaluator, self.parameters, objectives
-                )
-                with patch(
-                    "gemseo.algos.optimization_problem.OptimizationProblem.optimum",
-                    return_value=DummyOptimum(),
-                ):
-                    with patch(
-                        "mdo_framework.optimization.ax_algo_lib.AxOptimizationLibrary.execute"
-                    ):
-                        with self.assertRaises(OptimizationExecutionError):
-                            optimizer.optimize(n_steps=1, n_init=1)
+    def test_a_seed_makes_a_run_reproducible(self):
+        optimizer = self._optimizer()
+
+        first = optimizer.optimize(n_steps=2, n_init=2, seed=3)
+        second = optimizer.optimize(n_steps=2, n_init=2, seed=3)
+        other = optimizer.optimize(n_steps=2, n_init=2, seed=4)
+
+        self.assertEqual(first["history"], second["history"])
+        self.assertNotEqual(first["history"], other["history"])
+
+    def test_a_seeded_ax_run_follows_the_budget(self):
+        constraints = [ConstraintSpec(name="g_xy", bound=0.0)]
+
+        result = BayesianOptimizer(
+            self.evaluator,
+            self.design_variables,
+            self.objectives,
+            constraints,
+            parameter_constraints=["x <= y"],
+        ).optimize(n_steps=2, n_init=3, evaluate_x0=True, seed=0)
+
+        self.assertEqual(result["stop_reason"], "budget")
+        self.assertEqual(
+            result["evaluations"], {"x0": 1, "init": 3, "bo": 2, "failed": 0}
+        )
+        self.assertTrue(result["feasible"])
+        for entry in result["history"]:
+            self.assertLessEqual(
+                entry["parameters"]["x"], entry["parameters"]["y"] + 1e-9
+            )
+
+    def test_a_seeded_ax_multi_objective_run_with_bonsai(self):
+        objectives = [
+            ObjectiveSpec(name="f_xy"),
+            ObjectiveSpec(name="g_xy", minimize=False, threshold=-1.0),
+        ]
+
+        result = BayesianOptimizer(
+            self.evaluator,
+            self.design_variables,
+            objectives,
+            use_bonsai=True,
+        ).optimize(n_steps=1, n_init=2, seed=0)
+
+        self.assertEqual(result["stop_reason"], "budget")
+        self.assertGreaterEqual(len(result["pareto_front"]), 1)
+        self.assertEqual(set(result["best_objectives"]), {"f_xy", "g_xy"})
+
+    def test_post_processing_failures_do_not_fail_the_run(self):
+        with patch(
+            "gemseo.settings.post.OptHistoryView_Settings",
+            side_effect=Exception("Plot failed"),
+        ):
+            result = self._optimizer().optimize(n_steps=1, n_init=1, seed=0)
+
+        self.assertEqual(result["stop_reason"], "budget")
 
     @patch("mdo_framework.optimization.optimizer.create_scenario")
     def test_explore_basic(self, mock_create_scenario):
@@ -641,10 +742,9 @@ class TestBayesianOptimizer(OptimizerTestCase):
 
         optimizer = BayesianOptimizer(
             self.evaluator,
-            self.parameters,
+            self.design_variables,
             self.objectives,
-            use_bonsai=True,
-            constraints=[{"name": "g_xy", "op": "<=", "bound": 0.0}],
+            constraints=[ConstraintSpec(name="g_xy", bound=0.0)],
         )
         result = optimizer.explore(n_samples=2, n_processes=1)
 
@@ -663,9 +763,9 @@ class TestBayesianOptimizer(OptimizerTestCase):
 
         optimizer = BayesianOptimizer(
             self.evaluator,
-            self.parameters,
+            self.design_variables,
             self.objectives,
-            constraints=[{"name": "g_xy", "op": ">=", "bound": 1.5}],
+            constraints=[ConstraintSpec(name="g_xy", op=">=", bound=1.5)],
         )
         optimizer.explore(n_samples=2, n_processes=1)
 
@@ -682,20 +782,11 @@ class TestBayesianOptimizer(OptimizerTestCase):
         mock_scenario.execute.side_effect = ValueError("DOE failed")
         mock_create_scenario.return_value = mock_scenario
 
-        optimizer = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
-
-        with self.assertRaises(OptimizationExecutionError):
-            optimizer.explore()
-
-    def test_explore_rejects_invalid_constraint_operator(self):
         optimizer = BayesianOptimizer(
-            self.evaluator,
-            self.parameters,
-            self.objectives,
-            constraints=[{"name": "g_xy", "op": "==", "bound": 0.0}],
+            self.evaluator, self.design_variables, self.objectives
         )
 
-        with self.assertRaises(ValueError):
+        with self.assertRaises(OptimizationExecutionError):
             optimizer.explore()
 
     @patch("mdo_framework.optimization.optimizer.create_scenario")
@@ -706,10 +797,9 @@ class TestBayesianOptimizer(OptimizerTestCase):
         optimizer = BayesianOptimizer(
             RemoteEvaluator("http://test"),
             [
-                {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
-                {"name": "c_str", "type": "choice", "values": ["A", "B", "C"]},
-                {"name": "c_single", "type": "choice", "values": ["A"]},
-                {"name": "c_num_single", "type": "choice", "values": [42]},
+                RangeVar(name="x", lower=0.0, upper=1.0),
+                ChoiceVar(name="c_str", choices=["A", "B", "C"]),
+                ChoiceVar(name="c_num", choices=[42, 7]),
             ],
             self.objectives,
         )
@@ -724,20 +814,34 @@ class TestBayesianOptimizer(OptimizerTestCase):
         mock_scenario.post_process.side_effect = Exception("Plot failed")
         mock_create_scenario.return_value = mock_scenario
 
-        optimizer = BayesianOptimizer(self.evaluator, self.parameters, self.objectives)
+        optimizer = BayesianOptimizer(
+            self.evaluator, self.design_variables, self.objectives
+        )
         result = optimizer.explore()
         self.assertIn("history", result)
 
 
 class TestRemoteDiscipline(unittest.TestCase):
-    def test_executes_with_string_inputs(self):
+    def test_decodes_the_design_variables_for_the_evaluator(self):
         mock_evaluator = MagicMock()
         mock_evaluator.evaluate.return_value = {"y": 42.0}
+        design_variables = [
+            RangeVar(name="x", lower=0.0, upper=4.0),
+            RangeVar(name="n", lower=0, upper=9, value_type="int"),
+            ChoiceVar(name="c", choices=["A", "B"]),
+        ]
 
-        discipline = RemoteDiscipline(mock_evaluator, ["x"], ["y"])
-        discipline.execute({"x": np.array([2.0])})
+        discipline = RemoteDiscipline(mock_evaluator, design_variables, ["y"])
+        discipline.execute(
+            {"x": np.array([2.0]), "n": np.array([3.0]), "c": np.array([1])}
+        )
 
         self.assertEqual(discipline.local_data["y"][0], 42.0)
+        mock_evaluator.evaluate.assert_called_once_with(
+            {"x": 2.0, "n": 3, "c": "B"}, ["y"]
+        )
+        self.assertEqual(discipline.default_input_data["c"][0], 0)
+        self.assertEqual(discipline.default_input_data["x"][0], 0.0)
 
 
 def _line_explorer(tools, *, coupled=False):
@@ -758,8 +862,8 @@ def _line_explorer(tools, *, coupled=False):
     evaluator = LocalEvaluator(builder.build_problem(tools), builder.variable_specs)
     return BayesianOptimizer(
         evaluator,
-        analyzer.extract_parameters(resolved.design_variables),
-        [{"name": "f", "minimize": True}],
+        resolved.design_variables,
+        [ObjectiveSpec(name="f")],
     )
 
 
