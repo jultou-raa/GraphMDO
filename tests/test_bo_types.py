@@ -177,6 +177,27 @@ class TestMetricBindingMargin:
 
         assert not binding.satisfied(value)
 
+    @pytest.mark.parametrize(
+        ("op", "bound", "tolerance"),
+        [("<=", 0.1, 0.2), (">=", 0.1, 0.2), ("<=", 0.7, 0.1), (">=", -0.3, 0.6)],
+    )
+    def test_a_satisfied_value_has_no_violation(self, op, bound, tolerance):
+        binding = _constraint(op=op, bound=bound, tolerance=tolerance)
+
+        value = binding.user_value({binding.gemseo_name: np.array([0.0])})
+
+        assert binding.violation(value) == 0.0
+
+    def test_violation_is_the_scaled_distance_past_the_folded_bound(self):
+        upper = _constraint(op="<=", bound=2.0, tolerance=0.5, scale=10.0)
+        lower = _constraint(op=">=", bound=2.0, tolerance=0.5, scale=10.0)
+
+        assert upper.violation(4.5) == pytest.approx(0.2)
+        assert lower.violation(0.5) == pytest.approx(0.1)
+        assert upper.violation(1.0) == 0.0
+        assert lower.violation(3.0) == 0.0
+        assert _objective().violation(1e30) == 0.0
+
     def test_objectives_are_always_satisfied_and_have_no_margin(self):
         binding = _objective()
 

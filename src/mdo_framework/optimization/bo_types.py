@@ -174,6 +174,23 @@ class MetricBinding:
             return value <= limit
         return value >= limit
 
+    def violation(self, value: float) -> float:
+        """Return how far a value lies past the bound, in units of ``scale``.
+
+        Args:
+            value: Raw user value of the output.
+
+        Returns:
+            Zero when ``satisfied(value)``, otherwise the distance from the
+            folded bound GEMSEO enforces divided by ``scale``; zero for an
+            objective.
+        """
+        if self.satisfied(value):
+            return 0.0
+        limit = _folded_bound(self.op, self.bound, self.tolerance)
+        excess = value - limit if self.op == "<=" else limit - value
+        return excess / self.scale
+
 
 @dataclass(frozen=True)
 class TrialRecord:
@@ -204,14 +221,7 @@ class TrialRecord:
     def violation(self, bindings: Sequence[MetricBinding]) -> float:
         """Return the total violation, net of tolerance, in constraint scales."""
         return sum(
-            max(
-                0.0,
-                -(
-                    binding.margin(self.outcome.metrics[binding.name])
-                    + binding.tolerance
-                ),
-            )
-            / binding.scale
+            binding.violation(self.outcome.metrics[binding.name])
             for binding in _constraints(bindings)
         )
 
