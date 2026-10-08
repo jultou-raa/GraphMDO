@@ -80,9 +80,13 @@ def gemseo_bound(spec: ConstraintSpec) -> float:
     Returns:
         ``bound + tolerance`` for ``<=``, ``bound - tolerance`` for ``>=``.
     """
-    if spec.op == "<=":
-        return spec.bound + spec.tolerance
-    return spec.bound - spec.tolerance
+    return _folded_bound(spec.op, spec.bound, spec.tolerance)
+
+
+def _folded_bound(op: Literal["<=", ">="], bound: float, tolerance: float) -> float:
+    if op == "<=":
+        return bound + tolerance
+    return bound - tolerance
 
 
 @dataclass(frozen=True)
@@ -156,12 +160,19 @@ class MetricBinding:
             value: Raw user value of the output.
 
         Returns:
-            ``margin >= -tolerance`` for a constraint, always ``True`` for an
+            ``value <= bound + tolerance`` for ``<=`` and
+            ``value >= bound - tolerance`` for ``>=``, computed with the bound
+            GEMSEO enforces so both agree at the edge; always ``True`` for an
             objective.
         """
         if self.role != "constraint":
             return True
-        return self.margin(value) >= -self.tolerance
+        if self.op is None or self.bound is None:
+            raise ValueError(f"constraint {self.name!r} has no operator or bound")
+        limit = _folded_bound(self.op, self.bound, self.tolerance)
+        if self.op == "<=":
+            return value <= limit
+        return value >= limit
 
 
 @dataclass(frozen=True)

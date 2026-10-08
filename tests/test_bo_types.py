@@ -158,6 +158,25 @@ class TestMetricBindingMargin:
     def test_not_a_number_never_satisfies(self):
         assert not _constraint().satisfied(float("nan"))
 
+    @pytest.mark.parametrize(
+        ("op", "bound", "tolerance"),
+        [("<=", 0.1, 0.2), (">=", 0.1, 0.2), ("<=", 0.7, 0.1), (">=", -0.3, 0.6)],
+    )
+    def test_a_zero_gemseo_residual_is_satisfied(self, op, bound, tolerance):
+        binding = _constraint(op=op, bound=bound, tolerance=tolerance)
+
+        value = binding.user_value({binding.gemseo_name: np.array([0.0])})
+
+        assert binding.satisfied(value)
+
+    @pytest.mark.parametrize("op", ["<=", ">="])
+    def test_a_positive_gemseo_residual_is_violated(self, op):
+        binding = _constraint(op=op, bound=0.1, tolerance=0.2)
+
+        value = binding.user_value({binding.gemseo_name: np.array([1e-12])})
+
+        assert not binding.satisfied(value)
+
     def test_objectives_are_always_satisfied_and_have_no_margin(self):
         binding = _objective()
 
