@@ -79,4 +79,4 @@ The framework exposes these layers as independent microservices:
     *   Execution Service runs the GEMSEO model on a worker thread and returns the requested outputs `y`.
     *   Optimization Service updates its internal model (GP) with `(x, y)`.
     *   Repeat until convergence or step limit.
-5.  **Result**: Optimization Service returns the best design point found, the best objective values, and explicit trial-history records.
+5.  **Result**: Optimization Service returns the best design point found, the best objective values, its feasibility with the constraint margins, the Pareto front (multi-objective runs), the stop reason and explicit trial-history records.

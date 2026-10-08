@@ -69,16 +69,23 @@ The evaluation budget is explicit:
 
 - `n_init` (default `5`, at least `1`): initial Sobol trials that explore the design space.
 - `n_steps` (default `10`, at least `1`): Bayesian (BoTorch) iterations after the initial design.
+- `evaluate_x0` (default unset): evaluate the start point first. Unset, it is evaluated only when every design variable declares an `initial` value; the start point is the declared `initial` values, else the centre of the design space.
+- `max_consecutive_failures` (default `5`, at least `1`): the run stops with `stop_reason` `consecutive_failures` after that many failed evaluations in a row.
 
-The start point (the centre of the design space) is evaluated first, so the tools are called at most `1 + n_init + n_steps` times. Fewer calls happen only when Ax stops proposing new designs, for example once a small discrete space is exhausted. Values below `1` are rejected with `422`.
+The tools are called at most `n_init + n_steps` times, plus one when the start point is evaluated. Fewer calls happen only when the run stops early, for example once a small discrete space is exhausted. Values below `1` are rejected with `422`.
+
+A constraint is satisfied when it holds within its `tolerance` (default `0`), set per constraint in the request.
 
 You will receive a JSON response containing:
 
-- `best_parameters`: the best graph-derived design point found.
-- `best_objectives`: the best objective values associated with that point.
-- `history`: an explicit list of trial records, each with `parameters` and `objectives`.
+- `best_parameters` and `best_objectives`: the best feasible completed trial (for several objectives, the Pareto-front point closest to the ideal point), or the least-violating completed trial when none is feasible.
+- `feasible` and `constraints`: whether that trial satisfies every constraint, and for each constraint its `value`, `margin`, `satisfied` and `tolerance`.
+- `pareto_front`: the non-dominated feasible trials (`parameters` and `objectives`) of a multi-objective run, `[]` otherwise.
+- `history`: one record per trial with `index`, `phase` (`x0`, `init` or `bo`), `status` (`completed`, `failed` or `abandoned`), `reason`, `parameters`, `objectives`, `constraints` and `feasible`. A tool that raises makes a `failed` trial and the run continues.
+- `stop_reason`: `budget`, `max_time`, `search_space_exhausted`, `consecutive_failures` or `aborted`.
+- `evaluations`: the number of evaluated trials per phase (`x0`, `init`, `bo`) and the number of `failed` ones.
 
-Some deployments may also include optional metadata such as `serialized_client`.
+A value that is not a finite number (NaN or infinity) is returned as `null`. When the run fails, `/optimize` answers `500` (`502` if the Execution Service is unreachable or answers an invalid response). The `detail` is the message, or, if the run had recorded trials before it failed, an object `{"message": "...", "partial_result": {...}}` whose `partial_result` has the same structure as a successful response. Configuration errors answer `400` with a plain `detail` message.
 
 ### 4. Validate Before Running
 

@@ -5,6 +5,7 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
 import asyncio
+import math
 import os
 from contextlib import asynccontextmanager
 from typing import Any
@@ -14,7 +15,6 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from mdo_framework.optimization.ax_algo_lib import AxObjectiveDict
 from mdo_framework.optimization.optimizer import (
     BayesianOptimizer,
     OptimizationConfigurationError,
@@ -36,21 +36,27 @@ from services.errors import register_validation_handler
 
 
 def to_jsonable(obj: Any) -> Any:
-    """Recursively converts objects to JSON-serializable types (handling NumPy and Tensors)."""
+    """Recursively converts objects to JSON-serializable types.
+
+    NumPy values and tensors become Python values; non-finite floats become
+    ``None`` because JSON cannot carry them.
+    """
     if isinstance(obj, dict):
         return {k: to_jsonable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple, set)):
         return [to_jsonable(v) for v in obj]
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
     if isinstance(obj, np.ndarray):
-        return obj.tolist()
+        return to_jsonable(obj.tolist())
     if isinstance(obj, np.generic):
-        return obj.item()
+        return to_jsonable(obj.item())
     if hasattr(obj, "tolist") and callable(obj.tolist):
         # Handle PyTorch tensors and other objects with .tolist()
-        return obj.tolist()
+        return to_jsonable(obj.tolist())
     if hasattr(obj, "item") and callable(obj.item):
         # Handle scalars from Tensors/NumPy
-        return obj.item()
+        return to_jsonable(obj.item())
     return obj
 
 
@@ -67,17 +73,6 @@ register_validation_handler(app)
 
 EXECUTION_SERVICE_URL = os.getenv("EXECUTION_SERVICE_URL", "http://localhost:8002")
 GRAPH_SERVICE_URL = os.getenv("GRAPH_SERVICE_URL", "http://localhost:8001")
-
-
-def objective_to_ax(objective: ObjectiveSpec) -> AxObjectiveDict:
-    """Projects an objective onto the Ax objective contract."""
-    ax_objective: AxObjectiveDict = {
-        "name": objective.name,
-        "minimize": objective.minimize,
-    }
-    if objective.threshold is not None:
-        ax_objective["threshold"] = objective.threshold
-    return ax_objective
 
 
 class OptimizeRequest(BaseModel):
@@ -99,9 +94,21 @@ class OptimizeRequest(BaseModel):
         default=5,
         ge=1,
         description=(
-            "Initial Sobol trials. The start point x0 is evaluated in addition, "
-            "so tools are called at most 1 + n_init + n_steps times."
+            "Initial Sobol trials. Tools are called at most "
+            "n_init + n_steps times, plus one when the start point x0 is evaluated."
         ),
+    )
+    evaluate_x0: bool | None = Field(
+        default=None,
+        description=(
+            "Evaluate the start point x0 as a baseline trial. By default x0 is "
+            "evaluated only when every design variable declares an initial value."
+        ),
+    )
+    max_consecutive_failures: int = Field(
+        default=5,
+        ge=1,
+        description="Stop the run after this many failed trials in a row.",
     )
     use_bonsai: bool = False
 
@@ -165,6 +172,14 @@ async def validate(req: OptimizeRequest, request: Request):
     return report
 
 
+def _error_detail(error: Exception) -> Any:
+    """The error message, with what the run produced before it failed if any."""
+    partial_result = getattr(error, "partial_result", None)
+    if partial_result is None:
+        return str(error)
+    return {"message": str(error), "partial_result": to_jsonable(partial_result)}
+
+
 @app.post("/optimize")
 async def optimize(req: OptimizeRequest, request: Request):
     # 1. Fetch the schema from the Graph Service and reject an invalid study
@@ -187,25 +202,19 @@ async def optimize(req: OptimizeRequest, request: Request):
     except StudyValidationError as e:
         raise HTTPException(status_code=422, detail=e.report.model_dump(mode="json"))
 
-    # 3. Extract parameter definitions
-    parameters = analyzer.extract_parameters(resolved.design_variables)
-
-    # 4. Setup Evaluator
+    # 3. Setup Evaluator
     evaluator = RemoteEvaluator(EXECUTION_SERVICE_URL)
 
-    # 5. Setup and run the optimizer
+    # 4. Setup and run the optimizer
     try:
-        constraints = (
-            [c.model_dump() for c in req.constraints] if req.constraints else None
-        )
         try:
             optimizer = BayesianOptimizer(
                 evaluator=evaluator,
-                parameters=parameters,
-                objectives=[objective_to_ax(o) for o in req.objectives],
-                constraints=constraints,
+                design_variables=resolved.design_variables,
+                objectives=req.objectives,
+                constraints=req.constraints or (),
+                parameter_constraints=req.parameter_constraints or (),
                 use_bonsai=req.use_bonsai,
-                parameter_constraints=req.parameter_constraints,
             )
 
             # Offload to a thread to avoid blocking the event loop
@@ -213,29 +222,17 @@ async def optimize(req: OptimizeRequest, request: Request):
                 optimizer.optimize,
                 n_steps=req.n_steps,
                 n_init=req.n_init,
+                evaluate_x0=req.evaluate_x0,
+                max_consecutive_failures=req.max_consecutive_failures,
             )
         except OptimizationConfigurationError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except (RemoteEvaluationTransportError, RemoteEvaluationContractError) as e:
-            raise HTTPException(status_code=502, detail=str(e))
+            raise HTTPException(status_code=502, detail=_error_detail(e))
         except OptimizationExecutionError as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=_error_detail(e))
 
-        # Convert tensor/numpy to lists for JSON
-        return to_jsonable(
-            {
-                "best_parameters": result.get("best_parameters"),
-                "best_objectives": result.get("best_objectives"),
-                "history": [
-                    {
-                        "parameters": trial["parameters"],
-                        "objectives": trial["objectives"],
-                    }
-                    for trial in result.get("history", [])
-                ],
-                "serialized_client": result.get("serialized_client"),
-            },
-        )
+        return to_jsonable(result)
     except HTTPException:
         raise
     except Exception as e:

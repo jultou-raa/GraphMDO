@@ -5,7 +5,14 @@ from importlib.metadata import version
 from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.core.translator import GraphProblemBuilder
 from mdo_framework.optimization.optimizer import BayesianOptimizer
-from mdo_framework.schema import RangeVar, StateVar, StudySchema, ToolSpec
+from mdo_framework.schema import (
+    ConstraintSpec,
+    ObjectiveSpec,
+    RangeVar,
+    StateVar,
+    StudySchema,
+    ToolSpec,
+)
 
 
 def test_installed_wheel_runs_a_real_optimization(tmp_path, monkeypatch) -> None:
@@ -30,14 +37,12 @@ def test_installed_wheel_runs_a_real_optimization(tmp_path, monkeypatch) -> None
     problem = builder.build_problem({"P": paraboloid})
     optimizer = BayesianOptimizer(
         LocalEvaluator(problem, builder.variable_specs),
-        [
-            {"name": name, "type": "range", "bounds": [-10.0, 10.0]}
-            for name in ("x", "y")
-        ],
-        [{"name": "f_xy"}],
-        [{"name": "c_xy", "op": "<=", "bound": 0.0}],
+        [RangeVar(name=name, lower=-10.0, upper=10.0) for name in ("x", "y")],
+        [ObjectiveSpec(name="f_xy")],
+        [ConstraintSpec(name="c_xy", bound=0.0)],
     )
 
     result = optimizer.optimize(n_steps=6, n_init=3)
 
-    assert len(result["history"]) >= 2
+    assert result["stop_reason"] == "budget"
+    assert result["evaluations"]["completed"] == 9

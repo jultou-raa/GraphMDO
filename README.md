@@ -200,19 +200,20 @@ prob = builder.build_problem(tool_registry)
 # Resolve Topology mapping design variables automatically from the schema
 analyzer = TopologicalAnalyzer(schema)
 resolved = analyzer.resolve_dependencies(["z"])
-parameters = analyzer.extract_parameters(resolved.design_variables)
 
 # Run Optimization
 evaluator = LocalEvaluator(prob, builder.variable_specs)
 optimizer = BayesianOptimizer(
-    evaluator=evaluator,
-    parameters=parameters,
-    objectives=[{"name": "z", "minimize": True}],
+    evaluator,
+    resolved.design_variables,
+    [ObjectiveSpec(name="z")],
 )
 
-# x0 + 5 Sobol trials (n_init) + 10 Bayesian iterations (n_steps) = 16 evaluations
+# 5 Sobol trials (n_init) + 10 Bayesian iterations (n_steps) = 15 evaluations,
+# plus the start point x0 when evaluate_x0=True
 result = optimizer.optimize(n_steps=10, n_init=5)
 print(f"Best Result: {result['best_objectives']} at {result['best_parameters']}")
+print(f"Stopped because: {result['stop_reason']}, feasible: {result['feasible']}")
 print(f"Trial History: {result['history']}")
 ```
 

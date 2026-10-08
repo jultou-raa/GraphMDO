@@ -24,12 +24,16 @@ from mdo_framework.core.topology import ResolvedInputs
 from mdo_framework.db.graph_manager import GraphManager
 from mdo_framework.optimization.optimizer import (
     OptimizationConfigurationError,
+    OptimizationExecutionError,
+    RemoteEvaluationContractError,
     RemoteEvaluationTransportError,
 )
 from mdo_framework.schema import (
     ChoiceVar,
+    ConstraintSpec,
     Finding,
     FixedParam,
+    ObjectiveSpec,
     RangeVar,
     StateVar,
     StudySchema,
@@ -1448,19 +1452,28 @@ class TestOptimizationService(unittest.TestCase):
 
         self.mock_client.get.return_value = mock_resp
         mock_resolve.return_value = SERVICE_RESOLVED
-
-        # Mock result of optimization
-        mock_optimize.return_value = {
+        contract = {
             "best_parameters": {"x": 0.5, "y": 0.5},
             "best_objectives": {"f_xy": 0.0},
+            "feasible": True,
+            "constraints": {},
+            "pareto_front": [],
             "history": [
                 {
+                    "index": 0,
+                    "phase": "init",
+                    "status": "completed",
+                    "reason": None,
                     "parameters": {"x": 0.5, "y": 0.5},
-                    "objectives": {"f_xy": np.array([0.0])},
+                    "objectives": {"f_xy": 0.0},
+                    "constraints": {},
+                    "feasible": True,
                 },
             ],
-            "serialized_client": "{}",
+            "stop_reason": "budget",
+            "evaluations": {"x0": 0, "init": 1, "bo": 1, "failed": 0},
         }
+        mock_optimize.return_value = contract
 
         payload = {
             "objectives": [{"name": "f_xy"}],
@@ -1471,7 +1484,81 @@ class TestOptimizationService(unittest.TestCase):
 
         response = self.client.post("/optimize", json=payload)
         self.assertEqual(response.status_code, 200)
-        self.assertIn("best_parameters", response.json())
+        self.assertEqual(response.json(), contract)
+        self.assertNotIn("serialized_client", response.json())
+
+    @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
+    @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
+    def test_optimize_forwards_the_budget_and_failure_options(
+        self, mock_resolve, mock_optimize
+    ):
+        self.mock_resp.json.return_value = SERVICE_PAYLOAD
+        mock_resolve.return_value = SERVICE_RESOLVED
+        mock_optimize.return_value = {}
+
+        for label, extra, expected in (
+            ("defaults", {}, (None, 5)),
+            (
+                "explicit",
+                {"evaluate_x0": True, "max_consecutive_failures": 2},
+                (True, 2),
+            ),
+            ("x0 declined", {"evaluate_x0": False}, (False, 5)),
+        ):
+            with self.subTest(label):
+                payload = {
+                    "objectives": [{"name": "f_xy"}],
+                    "n_steps": 3,
+                    "n_init": 2,
+                    **extra,
+                }
+
+                response = self.client.post("/optimize", json=payload)
+
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(
+                    mock_optimize.call_args.kwargs,
+                    {
+                        "n_steps": 3,
+                        "n_init": 2,
+                        "evaluate_x0": expected[0],
+                        "max_consecutive_failures": expected[1],
+                    },
+                )
+
+    def test_optimize_rejects_a_failure_limit_below_one(self):
+        payload = {"objectives": [{"name": "f_xy"}], "max_consecutive_failures": 0}
+
+        response = self.client.post("/optimize", json=payload)
+
+        self.assertEqual(response.status_code, 422)
+
+    @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
+    @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
+    def test_optimize_serialises_non_finite_numbers_as_null(
+        self, mock_resolve, mock_optimize
+    ):
+        self.mock_resp.json.return_value = SERVICE_PAYLOAD
+        mock_resolve.return_value = SERVICE_RESOLVED
+        mock_optimize.return_value = {
+            "best_parameters": {"x": 0.5},
+            "best_objectives": {"f_xy": float("nan")},
+            "history": [
+                {"status": "failed", "objectives": {"f_xy": float("inf")}},
+                {"status": "completed", "objectives": {"f_xy": np.float64("-inf")}},
+            ],
+        }
+
+        response = self.client.post(
+            "/optimize", json={"objectives": [{"name": "f_xy"}]}
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertIsNone(body["best_objectives"]["f_xy"])
+        self.assertEqual(
+            [entry["objectives"]["f_xy"] for entry in body["history"]], [None, None]
+        )
 
     @patch("mdo_framework.optimization.optimizer.BayesianOptimizer.optimize")
     @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
@@ -1864,20 +1951,12 @@ class TestStudyPreflight(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["best_parameters"], {"x": 0.5, "y": 0.5})
         arguments = self.BayesianOptimizer.call_args.kwargs
-        self.assertEqual(arguments["objectives"], [{"name": "f_xy", "minimize": True}])
+        self.assertEqual(arguments["objectives"], [ObjectiveSpec(name="f_xy")])
         self.assertEqual(
-            arguments["constraints"],
-            [
-                {
-                    "name": "g_xy",
-                    "bound": 0.0,
-                    "op": "<=",
-                    "tolerance": 0.0,
-                    "scale": None,
-                }
-            ],
+            arguments["constraints"], [ConstraintSpec(name="g_xy", bound=0.0)]
         )
         self.assertEqual(arguments["parameter_constraints"], ["x + y <= 1.5"])
+        self.assertEqual(arguments["design_variables"], SERVICE_VARIABLES)
 
 
 class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
@@ -1912,7 +1991,12 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(to_jsonable("string"), "string")
         self.assertEqual(to_jsonable(None), None)
 
-        # 8. Nested structures (Recursive branches)
+        # 8. Non-finite floats are not JSON; they become null
+        self.assertIsNone(to_jsonable(float("nan")))
+        self.assertIsNone(to_jsonable(np.float64("inf")))
+        self.assertEqual(to_jsonable([1.5, float("-inf")]), [1.5, None])
+
+        # 9. Nested structures (Recursive branches)
         nested = {
             "list": [np.array([1]), {np.float64(2.0)}],
             "tuple": (MagicMock(tolist=lambda: [3]),),
@@ -1967,24 +2051,11 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
         mock_resolve.side_effect = None
         mock_resolve.return_value = SERVICE_RESOLVED
 
-        # 3. Catch-all Internal Server Error (500)
-        # Hit via to_jsonable or return block by returning None from optimize
-        with (
-            patch(
-                "mdo_framework.core.topology.TopologicalAnalyzer.extract_parameters",
-                return_value=[
-                    {
-                        "name": "x",
-                        "type": "range",
-                        "bounds": [0.0, 1.0],
-                        "value_type": "float",
-                    },
-                ],
-            ),
-            patch(
-                "mdo_framework.optimization.optimizer.BayesianOptimizer.optimize",
-                return_value=None,
-            ),
+        # 3. Catch-all Internal Server Error (500): a failure that no optimizer
+        # error type describes
+        with patch(
+            "mdo_framework.optimization.optimizer.BayesianOptimizer.optimize",
+            side_effect=RuntimeError("boom"),
         ):
             response = client.post("/optimize", json=payload)
             self.assertEqual(response.status_code, 500)
@@ -2038,6 +2109,59 @@ class TestOptimizationServiceExtra(unittest.IsolatedAsyncioTestCase):
             response = client.post("/optimize", json=payload)
             self.assertEqual(response.status_code, 502)
             self.assertIn("execution service unavailable", response.json()["detail"])
+
+        with patch(
+            "mdo_framework.optimization.optimizer.BayesianOptimizer.optimize",
+            side_effect=OptimizationExecutionError("optimizer broke"),
+        ):
+            response = client.post("/optimize", json=payload)
+            self.assertEqual(response.status_code, 500)
+            self.assertEqual(response.json()["detail"], "optimizer broke")
+
+    @patch("mdo_framework.core.topology.TopologicalAnalyzer.resolve_dependencies")
+    async def test_failures_carry_the_partial_result(self, mock_resolve):
+        mock_client = AsyncMock()
+        optimization_app.state.client = mock_client
+        client = TestClient(optimization_app)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = SERVICE_PAYLOAD
+        mock_client.get.return_value = mock_resp
+        mock_resolve.return_value = SERVICE_RESOLVED
+        partial = {
+            "best_parameters": None,
+            "history": [{"status": "failed", "objectives": {"f_xy": float("nan")}}],
+            "stop_reason": "consecutive_failures",
+        }
+        payload = {"objectives": [{"name": "f_xy"}], "n_steps": 1, "n_init": 1}
+        # The optimizer attaches the partial result to remote errors afterwards
+        contract_error = RemoteEvaluationContractError("bad reply")
+        contract_error.partial_result = partial
+        errors = {
+            500: OptimizationExecutionError(
+                "no trial completed", partial_result=partial
+            ),
+            502: contract_error,
+        }
+
+        for status, error in errors.items():
+            with (
+                self.subTest(status=status),
+                patch(
+                    "mdo_framework.optimization.optimizer.BayesianOptimizer.optimize",
+                    side_effect=error,
+                ),
+            ):
+                response = client.post("/optimize", json=payload)
+
+                self.assertEqual(response.status_code, status)
+                detail = response.json()["detail"]
+                self.assertEqual(detail["message"], str(error))
+                self.assertEqual(
+                    detail["partial_result"]["stop_reason"], "consecutive_failures"
+                )
+                self.assertIsNone(
+                    detail["partial_result"]["history"][0]["objectives"]["f_xy"]
+                )
 
 
 if __name__ == "__main__":

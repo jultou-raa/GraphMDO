@@ -89,24 +89,36 @@ prob = builder.build_problem(tool_registry)
 analyzer = TopologicalAnalyzer(schema)
 # The targets are our objective and constraint
 resolved = analyzer.resolve_dependencies(["z", "c_xy"])
-parameters = analyzer.extract_parameters(resolved.design_variables)
 
 # 4. Setup Optimizer
 evaluator = LocalEvaluator(prob, builder.variable_specs)
 optimizer = BayesianOptimizer(
-    evaluator=evaluator,
-    parameters=parameters,
-    objectives=[{"name": "z", "minimize": True}],
-    constraints=[{"name": "c_xy", "op": "<=", "bound": 0.0}],
+    evaluator,
+    resolved.design_variables,
+    [ObjectiveSpec(name="z", minimize=True)],
+    [ConstraintSpec(name="c_xy", op="<=", bound=0.0)],
 )
 
 # 5. Execute Optimization
-# x0 + 5 Sobol trials (n_init) + 10 Bayesian iterations (n_steps) = 16 evaluations
+# 5 Sobol trials (n_init) + 10 Bayesian iterations (n_steps) = 15 evaluations,
+# plus the start point x0 when evaluate_x0=True
 result = optimizer.optimize(n_steps=10, n_init=5)
 print(f"Best Result: {result['best_objectives']} at {result['best_parameters']}")
+print(f"Stopped because: {result['stop_reason']}, feasible: {result['feasible']}")
 ```
 
 `resolve_dependencies` returns a `ResolvedInputs` with the `design_variables`, `fixed_parameters` and `tools` that the targets depend on. It raises `StudyValidationError` (with the full report in `.report`) when the targets cannot be computed.
+
+`optimize()` returns a result with these keys:
+
+- `best_parameters` and `best_objectives`: the best feasible completed trial (the compromise point closest to the ideal point on the Pareto front for several objectives), or the least-violating completed trial when none is feasible.
+- `feasible` and `constraints`: whether that trial satisfies every constraint, and for each constraint its `value`, `margin`, `satisfied` and `tolerance`.
+- `pareto_front`: the non-dominated trials (`parameters` and `objectives`) of a multi-objective run, `[]` otherwise.
+- `history`: one record per trial with `index`, `phase` (`x0`, `init` or `bo`), `status` (`completed`, `failed` or `abandoned`), `reason`, `parameters`, `objectives`, `constraints` and `feasible`. A tool that raises makes a `failed` trial; the run continues.
+- `stop_reason`: `budget`, `max_time`, `search_space_exhausted`, `consecutive_failures` or `aborted`.
+- `evaluations`: the number of evaluated trials per phase (`x0`, `init`, `bo`) and the number of `failed` ones.
+
+The start point x0 is evaluated only when `evaluate_x0=True` or every design variable declares an `initial` value. If no trial completes, `optimize()` raises `OptimizationExecutionError` whose `partial_result` holds the same structure.
 
 ## Next Steps
 

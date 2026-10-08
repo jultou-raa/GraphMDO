@@ -2,7 +2,13 @@ from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.core.translator import GraphProblemBuilder
 from mdo_framework.db.graph_manager import GraphManager
 from mdo_framework.optimization.optimizer import BayesianOptimizer
-from mdo_framework.schema import RangeVar, StateVar, ToolNode
+from mdo_framework.schema import (
+    ConstraintSpec,
+    ObjectiveSpec,
+    RangeVar,
+    StateVar,
+    ToolNode,
+)
 
 
 # --- Sellar Problem Functions ---
@@ -70,15 +76,14 @@ def main():
 
     analyzer = TopologicalAnalyzer(schema)
     resolved = analyzer.resolve_dependencies(["f_xy", "c_xy"])
-    parameters = analyzer.extract_parameters(resolved.design_variables)
 
     evaluator = LocalEvaluator(prob, builder.variable_specs)
 
     optimizer = BayesianOptimizer(
-        evaluator=evaluator,
-        parameters=parameters,
-        objectives=[{"name": "f_xy", "minimize": True}],
-        constraints=[{"name": "c_xy", "op": "<=", "bound": 0.0}],
+        evaluator,
+        resolved.design_variables,
+        [ObjectiveSpec(name="f_xy")],
+        [ConstraintSpec(name="c_xy", bound=0.0)],
     )
 
     try:
