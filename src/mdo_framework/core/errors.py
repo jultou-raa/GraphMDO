@@ -94,17 +94,19 @@ def evaluation_error_from_payload(payload: Any) -> EvaluationError | None:
 
     Returns:
         The error with the same class, message and tool, or ``None`` if the
-        payload is not a serialized evaluation error.
+        payload is not a serialized evaluation error: unknown ``code``, wrong
+        field types, or a ``retryable`` flag that does not match the class.
     """
     if not isinstance(payload, Mapping):
         return None
     code = payload.get("code")
     message = payload.get("message")
     tool = payload.get("tool")
+    retryable = payload.get("retryable")
     if not isinstance(code, str) or not isinstance(message, str):
         return None
     error_class = _ERRORS_BY_CODE.get(code)
-    if error_class is None:
+    if error_class is None or retryable is not error_class.retryable:
         return None
     if tool is not None and not isinstance(tool, str):
         return None
