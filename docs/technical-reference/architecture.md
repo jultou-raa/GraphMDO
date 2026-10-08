@@ -15,6 +15,7 @@ The architecture consists of three primary layers:
 2.  **Execution Layer (GEMSEO)**
     *   Translates the study schema into an executable GEMSEO Problem.
     *   Wraps Python functions or external codes into `ToolComponent`, a GEMSEO discipline that enforces the tool output contract and approximates Jacobians by finite differences (see [Study Schema](study-schema.md#tool-function-contract)).
+    *   Solves coupled tools with a convergence-checked MDA (see [Coupled tools](#coupled-tools)).
     *   Handles variable promotion and data passing between components.
 
 3.  **Optimization Layer (Ax/SMT)**
@@ -38,6 +39,23 @@ The full list of codes is in [Study Schema](study-schema.md#validating-a-study).
 
 !!! warning "Breaking change"
     Variable and tool nodes written before the typed contract carry no `kind`. Reading them reports `LEGACY_NODE` (`GET /schema` answers `409`); delete and recreate them through the typed API. There is no compatibility layer.
+
+## Coupled tools
+
+`GraphProblemBuilder.build_problem(registry, mda_settings=None)` chains the tools in a `StrictMDAChain`. Tools that exchange variables in a cycle form a coupled group, solved by an inner MDA configured by `MDASettings` (`mdo_framework.core.mda`):
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `inner_mda_name` | `"MDAGaussSeidel"` | Algorithm of each coupled group: `MDAGaussSeidel`, `MDAJacobi` or `MDANewtonRaphson`. |
+| `tolerance` | `1e-6` | Normalized residual at which a coupled group has converged. |
+| `max_mda_iter` | `20` | Maximum number of iterations. |
+| `max_consecutive_unsuccessful_iterations` | `8` | Iterations without residual decrease after which the algorithm stops. |
+| `n_processes` | `1` | Coupled tools run at the same time. Above 1 only with `MDAJacobi`, and every tool producing a coupling must declare `thread_safe` (otherwise `TOOL_NOT_THREAD_SAFE`). |
+| `accept_tolerance` | `None` | Largest residual still accepted when the algorithm stops; `None` accepts only `tolerance`. |
+
+By default the coupled tools run one after the other, so a tool exception always propagates (GEMSEO's parallel execution drops every worker exception that is not a `ValueError`). When a coupled group stops above its accepted residual, the evaluation raises `MDANotConvergedError` instead of returning the unconverged values; this applies to `LocalEvaluator`, to `/evaluate` and to every optimizer evaluation. Couplings start from their `initial_guess`, or `0.0`. If any tool is declared `deterministic=False`, the chain and its algorithms do not cache.
+
+Evaluation failures share one hierarchy (`mdo_framework.core.errors`), all `ValueError` subclasses with a stable `code`: `ToolExecutionError` (`TOOL_FAILED`, the tool raised), `ToolOutputError` (`OUTPUT_INVALID`, outputs break the contract) and `MDANotConvergedError` (`MDA_NOT_CONVERGED`). The Execution Service reports them as structured `422` errors, which `RemoteEvaluator` raises again as the same classes (see [Microservices](microservices.md#execution-service-port-8002)).
 
 ## Decoupled Services
 

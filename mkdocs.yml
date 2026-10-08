@@ -41,6 +41,7 @@ nav:
       - Translator: api/core/translator.md
       - Components: api/core/components.md
       - Errors: api/core/errors.md
+      - MDA: api/core/mda.md
       - Surrogates: api/core/surrogates.md
     - Database:
       - Graph Manager: api/db/graph_manager.md
