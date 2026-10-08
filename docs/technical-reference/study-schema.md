@@ -79,6 +79,7 @@ The same study as JSON (`schema.model_dump(mode="json")`, which is also what `GE
       "name": "Beam",
       "fidelity": "high",
       "deterministic": true,
+      "thread_safe": false,
       "arg_map": {},
       "inputs": ["thickness", "n_ribs", "density"],
       "outputs": ["mass"]
@@ -173,13 +174,14 @@ Names become Python keyword arguments of the tool functions and GEMSEO variable 
 
 ## Tools
 
-A tool is a node with a `name`, a `fidelity` and two execution options, `deterministic` and `arg_map`. `ToolNode` is that stored node: it is what `GraphManager.add_tool()` and the Graph Service `POST /tools` take. `ToolSpec` extends it with `inputs` and `outputs`, the variable names derived from the graph edges, and is what the schema contains. Both models are immutable and reject unknown fields.
+A tool is a node with a `name`, a `fidelity` and three execution options, `deterministic`, `thread_safe` and `arg_map`. `ToolNode` is that stored node: it is what `GraphManager.add_tool()` and the Graph Service `POST /tools` take. `ToolSpec` extends it with `inputs` and `outputs`, the variable names derived from the graph edges, and is what the schema contains. Both models are immutable and reject unknown fields.
 
 | Model | Field | Type | Default | Validation rules |
 | --- | --- | --- | --- | --- |
 | `ToolNode`, `ToolSpec` | `name` | `Name` | required | |
 | `ToolNode`, `ToolSpec` | `fidelity` | `Name` | `"high"` | Fidelity level label. It follows the same rule as a name: pattern, length and not a Python keyword. |
 | `ToolNode`, `ToolSpec` | `deterministic` | `bool` | `true` | Strict boolean. `false` marks a tool whose outputs are not a function of its inputs alone; its evaluations are never cached. |
+| `ToolNode`, `ToolSpec` | `thread_safe` | `bool` | `false` | Strict boolean. `true` declares that the tool may run concurrently in several threads. |
 | `ToolNode`, `ToolSpec` | `arg_map` | dict of `Name` to `Name` | `{}` | Graph input name to Python argument name. Values are unique: two graph inputs cannot be mapped to the same argument. That a key is an input of the tool, and that no unmapped input already bears the argument name, are checked against the graph, see `ARG_MAP_UNKNOWN_INPUT` and `ARG_MAP_COLLISION`. |
 | `ToolSpec` only | `inputs` | list of `Name` | `[]` | No duplicates. |
 | `ToolSpec` only | `outputs` | list of `Name` | `[]` | No duplicates. No name is both an input and an output of the same tool. |

@@ -301,6 +301,7 @@ def test_add_tool_stores_the_model_and_a_sequence_number(
         "name": "Solver",
         "fidelity": "low",
         "deterministic": True,
+        "thread_safe": False,
         "arg_map": "{}",
         "seq": 1,
     }
@@ -311,11 +312,15 @@ def test_tool_options_are_stored_and_arg_map_is_a_json_string(
     manager: GraphManager, graph: FakeGraph
 ) -> None:
     tool = ToolNode(
-        name="Solver", deterministic=False, arg_map={"x": "a", "alpha": "b"}
+        name="Solver",
+        deterministic=False,
+        thread_safe=True,
+        arg_map={"x": "a", "alpha": "b"},
     )
     manager.add_tool(tool)
     properties = graph.node("Tool", "Solver")
     assert properties["deterministic"] is False
+    assert properties["thread_safe"] is True
     assert properties["arg_map"] == '{"x": "a", "alpha": "b"}'
     assert manager.get_tools() == [tool]
 
@@ -324,10 +329,13 @@ def test_tool_options_round_trip_through_the_study_schema(
     paraboloid: GraphManager,
 ) -> None:
     paraboloid.put_tool(
-        ToolNode(name="Paraboloid", deterministic=False, arg_map={"x": "a"})
+        ToolNode(
+            name="Paraboloid", deterministic=False, thread_safe=True, arg_map={"x": "a"}
+        )
     )
     tool = paraboloid.get_study_schema().tool("Paraboloid")
     assert tool.deterministic is False
+    assert tool.thread_safe is True
     assert tool.arg_map == {"x": "a"}
     assert (tool.inputs, tool.outputs) == (["x", "y"], ["f_xy", "c_xy"])
 

@@ -391,6 +391,7 @@ def test_tool_node_defaults_and_is_the_node_part_of_a_tool_spec() -> None:
     node = ToolNode(name="t")
     assert node.fidelity == "high"
     assert node.deterministic is True
+    assert node.thread_safe is False
     assert node.arg_map == {}
     assert isinstance(ToolSpec(name="t"), ToolNode)
 
@@ -400,9 +401,11 @@ def test_tool_options_are_inherited_by_the_tool_spec() -> None:
         name="t",
         inputs=["x", "y"],
         deterministic=False,
+        thread_safe=True,
         arg_map={"x": "a", "y": "b"},
     )
     assert tool.deterministic is False
+    assert tool.thread_safe is True
     assert tool.arg_map == {"x": "a", "y": "b"}
     assert tool.model_dump()["arg_map"] == {"x": "a", "y": "b"}
 
@@ -411,6 +414,12 @@ def test_tool_options_are_inherited_by_the_tool_spec() -> None:
 def test_deterministic_must_be_a_boolean(value: Any) -> None:
     with pytest.raises(ValidationError):
         ToolNode(name="t", deterministic=value)
+
+
+@pytest.mark.parametrize("value", ["true", 0, 1, None])
+def test_thread_safe_must_be_a_boolean(value: Any) -> None:
+    with pytest.raises(ValidationError):
+        ToolNode(name="t", thread_safe=value)
 
 
 def test_arg_map_rejects_two_graph_inputs_feeding_one_argument() -> None:
@@ -453,6 +462,7 @@ def test_tool_options_survive_a_json_round_trip() -> None:
                 inputs=["x"],
                 outputs=["f"],
                 deterministic=False,
+                thread_safe=True,
                 arg_map={"x": "a"},
             )
         ],
@@ -461,6 +471,7 @@ def test_tool_options_survive_a_json_round_trip() -> None:
     assert restored == study
     assert restored.tool("t").arg_map == {"x": "a"}
     assert restored.tool("t").deterministic is False
+    assert restored.tool("t").thread_safe is True
 
 
 def test_tool_options_change_the_content_hash() -> None:
@@ -473,9 +484,10 @@ def test_tool_options_change_the_content_hash() -> None:
     hashes = {
         study().content_hash(),
         study(deterministic=False).content_hash(),
+        study(thread_safe=True).content_hash(),
         study(arg_map={"x": "a"}).content_hash(),
     }
-    assert len(hashes) == 3
+    assert len(hashes) == 4
 
 
 @pytest.mark.parametrize("extra", ["inputs", "outputs"])

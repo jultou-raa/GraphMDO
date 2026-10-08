@@ -231,6 +231,9 @@ class ToolNode(_Strict):
         deterministic: Whether the tool returns the same outputs for the same
             inputs. A non-deterministic tool is never cached, so every
             evaluation calls it again.
+        thread_safe: Whether the tool may run concurrently in several threads.
+            Required of every tool in a coupled group to evaluate it in
+            parallel.
         arg_map: Graph input name to Python argument name, for inputs whose
             argument has a different name. Two graph inputs cannot feed the
             same argument.
@@ -239,6 +242,7 @@ class ToolNode(_Strict):
     name: Name
     fidelity: Name = "high"
     deterministic: StrictBool = True
+    thread_safe: StrictBool = False
     arg_map: dict[Name, Name] = {}
 
     @model_validator(mode="after")
@@ -259,6 +263,7 @@ class ToolSpec(ToolNode):
         name: Tool name.
         fidelity: Fidelity level label.
         deterministic: Whether the tool is cacheable.
+        thread_safe: Whether the tool may run concurrently in threads.
         arg_map: Graph input name to Python argument name.
         inputs: Unique names of the variables the tool reads.
         outputs: Unique names of the variables the tool produces.

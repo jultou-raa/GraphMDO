@@ -297,12 +297,24 @@ class TestGraphService(unittest.TestCase):
     def test_create_tool_accepts_the_tool_options(self):
         response = self.client.post(
             "/tools",
-            json={"name": "ToolA", "deterministic": False, "arg_map": {"x": "a"}},
+            json={
+                "name": "ToolA",
+                "deterministic": False,
+                "thread_safe": True,
+                "arg_map": {"x": "a"},
+            },
         )
         self.assertEqual(response.status_code, 201)
         self.assertEqual(
             self.manager.get_tools(),
-            [ToolNode(name="ToolA", deterministic=False, arg_map={"x": "a"})],
+            [
+                ToolNode(
+                    name="ToolA",
+                    deterministic=False,
+                    thread_safe=True,
+                    arg_map={"x": "a"},
+                )
+            ],
         )
 
     def test_put_tool_accepts_the_tool_options(self):
@@ -333,6 +345,7 @@ class TestGraphService(unittest.TestCase):
             "no name": {"fidelity": "low"},
             "duplicate arguments": {"name": "ToolA", "arg_map": {"x": "a", "y": "a"}},
             "non-boolean deterministic": {"name": "ToolA", "deterministic": "no"},
+            "non-boolean thread_safe": {"name": "ToolA", "thread_safe": "yes"},
         }
         for label, body in bodies.items():
             with self.subTest(label):

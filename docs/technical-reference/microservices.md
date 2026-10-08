@@ -4,7 +4,7 @@ All three services return request-validation failures in the same shape: `422` w
 
 ## Graph Service (Port 8001)
 
-Manages the FalkorDB property graph through the typed `GraphManager`. Variable bodies are `RangeVar`, `ChoiceVar`, `FixedParam` or `StateVar` models selected by `kind`; tool bodies are `ToolNode` (`name`, optional `fidelity`, `deterministic` and `arg_map`). See the [Study Schema](study-schema.md).
+Manages the FalkorDB property graph through the typed `GraphManager`. Variable bodies are `RangeVar`, `ChoiceVar`, `FixedParam` or `StateVar` models selected by `kind`; tool bodies are `ToolNode` (`name`, optional `fidelity`, `deterministic`, `thread_safe` and `arg_map`). See the [Study Schema](study-schema.md).
 
 | Endpoint | Purpose | Success | Errors |
 | --- | --- | --- | --- |
