@@ -49,3 +49,9 @@ class ToolOutputError(ToolError):
     """The tool returned outputs that break the output contract."""
 
     code: ClassVar[str] = "OUTPUT_INVALID"
+
+
+class MDANotConvergedError(EvaluationError):
+    """The coupled tools did not reach a fixed point within the MDA limits."""
+
+    code: ClassVar[str] = "MDA_NOT_CONVERGED"

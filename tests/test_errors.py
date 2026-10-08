@@ -8,6 +8,7 @@ import pytest
 
 from mdo_framework.core.errors import (
     EvaluationError,
+    MDANotConvergedError,
     ToolError,
     ToolExecutionError,
     ToolOutputError,
@@ -21,6 +22,7 @@ from mdo_framework.core.errors import (
         (ToolError, "TOOL_FAILED"),
         (ToolExecutionError, "TOOL_FAILED"),
         (ToolOutputError, "OUTPUT_INVALID"),
+        (MDANotConvergedError, "MDA_NOT_CONVERGED"),
     ],
 )
 def test_error_codes_are_stable(error_class, code):
@@ -33,6 +35,8 @@ def test_taxonomy_hierarchy():
     assert issubclass(ToolExecutionError, ToolError)
     assert issubclass(ToolOutputError, ToolError)
     assert not issubclass(ToolOutputError, ToolExecutionError)
+    assert issubclass(MDANotConvergedError, EvaluationError)
+    assert not issubclass(MDANotConvergedError, ToolError)
 
 
 def test_errors_are_value_errors_so_gemseo_parallel_execution_reraises_them():

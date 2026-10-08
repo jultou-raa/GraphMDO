@@ -10,7 +10,8 @@ from typing import Any
 import numpy as np
 from gemseo.core.discipline import Discipline
 from gemseo.core.discipline.base_discipline import CacheType
-from gemseo.typing import StrKeyMapping
+from gemseo.typing import JacobianData, StrKeyMapping
+from gemseo.utils.constants import READ_ONLY_EMPTY_DICT
 
 from mdo_framework.core.errors import ToolExecutionError, ToolOutputError
 from mdo_framework.optimization.parameter_codec import (
@@ -104,6 +105,27 @@ class ToolComponent(Discipline):
         self.set_jacobian_approximation()
         if not deterministic:
             self.set_cache(CacheType.NONE)
+
+    def linearize(
+        self,
+        input_data: StrKeyMapping = READ_ONLY_EMPTY_DICT,
+        compute_all_jacobians: bool = False,
+        execute: bool = True,
+    ) -> JacobianData:
+        """Approximates the Jacobian at ``input_data`` by finite differences.
+
+        GEMSEO's finite differences only perturb the differentiated inputs and
+        take the others from the defaults, which a design variable lacks. They are
+        taken from ``input_data`` for the duration of the call instead.
+        """
+        defaults = self.input_grammar.defaults
+        saved = dict(defaults)
+        defaults.update(self.io.prepare_input_data(input_data))
+        try:
+            return super().linearize(input_data, compute_all_jacobians, execute)
+        finally:
+            defaults.clear()
+            defaults.update(saved)
 
     def _run(self, input_data: StrKeyMapping) -> dict[str, np.ndarray]:
         kwargs = {
