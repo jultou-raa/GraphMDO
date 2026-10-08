@@ -51,8 +51,9 @@ PARABOLOID_SCHEMA = StudySchema(
         RangeVar(name="x", lower=-10.0, upper=10.0),
         RangeVar(name="y", lower=-10.0, upper=10.0),
         StateVar(name="f_xy"),
+        StateVar(name="c_xy"),
     ],
-    tools=[ToolSpec(name="Paraboloid", inputs=["x", "y"], outputs=["f_xy"])],
+    tools=[ToolSpec(name="Paraboloid", inputs=["x", "y"], outputs=["f_xy", "c_xy"])],
 )
 PARABOLOID_PAYLOAD = PARABOLOID_SCHEMA.model_dump(mode="json")
 
@@ -293,6 +294,39 @@ class TestGraphService(unittest.TestCase):
         self.client.post("/tools", json={"name": "ToolA"})
         self.assertEqual(self.manager.get_tools(), [ToolNode(name="ToolA")])
 
+    def test_create_tool_accepts_the_tool_options(self):
+        response = self.client.post(
+            "/tools",
+            json={
+                "name": "ToolA",
+                "deterministic": False,
+                "thread_safe": True,
+                "arg_map": {"x": "a"},
+            },
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            self.manager.get_tools(),
+            [
+                ToolNode(
+                    name="ToolA",
+                    deterministic=False,
+                    thread_safe=True,
+                    arg_map={"x": "a"},
+                )
+            ],
+        )
+
+    def test_put_tool_accepts_the_tool_options(self):
+        response = self.client.put(
+            "/tools/ToolA",
+            json={"name": "ToolA", "arg_map": {"x": "a"}},
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            self.manager.get_tools(), [ToolNode(name="ToolA", arg_map={"x": "a"})]
+        )
+
     def test_create_existing_tool_conflicts(self):
         self.client.post("/tools", json={"name": "ToolA"})
         response = self.client.post("/tools", json={"name": "ToolA", "fidelity": "low"})
@@ -309,6 +343,9 @@ class TestGraphService(unittest.TestCase):
             "connections in body": {"name": "ToolA", "inputs": ["x"]},
             "bad name": {"name": "not a name"},
             "no name": {"fidelity": "low"},
+            "duplicate arguments": {"name": "ToolA", "arg_map": {"x": "a", "y": "a"}},
+            "non-boolean deterministic": {"name": "ToolA", "deterministic": "no"},
+            "non-boolean thread_safe": {"name": "ToolA", "thread_safe": "yes"},
         }
         for label, body in bodies.items():
             with self.subTest(label):
@@ -604,6 +641,24 @@ class TestExecutionService(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(mock_client.get.call_count, 2)
 
+    def test_evaluate_demo_graph_with_the_default_registry(self):
+        from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
+
+        mock_client = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = PARABOLOID_PAYLOAD
+        mock_client.get.return_value = mock_resp
+        execution_app.state.schema_provider = SchemaProvider(mock_client)
+        execution_app.state.problem_pool = ProblemPool(TOOL_REGISTRY, size=1)
+
+        response = self.client.post(
+            "/evaluate",
+            json={"inputs": {"x": 3.0, "y": -4.0}, "objectives": ["f_xy", "c_xy"]},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["results"], {"f_xy": -15.0, "c_xy": 7.0})
+
     def test_evaluate_passes_non_numeric_fixed_values_to_the_tool(self):
         from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
 
@@ -652,6 +707,79 @@ class TestExecutionService(unittest.TestCase):
             {name: type(value) for name, value in received[0].items()},
             {name: type(value) for name, value in expected.items()},
         )
+
+    def test_evaluate_reports_evaluation_errors_as_structured_422(self):
+        from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
+
+        line = StudySchema(
+            variables=[RangeVar(name="x", lower=0.0, upper=1.0), StateVar(name="f")],
+            tools=[ToolSpec(name="T", inputs=["x"], outputs=["f"])],
+        )
+        no_fixed_point = StudySchema(
+            variables=[
+                RangeVar(name="x", lower=0.0, upper=1.0),
+                StateVar(name="f"),
+                StateVar(name="g"),
+            ],
+            tools=[
+                ToolSpec(name="T", inputs=["x", "g"], outputs=["f"]),
+                ToolSpec(name="U", inputs=["f"], outputs=["g"]),
+            ],
+        )
+
+        def diverging(x):
+            raise RuntimeError("solver diverged")
+
+        cases = [
+            (
+                "tool_failed",
+                line,
+                {"T": diverging},
+                {
+                    "code": "TOOL_FAILED",
+                    "message": "RuntimeError: solver diverged",
+                    "tool": "T",
+                    "retryable": False,
+                },
+            ),
+            (
+                "output_invalid",
+                line,
+                {"T": lambda x: float("nan")},
+                {"code": "OUTPUT_INVALID", "tool": "T", "retryable": False},
+            ),
+            (
+                "mda_not_converged",
+                no_fixed_point,
+                {"T": lambda x, g: g + 1.0 + x, "U": lambda f: f + 1.0},
+                {"code": "MDA_NOT_CONVERGED", "tool": None, "retryable": False},
+            ),
+        ]
+        for label, schema, tools, expected in cases:
+            with self.subTest(case=label):
+                mock_client = AsyncMock()
+                mock_resp = MagicMock()
+                mock_resp.json.return_value = schema.model_dump(mode="json")
+                mock_client.get.return_value = mock_resp
+                execution_app.state.schema_provider = SchemaProvider(mock_client)
+                pool = ProblemPool(TOOL_REGISTRY, size=1)
+                execution_app.state.problem_pool = pool
+
+                with (
+                    patch.dict(TOOL_REGISTRY, tools),
+                    patch.object(
+                        pool, "discard_instance", wraps=pool.discard_instance
+                    ) as discard,
+                ):
+                    response = self.client.post(
+                        "/evaluate", json={"inputs": {"x": 0.5}, "objectives": ["f"]}
+                    )
+
+                self.assertEqual(response.status_code, 422, response.text)
+                detail = response.json()["detail"]
+                self.assertEqual(detail | expected, detail)
+                self.assertIsInstance(detail["message"], str)
+                discard.assert_called_once()
 
     def test_evaluate_unknown_objective_input(self):
         from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
@@ -913,8 +1041,8 @@ class TestExecutionService(unittest.TestCase):
         env = SchemaEnvelope(PARABOLOID_SCHEMA, TOOL_REGISTRY)
         self.assertIs(env.schema, PARABOLOID_SCHEMA)
         self.assertTrue(env.registry_report.valid)
-        self.assertEqual(env.known_vars, {"x", "y", "f_xy"})
-        self.assertEqual(env.known_objectives, {"f_xy"})
+        self.assertEqual(env.known_vars, {"x", "y", "f_xy", "c_xy"})
+        self.assertEqual(env.known_objectives, {"f_xy", "c_xy"})
         self.assertEqual(list(env.variable_specs), ["x", "y"])
         self.assertEqual(env.hash, PARABOLOID_SCHEMA.content_hash())
 

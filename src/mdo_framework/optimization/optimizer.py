@@ -13,7 +13,10 @@ import numpy as np
 from gemseo import create_scenario
 from gemseo.algos.design_space import DesignSpace
 from gemseo.core.discipline import Discipline
+from gemseo.core.discipline.base_discipline import CacheType
+from gemseo.typing import StrKeyMapping
 
+from mdo_framework.core.errors import EvaluationError, evaluation_error_from_payload
 from mdo_framework.optimization.ax_algo_lib import AxObjectiveDict
 from mdo_framework.optimization.parameter_codec import (
     ParameterDefinitionError,
@@ -212,6 +215,15 @@ class Evaluator(Protocol):
         ...
 
 
+def _response_detail(response: httpx.Response) -> Any:
+    """Returns the ``detail`` of a JSON error response, ``None`` otherwise."""
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    return body.get("detail") if isinstance(body, dict) else None
+
+
 class RemoteEvaluator:
     """Evaluates the design parameters remotely by communicating with the Execution microservice.
 
@@ -258,8 +270,13 @@ class RemoteEvaluator:
                 raise RemoteEvaluationTransportError(
                     f"Execution service returned HTTP {exc.response.status_code}."
                 ) from exc
+            detail = _response_detail(exc.response)
+            if (error := evaluation_error_from_payload(detail)) is not None:
+                raise error from exc
             raise RemoteEvaluationContractError(
-                f"Execution service rejected the evaluation request with HTTP {exc.response.status_code}."
+                "Execution service rejected the evaluation request with "
+                f"HTTP {exc.response.status_code}"
+                + (f": {detail}" if detail is not None else ".")
             ) from exc
         except httpx.RequestError as exc:
             raise RemoteEvaluationTransportError(
@@ -342,6 +359,32 @@ class RemoteDiscipline(Discipline):
         results = self.evaluator.evaluate(params, self.output_names)
         for k, v in results.items():
             self.local_data[k] = np.atleast_1d(v)
+
+
+class _FailureRecorder(Discipline):
+    """Runs a discipline and keeps the evaluation errors it raises.
+
+    GEMSEO's DOE skips a sample whose evaluation raises a ``ValueError`` and
+    only logs it, so the typed error would otherwise be lost. The recorder
+    never caches: caching is the wrapped discipline's own policy.
+    """
+
+    def __init__(self, discipline: Discipline) -> None:
+        super().__init__(name=discipline.name)
+        self.set_cache(CacheType.NONE)
+        self._discipline = discipline
+        self.failures: list[EvaluationError] = []
+        self.input_grammar.update_from_names(discipline.input_grammar.names)
+        self.output_grammar.update_from_names(discipline.output_grammar.names)
+        self.default_input_data.update(discipline.default_input_data)
+
+    def _run(self, input_data: StrKeyMapping) -> dict[str, Any]:
+        try:
+            output_data = self._discipline.execute(input_data)
+        except EvaluationError as error:
+            self.failures.append(error)
+            raise
+        return {name: output_data[name] for name in self.output_grammar}
 
 
 class BayesianOptimizer:
@@ -435,9 +478,10 @@ class BayesianOptimizer:
             A dictionary containing the exploration history.
         """
         discipline, design_space, objective_names = self._prepare_scenario_context()
+        recorder = _FailureRecorder(discipline)
 
         scenario = self._create_scenario(
-            discipline=discipline,
+            discipline=recorder,
             design_space=design_space,
             objective_names=objective_names,
             scenario_type="DOE",
@@ -472,6 +516,9 @@ class BayesianOptimizer:
         ):
             raise
         except Exception as e:
+            evaluated = len(scenario.formulation.optimization_problem.database)
+            if recorder.failures and not evaluated:
+                raise recorder.failures[0] from e
             logger.error(f"Exploration failed: {e}")
             raise OptimizationExecutionError(f"Exploration failed: {str(e)}") from e
 

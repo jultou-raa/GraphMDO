@@ -18,11 +18,13 @@ VARIABLES = (
     {"kind": "range", "name": "x", "lower": 0.0, "upper": 10.0},
     {"kind": "range", "name": "y", "lower": 0.0, "upper": 10.0},
     {"kind": "state", "name": "f_xy"},
+    {"kind": "state", "name": "c_xy"},
 )
 CONNECTIONS = (
     ("input", "x", "Paraboloid"),
     ("input", "y", "Paraboloid"),
     ("output", "Paraboloid", "f_xy"),
+    ("output", "Paraboloid", "c_xy"),
 )
 
 

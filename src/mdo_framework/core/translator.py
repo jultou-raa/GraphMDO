@@ -8,10 +8,11 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 import numpy as np
-from gemseo.mda.factory import MDAFactory
 from gemseo.utils.discipline import check_disciplines_consistency
 
 from mdo_framework.core.components import ToolComponent
+from mdo_framework.core.dependencies import walk_dependencies
+from mdo_framework.core.mda import MDASettings, StrictMDAChain, build_mda
 from mdo_framework.core.topology import build_variable_specs
 from mdo_framework.optimization.parameter_codec import (
     ParameterDefinition,
@@ -22,8 +23,10 @@ from mdo_framework.schema import (
     StateVar,
     StudySchema,
     StudyValidationError,
+    ToolNode,
+    ValidationReport,
 )
-from mdo_framework.validation import validate_registry
+from mdo_framework.validation import thread_safety_findings, validate_registry
 
 
 def to_design_value(spec: ParameterDefinition | None, value: Any) -> Any:
@@ -61,27 +64,49 @@ class GraphProblemBuilder:
         self.schema = schema
         self.variable_specs = build_variable_specs(schema)
 
-    def build_problem(self, tool_registry: Mapping[str, Callable]) -> Any:
+    def build_problem(
+        self,
+        tool_registry: Mapping[str, Callable],
+        mda_settings: MDASettings | None = None,
+    ) -> StrictMDAChain:
         """Constructs a GEMSEO MDA from the study schema.
 
-        Fixed parameter values and coupling initial guesses become the default
-        inputs of the MDA; design variables have no default.
+        Each tool gets its own defaults: the value of its fixed parameters, the
+        initial guess of its state variables, and 0.0 for a coupling variable
+        without an initial guess. Design variables have no default. The MDA
+        gathers the defaults of its disciplines.
+
+        The coupled tools are solved one after the other (Gauss-Seidel) unless
+        ``mda_settings`` says otherwise. Evaluating the returned MDA raises
+        ``MDANotConvergedError`` if a coupled group does not converge. If any
+        tool is not deterministic, no process around the tools caches.
 
         Args:
             tool_registry: Dictionary mapping tool names to Python functions.
+            mda_settings: How to solve the coupled tools; sequential defaults
+                when omitted. Evaluating them in parallel requires every coupled
+                tool to be declared ``thread_safe``.
 
         Returns:
             An instantiated GEMSEO MDA Discipline object.
 
         Raises:
             StudyValidationError: If a tool has no registered function or the
-                registered function cannot take the tool's inputs by keyword.
-                Every bad tool is reported in the same error.
+                registered function cannot take the tool's inputs by keyword, or
+                if the MDA runs in parallel and a coupled tool is not declared
+                ``thread_safe``. Every bad tool is reported in the same error.
             ValueError: If two tools produce the same output.
         """
+        settings = mda_settings or MDASettings()
         report = validate_registry(self.schema, tool_registry)
-        if not report.valid:
-            raise StudyValidationError(report)
+        couplings = set(walk_dependencies(self.schema, []).couplings)
+        errors = list(report.errors)
+        if settings.n_processes > 1:
+            errors.extend(thread_safety_findings(self.schema, couplings))
+        if errors:
+            raise StudyValidationError(
+                ValidationReport(errors=tuple(errors), warnings=report.warnings)
+            )
 
         disciplines = [
             ToolComponent(
@@ -94,30 +119,31 @@ class GraphProblemBuilder:
                     for in_name in tool.inputs
                     if in_name in self.variable_specs
                 },
+                defaults=self._tool_defaults(tool, couplings),
+                deterministic=tool.deterministic,
+                arg_map=tool.arg_map,
             )
             for tool in self.schema.tools
         ]
         check_disciplines_consistency(disciplines, False, True)
 
-        # MDAChain picks the sub-MDAs itself (MDAJacobi for coupled disciplines).
-        mda = MDAFactory().create("MDAChain", disciplines=disciplines)
+        chain = build_mda(disciplines, settings)
+        if not all(tool.deterministic for tool in self.schema.tools):
+            chain.disable_caches()
+        return chain
 
-        for name, value in self._seed_values().items():
-            if name in mda.input_grammar:
-                mda.default_input_data[name] = value
-
-        return mda
-
-    def _seed_values(self) -> dict[str, np.ndarray]:
-        defaults = {}
-        for variable in self.schema.variables:
+    def _tool_defaults(self, tool: ToolNode, couplings: set[str]) -> dict[str, Any]:
+        variables = {variable.name: variable for variable in self.schema.variables}
+        defaults: dict[str, Any] = {}
+        for name in tool.inputs:
+            variable = variables[name]
             if isinstance(variable, FixedParam):
-                spec = self.variable_specs.get(variable.name)
-                defaults[variable.name] = np.atleast_1d(
-                    to_design_value(spec, variable.value)
+                defaults[name] = to_design_value(
+                    self.variable_specs.get(name), variable.value
                 )
-            elif isinstance(variable, StateVar) and variable.initial_guess is not None:
-                defaults[variable.name] = np.atleast_1d(
-                    np.asarray(variable.initial_guess, dtype=float)
-                )
+            elif isinstance(variable, StateVar):
+                if variable.initial_guess is not None:
+                    defaults[name] = np.asarray(variable.initial_guess, dtype=float)
+                elif name in couplings:
+                    defaults[name] = 0.0
         return defaults

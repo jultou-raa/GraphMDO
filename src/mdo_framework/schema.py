@@ -7,6 +7,7 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import hashlib
 import json
 import keyword
+from collections.abc import Mapping, Sequence
 from typing import Annotated, Final, Literal
 
 from pydantic import (
@@ -197,16 +198,62 @@ Variable = Annotated[
 DesignVariable = RangeVar | ChoiceVar
 
 
+def argument_collisions(
+    inputs: Sequence[str], arg_map: Mapping[str, str]
+) -> dict[str, list[str]]:
+    """Find the Python arguments that several graph inputs would be passed as.
+
+    The argument of an input is its ``arg_map`` value, or its own name when it
+    is not mapped.
+
+    Args:
+        inputs: Graph input names of a tool.
+        arg_map: Graph input name to Python argument name.
+
+    Returns:
+        The colliding inputs, in order, per argument name. Empty when every
+        input has its own argument.
+    """
+    by_argument: dict[str, list[str]] = {}
+    for name in inputs:
+        by_argument.setdefault(arg_map.get(name, name), []).append(name)
+    return {
+        argument: names for argument, names in by_argument.items() if len(names) > 1
+    }
+
+
 class ToolNode(_Strict):
     """Tool (discipline) as stored on a graph node, without its edges.
 
     Attributes:
         name: Tool name.
         fidelity: Fidelity level label.
+        deterministic: Whether the tool returns the same outputs for the same
+            inputs. A non-deterministic tool is never cached, so every
+            evaluation calls it again.
+        thread_safe: Whether the tool may run concurrently in several threads.
+            Required of every tool in a coupled group to evaluate it in
+            parallel.
+        arg_map: Graph input name to Python argument name, for inputs whose
+            argument has a different name. Two graph inputs cannot feed the
+            same argument.
     """
 
     name: Name
     fidelity: Name = "high"
+    deterministic: StrictBool = True
+    thread_safe: StrictBool = False
+    arg_map: dict[Name, Name] = {}
+
+    @model_validator(mode="after")
+    def _check_arg_map(self) -> "ToolNode":
+        arguments = list(self.arg_map.values())
+        repeated = sorted({name for name in arguments if arguments.count(name) > 1})
+        if repeated:
+            raise ValueError(
+                f"arg_map values must be unique; several graph inputs feed {repeated}"
+            )
+        return self
 
 
 class ToolSpec(ToolNode):
@@ -215,6 +262,9 @@ class ToolSpec(ToolNode):
     Attributes:
         name: Tool name.
         fidelity: Fidelity level label.
+        deterministic: Whether the tool is cacheable.
+        thread_safe: Whether the tool may run concurrently in threads.
+        arg_map: Graph input name to Python argument name.
         inputs: Unique names of the variables the tool reads.
         outputs: Unique names of the variables the tool produces.
     """

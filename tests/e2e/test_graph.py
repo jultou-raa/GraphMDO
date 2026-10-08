@@ -10,6 +10,10 @@ import math
 
 import pytest
 
+from mdo_framework.core.errors import MDANotConvergedError
+from mdo_framework.core.evaluators import LocalEvaluator
+from mdo_framework.core.mda import MDASettings
+from mdo_framework.core.translator import GraphProblemBuilder
 from mdo_framework.schema import FixedParam, RangeVar, StateVar, StudySchema, ToolSpec
 
 pytestmark = pytest.mark.e2e
@@ -48,10 +52,6 @@ SELLAR_REGISTRY = {
 SELLAR_X0 = {"x": 5.0, "z1": 0.0, "z2": 5.0}  # box centre
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="#40, #42: coupled tools fail without a 'value' on y1/y2",
-)
 def test_sellar_without_coupling_values(build_optimizer):
     optimizer, evaluator = build_optimizer(
         SELLAR_SCHEMA,
@@ -72,6 +72,39 @@ def test_sellar_without_coupling_values(build_optimizer):
     best = evaluator.evaluate(result["best_parameters"], ["obj", "c1", "c2"])
     assert best["c1"] <= 1e-6 and best["c2"] <= 1e-6
     assert best["obj"] <= 0.75 * obj_x0
+
+
+def test_sellar_newton_raphson_converges():
+    builder = GraphProblemBuilder(SELLAR_SCHEMA)
+    problem = builder.build_problem(
+        SELLAR_REGISTRY, MDASettings(inner_mda_name="MDANewtonRaphson")
+    )
+    evaluator = LocalEvaluator(problem, builder.variable_specs)
+
+    coupling = evaluator.evaluate({"x": 1.0, "z1": 5.0, "z2": 2.0}, ["y1", "y2"])
+
+    assert coupling["y1"] == pytest.approx(25.5883, rel=1e-4)
+    assert coupling["y2"] == pytest.approx(12.0585, rel=1e-4)
+
+
+def test_coupling_without_fixed_point_raises():
+    schema = StudySchema(
+        variables=[
+            RangeVar(name="x", lower=0.0, upper=1.0),
+            StateVar(name="y1"),
+            StateVar(name="y2"),
+        ],
+        tools=[
+            ToolSpec(name="A", inputs=["x", "y2"], outputs=["y1"]),
+            ToolSpec(name="B", inputs=["y1"], outputs=["y2"]),
+        ],
+    )
+    registry = {"A": lambda x, y2: y2 + 1.0 + x, "B": lambda y1: y1 + 1.0}
+    builder = GraphProblemBuilder(schema)
+    evaluator = LocalEvaluator(builder.build_problem(registry), builder.variable_specs)
+
+    with pytest.raises(MDANotConvergedError, match="y1, y2"):
+        evaluator.evaluate({"x": 0.5}, ["y1"])
 
 
 @pytest.mark.xfail(

@@ -18,6 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
+from mdo_framework.core.errors import EvaluationError
 from mdo_framework.core.topology import build_variable_specs
 from mdo_framework.core.translator import GraphProblemBuilder, encode_tool_inputs
 from mdo_framework.schema import MAX_NAME_LENGTH, Scalar, StudySchema
@@ -51,9 +52,12 @@ if CACHE_TTL <= 0 or CACHE_BACKOFF <= 0 or POOL_ACQUIRE_TIMEOUT <= 0:
 
 
 # --- Helper Functions ---
-def paraboloid_func(x: float, y: float) -> float:
-    """f(x, y) = (x-3)**2 + xy + (y+4)**2 - 3"""
-    return (x - 3.0) ** 2 + x * y + (y + 4.0) ** 2 - 3.0
+def paraboloid_func(x: float, y: float) -> dict[str, float]:
+    """Demo tool: f_xy = (x-3)**2 + xy + (y+4)**2 - 3 and c_xy = x - y <= 0."""
+    return {
+        "f_xy": (x - 3.0) ** 2 + x * y + (y + 4.0) ** 2 - 3.0,
+        "c_xy": x - y,
+    }
 
 
 def build_and_init(
@@ -393,6 +397,9 @@ async def evaluate(
         except HTTPException:
             # Re-raise explicit HTTPExceptions before the generic catch
             raise
+        except EvaluationError as e:
+            # The point cannot be evaluated; the request itself was valid.
+            raise HTTPException(status_code=422, detail=e.to_payload()) from e
         except (ValueError, KeyError) as e:
             # Input-related errors
             raise HTTPException(status_code=400, detail=str(e))

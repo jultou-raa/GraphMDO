@@ -9,8 +9,14 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import numpy as np
+import pytest
 from gemseo.core.discipline import Discipline
 
+from mdo_framework.core.errors import (
+    MDANotConvergedError,
+    ToolExecutionError,
+    ToolOutputError,
+)
 from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.optimization.ax_algo_lib import MAX_STALLED_GENERATIONS
 from mdo_framework.optimization.optimizer import (
@@ -245,6 +251,63 @@ class TestRemoteEvaluator(unittest.TestCase):
                     RemoteEvaluator("http://fake-url", client=client).evaluate(
                         {}, ["f_xy"]
                     )
+
+    @staticmethod
+    def _answering(status_code: int, body: object) -> RemoteEvaluator:
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(status_code, json=body)
+        )
+        client = httpx.Client(base_url="http://exec", transport=transport)
+        return RemoteEvaluator("http://exec", client=client)
+
+    def test_evaluation_errors_are_rebuilt_as_local_exceptions(self):
+        cases = [
+            ToolExecutionError("RuntimeError: solver diverged", tool="T"),
+            ToolOutputError("non-finite values for ['f']", tool="T"),
+            MDANotConvergedError("residual 1e+00 > 1e-06 (couplings: f, g)"),
+        ]
+        for error in cases:
+            with self.subTest(code=error.code):
+                evaluator = self._answering(422, {"detail": error.to_payload()})
+
+                with self.assertRaises(type(error)) as raised:
+                    evaluator.evaluate({"x": 0.5}, ["f"])
+
+                self.assertEqual(str(raised.exception), str(error))
+                self.assertEqual(raised.exception.tool, error.tool)
+                self.assertIsInstance(raised.exception.__cause__, httpx.HTTPStatusError)
+
+    def test_contract_errors_include_the_server_detail(self):
+        cases = [
+            (422, {"detail": "Unknown inputs: {'z'}"}, "Unknown inputs"),
+            (400, {"detail": "invalid choice 'd' for 'm'"}, "invalid choice"),
+            (
+                422,
+                {"detail": {"code": "SCHEMA_INVALID", "report": {"errors": []}}},
+                "SCHEMA_INVALID",
+            ),
+            (422, ["not", "a", "detail"], "HTTP 422"),
+        ]
+        for status_code, body, expected in cases:
+            with self.subTest(body=body):
+                evaluator = self._answering(status_code, body)
+
+                with self.assertRaises(RemoteEvaluationContractError) as raised:
+                    evaluator.evaluate({"x": 0.5}, ["f"])
+
+                self.assertIn(expected, str(raised.exception))
+                self.assertIn(f"HTTP {status_code}", str(raised.exception))
+
+    def test_non_json_error_body_is_a_contract_error(self):
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(418, text="<html>teapot</html>")
+        )
+        client = httpx.Client(base_url="http://exec", transport=transport)
+
+        with self.assertRaises(RemoteEvaluationContractError) as raised:
+            RemoteEvaluator("http://exec", client=client).evaluate({"x": 0.5}, ["f"])
+
+        self.assertIn("HTTP 418", str(raised.exception))
 
     @patch("mdo_framework.optimization.optimizer.httpx.Client")
     def test_close_only_closes_owned_client(self, mock_httpx_client):
@@ -675,3 +738,73 @@ class TestRemoteDiscipline(unittest.TestCase):
         discipline.execute({"x": np.array([2.0])})
 
         self.assertEqual(discipline.local_data["y"][0], 42.0)
+
+
+def _line_explorer(tools, *, coupled=False):
+    """BayesianOptimizer over x in [0, 1] minimizing f, built from real GEMSEO."""
+    from mdo_framework.core.topology import TopologicalAnalyzer
+    from mdo_framework.core.translator import GraphProblemBuilder
+    from mdo_framework.schema import RangeVar, StateVar, StudySchema, ToolSpec
+
+    variables = [RangeVar(name="x", lower=0.0, upper=1.0), StateVar(name="f")]
+    specs = [ToolSpec(name="T", inputs=["x", "g"] if coupled else ["x"], outputs=["f"])]
+    if coupled:
+        variables.append(StateVar(name="g"))
+        specs.append(ToolSpec(name="U", inputs=["f"], outputs=["g"]))
+    schema = StudySchema(variables=variables, tools=specs)
+    analyzer = TopologicalAnalyzer(schema)
+    resolved = analyzer.resolve_dependencies(["f"])
+    builder = GraphProblemBuilder(schema)
+    evaluator = LocalEvaluator(builder.build_problem(tools), builder.variable_specs)
+    return BayesianOptimizer(
+        evaluator,
+        analyzer.extract_parameters(resolved.design_variables),
+        [{"name": "f", "minimize": True}],
+    )
+
+
+def test_explore_raises_the_typed_error_when_no_sample_evaluates(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    optimizer = _line_explorer(
+        {"T": lambda x, g: g + 1.0 + x, "U": lambda f: f + 1.0}, coupled=True
+    )
+
+    with pytest.raises(MDANotConvergedError):
+        optimizer.explore(n_samples=2)
+
+
+def test_explore_keeps_the_samples_that_evaluate(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    def fails_above_half(x):
+        if x > 0.5:
+            raise RuntimeError("mesh generation failed")
+        return x
+
+    optimizer = _line_explorer({"T": fails_above_half})
+
+    history = optimizer.explore(n_samples=8)["history"]
+
+    inputs = history.get_view(variable_names="x").to_numpy().ravel()
+    assert 0 < len(inputs) < 8
+    assert (inputs <= 0.5).all()
+
+
+def test_failure_recorder_never_caches_a_non_deterministic_tool():
+    from mdo_framework.core.components import ToolComponent
+    from mdo_framework.optimization.optimizer import _FailureRecorder
+
+    calls = []
+
+    def noisy(x):
+        calls.append(x)
+        return x + len(calls)
+
+    tool = ToolComponent("T", noisy, ["x"], ["f"], deterministic=False)
+    recorder = _FailureRecorder(tool)
+
+    first = recorder.execute({"x": np.array([0.5])})["f"]
+    second = recorder.execute({"x": np.array([0.5])})["f"]
+
+    assert len(calls) == 2
+    assert first != second

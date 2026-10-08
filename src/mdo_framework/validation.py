@@ -7,7 +7,7 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import inspect
 import math
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 from warnings import catch_warnings, simplefilter
@@ -24,6 +24,7 @@ from mdo_framework.schema import (
     StudySchema,
     ToolSpec,
     ValidationReport,
+    argument_collisions,
 )
 
 INITIAL_TOLERANCE: Final = 1e-9
@@ -169,8 +170,13 @@ def check_tool_signature(
         func: Python callable registered for the tool.
 
     Returns:
-        The error findings and the warning findings.
+        The error findings and the warning findings. A tool whose inputs are
+        not all passed as distinct arguments gets ``ARG_MAP_COLLISION`` errors
+        and no signature check, as there is no single call to check.
     """
+    collisions = _collision_findings(tool)
+    if collisions:
+        return collisions, []
     try:
         signature = inspect.signature(func)
     except (TypeError, ValueError):
@@ -192,16 +198,25 @@ def check_tool_signature(
         ]
 
     errors: list[Finding] = []
+    arguments = [tool.arg_map.get(name, name) for name in tool.inputs]
+    renames = {
+        name: argument
+        for name, argument in zip(tool.inputs, arguments, strict=True)
+        if name != argument
+    }
     try:
-        signature.bind(**dict.fromkeys(tool.inputs))
+        signature.bind(**dict.fromkeys(arguments))
     except TypeError as exc:
+        called_with = f"the graph inputs {list(tool.inputs)}"
+        if renames:
+            mapping = ", ".join(f"{name} -> {arg}" for name, arg in renames.items())
+            called_with += f" as the arguments {arguments} ({mapping})"
         errors.append(
             Finding(
                 code="SIGNATURE_MISMATCH",
                 message=(
-                    f"tool '{tool.name}' is called with the graph inputs "
-                    f"{list(tool.inputs)} but its signature {signature} "
-                    f"does not accept them: {exc}"
+                    f"tool '{tool.name}' is called with {called_with} "
+                    f"but its signature {signature} does not accept them: {exc}"
                 ),
                 names=(tool.name, *tool.inputs),
             )
@@ -211,14 +226,21 @@ def check_tool_signature(
             code="DEFAULTED_ARG_UNWIRED",
             message=(
                 f"tool '{tool.name}' parameter '{item.name}' has a default "
-                "value and is not a graph input; the default will be used"
+                f"value and is not a graph input{_renamed_hint(item.name, renames)}; "
+                "the default will be used"
             ),
             names=(tool.name, item.name),
         )
         for item in parameters
-        if item.default is not inspect.Parameter.empty and item.name not in tool.inputs
+        if item.default is not inspect.Parameter.empty and item.name not in arguments
     ]
     return errors, warnings
+
+
+def _renamed_hint(parameter: str, renames: Mapping[str, str]) -> str:
+    if parameter not in renames:
+        return ""
+    return f" (graph input '{parameter}' is passed as '{renames[parameter]}')"
 
 
 def dependency_findings(walk: DependencyWalk) -> list[Finding]:
@@ -285,8 +307,10 @@ def validate_registry(
 
     Returns:
         Report whose errors are ``UNREGISTERED_TOOL`` for every missing tool,
-        then the signature errors of the registered ones, and whose warnings
-        are the signature warnings.
+        then, for each tool in order, its ``ARG_MAP_UNKNOWN_INPUT`` errors, its
+        ``ARG_MAP_COLLISION`` errors and, if it is registered and has no
+        collision, the signature errors. The warnings are the signature
+        warnings.
     """
     errors = [
         Finding(
@@ -299,11 +323,74 @@ def validate_registry(
     ]
     warnings: list[Finding] = []
     for tool in schema.tools:
+        errors.extend(_unknown_input_findings(tool))
         if tool.name in registry:
             tool_errors, tool_warnings = check_tool_signature(tool, registry[tool.name])
             errors.extend(tool_errors)
             warnings.extend(tool_warnings)
+        else:
+            errors.extend(_collision_findings(tool))
     return ValidationReport(errors=tuple(errors), warnings=tuple(warnings))
+
+
+def thread_safety_findings(
+    schema: StudySchema, couplings: Collection[str]
+) -> list[Finding]:
+    """Flag the coupled tools that do not declare ``thread_safe``.
+
+    A tool belongs to a coupled group when it produces a coupling variable;
+    a tool that only reads one runs outside the group.
+
+    Args:
+        schema: Study whose tools are checked.
+        couplings: Names of the coupling variables, as returned by
+            ``walk_dependencies``.
+
+    Returns:
+        One ``TOOL_NOT_THREAD_SAFE`` finding per such tool, in tool order.
+    """
+    return [
+        Finding(
+            code="TOOL_NOT_THREAD_SAFE",
+            message=(
+                f"tool '{tool.name}' is in a coupled group evaluated in parallel "
+                "but is not declared thread_safe; set thread_safe=True on the "
+                "tool or run the MDA sequentially"
+            ),
+            names=(tool.name,),
+        )
+        for tool in schema.tools
+        if not tool.thread_safe and any(name in couplings for name in tool.outputs)
+    ]
+
+
+def _unknown_input_findings(tool: ToolSpec) -> list[Finding]:
+    return [
+        Finding(
+            code="ARG_MAP_UNKNOWN_INPUT",
+            message=(
+                f"tool '{tool.name}' arg_map renames '{name}', which is not "
+                f"one of its inputs {list(tool.inputs)}"
+            ),
+            names=(tool.name, name),
+        )
+        for name in tool.arg_map
+        if name not in tool.inputs
+    ]
+
+
+def _collision_findings(tool: ToolSpec) -> list[Finding]:
+    return [
+        Finding(
+            code="ARG_MAP_COLLISION",
+            message=(
+                f"tool '{tool.name}' passes the inputs {names} as the same "
+                f"argument '{argument}'; map each input to its own argument"
+            ),
+            names=(tool.name, argument, *names),
+        )
+        for argument, names in argument_collisions(tool.inputs, tool.arg_map).items()
+    ]
 
 
 def _parse_each(

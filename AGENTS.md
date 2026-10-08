@@ -28,7 +28,7 @@
 -   `src/mdo_framework/schema.py` defines the typed `StudySchema` contract (`RangeVar`, `ChoiceVar`, `FixedParam`, `StateVar`, `ToolNode`, `Finding`, `ValidationReport`, `StudyValidationError`).
 -   `src/mdo_framework/validation.py` holds `validate_study()` (preflight against a request) and `validate_registry()` (tool registry and signature checks); `core/dependencies.py` is the shared dependency walk.
 -   `src/mdo_framework/db/` contains the FalkorDB integration (`client.py`, `graph_manager.py`).
--   `src/mdo_framework/core/` contains schema-to-GEMSEO translation and execution helpers (`components.py`, `dependencies.py`, `evaluators.py`, `surrogates.py`, `topology.py`, `translator.py`).
+-   `src/mdo_framework/core/` contains schema-to-GEMSEO translation and execution helpers (`components.py`, `dependencies.py`, `errors.py`, `evaluators.py`, `mda.py`, `surrogates.py`, `topology.py`, `translator.py`).
 -   `src/mdo_framework/optimization/` contains the optimizer orchestration (`optimizer.py`) and the Ax-backed algorithm library (`ax_algo_lib.py`).
 -   `src/services/graph/main.py` exposes the typed Graph Service API: `POST/PUT/DELETE` on `/variables` and `/tools`, `/connections/input`, `/connections/output`, `/schema`, `/clear`, `/health`. Conflicts return `409`, unknown nodes `404`, invalid bodies `422`.
 -   `src/services/execution/main.py` exposes the Execution Service API: `/evaluate`, `/health`, plus schema caching, a registry check on each loaded schema (`422` `SCHEMA_INVALID`), and pooled problem instances.
@@ -44,7 +44,8 @@
     -   `GraphManager.get_study_schema()` returns the typed `StudySchema`, the canonical boundary exported to the rest of the system.
 
 2.  **Translation Layer**
-    -   `GraphProblemBuilder` builds GEMSEO problems from the `StudySchema`.
+    -   `GraphProblemBuilder` builds GEMSEO problems from the `StudySchema`: one `ToolComponent` per tool (strict output contract, finite-difference Jacobians) chained in a `StrictMDAChain` (`core/mda.py`).
+    -   Coupled tools run sequentially (Gauss-Seidel) by default; `MDASettings` selects the algorithm, and a coupled group that does not converge raises `MDANotConvergedError`.
     -   `TopologicalAnalyzer` resolves dependencies and extracts optimization parameters from requested outputs.
 
 3.  **Evaluation Layer**
@@ -66,6 +67,7 @@
 -   **Keep the Published JSON Schema in Sync**: After changing `schema.py`, regenerate `docs/technical-reference/study-schema.json` with the command printed by `tests/test_docs_schema.py`.
 -   **Preserve Design Variable Order**: Keep FalkorDB insertion order for design variables; do not sort parameter names alphabetically before execution or optimization.
 -   **Use Keyword-Based Tool Invocation**: Wrapped tool functions must receive named inputs, not positional fallbacks that can scramble graph-defined ordering.
+-   **Raise Typed Evaluation Errors**: A point that cannot be evaluated raises an `EvaluationError` subclass from `core/errors.py` (`ToolExecutionError`, `ToolOutputError`, `MDANotConvergedError`), never a bare exception or a silently returned invalid value; services serialize them with `to_payload()`.
 -   **Keep Optimization State Explicit**: Use `problem.optimum` and `trial_history` as the authoritative optimization outputs; avoid hidden cross-object attributes.
 -   **Respect Constraint Semantics**: Current optimization code uses GEMSEO/Ax convention `g(x) <= 0`; the paraboloid example encodes `c_xy = x - y`.
 -   **Extend Service Infrastructure, Do Not Bypass It**: Schema refresh/backoff belongs in `SchemaProvider`; reusable GEMSEO instances belong in `ProblemPool`.

@@ -57,11 +57,18 @@ def test_tool_exceptions_become_failed_trials(build_optimizer, recorded, ax_reco
     assert ax_recorder.count("FAILED") == raising
 
 
-@pytest.mark.xfail(
-    strict=True, reason="#43: NaN outputs or plateaus stop the run early"
-)
 @pytest.mark.parametrize(
-    "function", [nan_above_7, plateau_above_3], ids=["nan", "plateau"]
+    "function",
+    [
+        nan_above_7,
+        pytest.param(
+            plateau_above_3,
+            marks=pytest.mark.xfail(
+                strict=True, reason="#43: objective plateaus stop the run early"
+            ),
+        ),
+    ],
+    ids=["nan", "plateau"],
 )
 def test_nan_or_penalty_plateau_uses_full_budget(build_optimizer, recorded, function):
     tool = recorded(function)

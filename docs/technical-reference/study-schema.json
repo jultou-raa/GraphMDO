@@ -252,8 +252,28 @@
     },
     "ToolSpec": {
       "additionalProperties": false,
-      "description": "Tool (discipline) with its input and output variable names.\n\nAttributes:\n    name: Tool name.\n    fidelity: Fidelity level label.\n    inputs: Unique names of the variables the tool reads.\n    outputs: Unique names of the variables the tool produces.",
+      "description": "Tool (discipline) with its input and output variable names.\n\nAttributes:\n    name: Tool name.\n    fidelity: Fidelity level label.\n    deterministic: Whether the tool is cacheable.\n    thread_safe: Whether the tool may run concurrently in threads.\n    arg_map: Graph input name to Python argument name.\n    inputs: Unique names of the variables the tool reads.\n    outputs: Unique names of the variables the tool produces.",
       "properties": {
+        "arg_map": {
+          "default": {},
+          "patternProperties": {
+            "^[A-Za-z_][A-Za-z0-9_]*$": {
+              "maxLength": 50,
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            }
+          },
+          "propertyNames": {
+            "maxLength": 50
+          },
+          "title": "Arg Map",
+          "type": "object"
+        },
+        "deterministic": {
+          "default": true,
+          "title": "Deterministic",
+          "type": "boolean"
+        },
         "fidelity": {
           "default": "high",
           "maxLength": 50,
@@ -286,6 +306,11 @@
           },
           "title": "Outputs",
           "type": "array"
+        },
+        "thread_safe": {
+          "default": false,
+          "title": "Thread Safe",
+          "type": "boolean"
         }
       },
       "required": [
