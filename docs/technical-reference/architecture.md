@@ -55,7 +55,7 @@ The full list of codes is in [Study Schema](study-schema.md#validating-a-study).
 
 By default the coupled tools run one after the other, so a tool exception always propagates (GEMSEO's parallel execution drops every worker exception that is not a `ValueError`). When a coupled group stops above its accepted residual, the evaluation raises `MDANotConvergedError` instead of returning the unconverged values; this applies to `LocalEvaluator`, to `/evaluate` and to every optimizer evaluation. Couplings start from their `initial_guess`, or `0.0`. If any tool is declared `deterministic=False`, the chain and its algorithms do not cache.
 
-Evaluation failures share one hierarchy (`mdo_framework.core.errors`), all `ValueError` subclasses with a stable `code`: `ToolExecutionError` (`TOOL_FAILED`, the tool raised), `ToolOutputError` (`OUTPUT_INVALID`, outputs break the contract) and `MDANotConvergedError` (`MDA_NOT_CONVERGED`). The Execution Service reports them as structured `422` errors, which `RemoteEvaluator` raises again as the same classes (see [Microservices](microservices.md#execution-service-port-8002)).
+Evaluation failures share one hierarchy (`mdo_framework.core.errors`), all `ValueError` subclasses with a stable `code`: `ToolExecutionError` (`TOOL_FAILED`, the tool raised), `ToolOutputError` (`OUTPUT_INVALID`, outputs break the contract) and `MDANotConvergedError` (`MDA_NOT_CONVERGED`). The Execution Service reports them as structured `422` errors, which `RemoteEvaluator` raises again as the same classes (see [Microservices](microservices.md#execution-service-port-8002)). `BayesianOptimizer.explore()` skips the samples that fail (GEMSEO's DOE logs and continues); if no sample evaluates, it raises the first typed error.
 
 ## Decoupled Services
 

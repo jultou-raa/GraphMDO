@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import numpy as np
+import pytest
 from gemseo.core.discipline import Discipline
 
 from mdo_framework.core.errors import (
@@ -737,3 +738,53 @@ class TestRemoteDiscipline(unittest.TestCase):
         discipline.execute({"x": np.array([2.0])})
 
         self.assertEqual(discipline.local_data["y"][0], 42.0)
+
+
+def _line_explorer(tools, *, coupled=False):
+    """BayesianOptimizer over x in [0, 1] minimizing f, built from real GEMSEO."""
+    from mdo_framework.core.topology import TopologicalAnalyzer
+    from mdo_framework.core.translator import GraphProblemBuilder
+    from mdo_framework.schema import RangeVar, StateVar, StudySchema, ToolSpec
+
+    variables = [RangeVar(name="x", lower=0.0, upper=1.0), StateVar(name="f")]
+    specs = [ToolSpec(name="T", inputs=["x", "g"] if coupled else ["x"], outputs=["f"])]
+    if coupled:
+        variables.append(StateVar(name="g"))
+        specs.append(ToolSpec(name="U", inputs=["f"], outputs=["g"]))
+    schema = StudySchema(variables=variables, tools=specs)
+    analyzer = TopologicalAnalyzer(schema)
+    resolved = analyzer.resolve_dependencies(["f"])
+    builder = GraphProblemBuilder(schema)
+    evaluator = LocalEvaluator(builder.build_problem(tools), builder.variable_specs)
+    return BayesianOptimizer(
+        evaluator,
+        analyzer.extract_parameters(resolved.design_variables),
+        [{"name": "f", "minimize": True}],
+    )
+
+
+def test_explore_raises_the_typed_error_when_no_sample_evaluates(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    optimizer = _line_explorer(
+        {"T": lambda x, g: g + 1.0 + x, "U": lambda f: f + 1.0}, coupled=True
+    )
+
+    with pytest.raises(MDANotConvergedError):
+        optimizer.explore(n_samples=2)
+
+
+def test_explore_keeps_the_samples_that_evaluate(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    def fails_above_half(x):
+        if x > 0.5:
+            raise RuntimeError("mesh generation failed")
+        return x
+
+    optimizer = _line_explorer({"T": fails_above_half})
+
+    history = optimizer.explore(n_samples=8)["history"]
+
+    inputs = history.get_view(variable_names="x").to_numpy().ravel()
+    assert 0 < len(inputs) < 8
+    assert (inputs <= 0.5).all()
