@@ -729,6 +729,21 @@ def test_an_exhausted_discrete_space_stops_without_duplicate_calls(variable):
     assert result.evaluations["init"] == 3
 
 
+def test_a_finite_space_stops_once_every_point_is_evaluated_without_asking():
+    library = ScriptedLibrary([{"m": "a"}, {"m": "b"}, {"m": "c"}])
+    study = make_study(
+        lambda m: {"f": float(len(m))},
+        [ChoiceVar(name="m", choices=["a", "b", "c"])],
+        library=library,
+    )
+
+    result = study.run(n_init=5, n_steps=5)
+
+    assert result.stop_reason == "search_space_exhausted"
+    assert len(study.calls) == 3
+    assert library.asked == [1, 1, 1]
+
+
 def test_a_log_range_is_sampled_on_a_log_scale():
     variable = RangeVar(name="x", lower=1e-3, upper=1e3, scaling="log")
     study = make_study(lambda x: {"f": x}, [variable])

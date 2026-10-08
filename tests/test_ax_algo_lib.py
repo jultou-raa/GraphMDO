@@ -401,6 +401,54 @@ def test_failed_trials_are_marked_failed_in_ax_with_the_reason():
     assert len(ax_failed) == run.result.evaluations["failed"]
 
 
+def test_an_exhausted_discrete_space_stops_without_repeating_a_point():
+    mode = ChoiceVar(name="m", choices=["a", "b", "c"])
+
+    run = run_study(
+        lambda m: {"f": {"a": 1.0, "b": 0.5, "c": 2.0}[m]},
+        [mode],
+        n_init=2,
+        n_steps=20,
+    )
+
+    assert run.result.stop_reason == "search_space_exhausted"
+    assert sorted(call["m"] for call in run.calls) == ["a", "b", "c"]
+    assert run.result.best.parameters == {"m": "b"}
+
+
+def test_an_exhausted_ax_proposes_nothing_and_the_driver_stops():
+    from ax.exceptions.core import SearchSpaceExhausted
+
+    class ExhaustedClient(Client):
+        def get_next_trials(self, max_trials, fixed_parameters=None):
+            if self._experiment.trials:
+                raise SearchSpaceExhausted("no new points")
+            return super().get_next_trials(max_trials, fixed_parameters)
+
+    library = AxOptimizationLibrary(client_factory=RecordingFactory(ExhaustedClient))
+
+    run = run_study(quadratic, library=library, n_init=2, n_steps=2)
+
+    assert len(run.calls) == 1
+    assert run.result.stop_reason == "search_space_exhausted"
+
+
+def test_a_failed_point_is_not_proposed_again():
+    def tool(x):
+        if x > 6.0:
+            raise InfeasiblePointError("above the limit")
+        return quadratic(x)
+
+    run = run_study(tool, n_init=4, n_steps=12)
+
+    assert run.result.stop_reason == "budget"
+    assert len(run.calls) == 16
+    calls = [call["x"] for call in run.calls]
+    assert len(calls) == len(set(calls))
+    statuses = [status for _, status in run.kinds()]
+    assert statuses.count("FAILED") == run.result.evaluations["failed"]
+
+
 def test_a_candidate_cut_by_the_stop_is_marked_abandoned_in_ax():
     def tool(x):
         raise InfeasiblePointError("never computable")

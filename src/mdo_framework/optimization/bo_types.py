@@ -4,6 +4,7 @@ License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
+import itertools
 import math
 from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -36,6 +37,8 @@ TrialStatus = Literal["completed", "failed", "abandoned"]
 Phase = Literal["x0", "init", "bo"]
 
 LINEAR_CONSTRAINT_SLACK = 1e-9
+MAX_ENUMERATED_POINTS = 100_000
+"""Largest discrete space whose points are checked against the constraints."""
 
 
 @dataclass(frozen=True)
@@ -420,6 +423,15 @@ def _admits(variable: DesignVariable, value: Any) -> bool:
     return variable.value_type != "int" or number.is_integer()
 
 
+def _discrete_values(variable: DesignVariable) -> Sequence[Scalar] | None:
+    """The values of a discrete variable, ``None`` for a continuous one."""
+    if isinstance(variable, ChoiceVar):
+        return variable.choices
+    if variable.value_type == "int":
+        return range(int(variable.lower), int(variable.upper) + 1)
+    return None
+
+
 def _largest_inscribed_ball(
     ranges: Sequence[RangeVar], constraints: Sequence[LinearConstraint]
 ) -> np.ndarray:
@@ -553,6 +565,28 @@ class BOSpace:
     def box_centre(self) -> dict[str, Scalar]:
         """Return the centre of the variable bounds, ignoring constraints."""
         return {variable.name: _centre(variable) for variable in self.design_variables}
+
+    def cardinality(self) -> int | None:
+        """Return the number of distinct points of a finite space.
+
+        Returns:
+            The number of points satisfying the linear constraints when every
+            variable is discrete, ``None`` when a variable is continuous or
+            the constraints apply to more than ``MAX_ENUMERATED_POINTS``
+            candidate points.
+        """
+        values = [_discrete_values(variable) for variable in self.design_variables]
+        if any(value is None for value in values):
+            return None
+        total = math.prod(len(value) for value in values)
+        if not self.linear_constraints:
+            return total
+        if total > MAX_ENUMERATED_POINTS:
+            return None
+        return sum(
+            self._violated_constraint(dict(zip(self.names, point, strict=True))) is None
+            for point in itertools.product(*values)
+        )
 
     def chebyshev_centre(self) -> dict[str, Scalar]:
         """Return the centre of the largest ball inside the linear constraints.

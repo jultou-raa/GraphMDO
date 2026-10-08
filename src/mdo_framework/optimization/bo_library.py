@@ -315,11 +315,14 @@ class BaseBOLibrary(BaseOptimizationLibrary):
             if stop is not None:
                 return stop
         self._setup(self._space, self._bindings, tuple(self._records))
+        cardinality = self._space.cardinality()
         stalled = 0
         while True:
             remaining = settings.max_iter - _evaluations_done(counter)
             if remaining <= 0:
                 return "budget"
+            if cardinality is not None and len(self._outcomes) >= cardinality:
+                return "search_space_exhausted"
             requested = min(settings.batch_size, remaining)
             candidates = self._ask(requested)
             evaluated = _evaluations_done(counter)

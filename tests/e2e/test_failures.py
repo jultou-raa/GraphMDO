@@ -50,11 +50,12 @@ def test_tool_exceptions_become_failed_trials(build_optimizer, recorded, ax_reco
     tool = recorded(diverging)
     optimizer, _ = build_optimizer(LINE_SCHEMA, {"T": tool}, MINIMIZE_F)
 
-    result = optimizer.optimize(n_steps=2, n_init=4)
+    result = optimizer.optimize(n_steps=4, n_init=4)
 
     raising = sum(1 for call in tool.calls if call["x"] > 7)
-    assert len(tool.calls) == 6
-    assert raising == 2
+    assert len(tool.calls) == 8
+    assert raising >= 2
+    assert len({call["x"] for call in tool.calls}) == len(tool.calls)
     assert result["stop_reason"] == "budget"
     assert ax_recorder.count("FAILED") == raising
     assert result["evaluations"]["failed"] == raising

@@ -7,8 +7,9 @@ file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import logging
 import math
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
+from typing import Any
 
 from ax.adapter.registry import Generators as Models
 from ax.api.client import Client
@@ -21,7 +22,7 @@ from ax.core.optimization_config import (
 )
 from ax.core.outcome_constraint import ObjectiveThreshold, OutcomeConstraint
 from ax.core.types import ComparisonOp
-from ax.exceptions.core import DataRequiredError
+from ax.exceptions.core import DataRequiredError, OptimizationComplete
 from ax.generation_strategy.generation_node import GenerationStep
 from ax.generation_strategy.generation_strategy import GenerationStrategy
 from botorch.acquisition.logei import qLogNoisyExpectedImprovement
@@ -196,6 +197,7 @@ class AxOptimizationLibrary(BaseBOLibrary):
         super().__init__(algo_name=algo_name)
         self._client_factory = client_factory
         self._client: Client | None = None
+        self._failed_points: set[tuple[Any, ...]] = set()
 
     def _setup(
         self,
@@ -205,6 +207,7 @@ class AxOptimizationLibrary(BaseBOLibrary):
     ) -> None:
         settings = self._settings
         factory = self._client_factory or Client
+        self._failed_points = set()
         with _quiet_ax():
             client = factory(random_seed=settings.seed)
             client.configure_experiment(
@@ -224,7 +227,8 @@ class AxOptimizationLibrary(BaseBOLibrary):
         """Return Sobol for the initial trials, then BoTorch.
 
         The acquisition function is hard-coded for a single objective only: a
-        multi-objective run needs the hypervolume one Ax picks itself.
+        multi-objective run needs the hypervolume one Ax picks itself. Both
+        steps reject points of earlier trials, abandoned ones included.
         """
         settings = self._settings
         n_objectives = sum(1 for b in bindings if b.role == "objective")
@@ -240,11 +244,13 @@ class AxOptimizationLibrary(BaseBOLibrary):
                     generator=Models.SOBOL,
                     num_trials=settings.n_init,
                     min_trials_observed=1,
+                    should_deduplicate=True,
                 ),
                 GenerationStep(
                     generator=Models.BOTORCH_MODULAR,
                     num_trials=-1,
                     generator_kwargs=generator_kwargs,
+                    should_deduplicate=True,
                 ),
             ],
         )
@@ -252,7 +258,7 @@ class AxOptimizationLibrary(BaseBOLibrary):
     def _attach(self, record: TrialRecord) -> None:
         """Attach a point evaluated before the run as the baseline trial."""
         index = self._client.attach_baseline(parameters=dict(record.parameters))
-        self._report(index, record.outcome)
+        self._report(index, record.parameters, record.outcome)
 
     def _ask(self, n: int) -> list[Candidate]:
         with _quiet_ax():
@@ -263,20 +269,30 @@ class AxOptimizationLibrary(BaseBOLibrary):
                     "Ax cannot propose a new design before the initial trials "
                     f"have an outcome: {error}"
                 ) from error
+            except OptimizationComplete:
+                # Ax found no new point; the driver decides when to stop.
+                return []
         return [Candidate(dict(p), key=index) for index, p in trials.items()]
 
     def _tell(self, candidate: Candidate, outcome: TrialOutcome) -> None:
         with _quiet_ax():
-            self._report(candidate.key, outcome)
+            self._report(candidate.key, candidate.parameters, outcome)
 
-    def _report(self, index: int, outcome: TrialOutcome) -> None:
+    def _report(
+        self, index: int, parameters: Mapping[str, Any], outcome: TrialOutcome
+    ) -> None:
         if outcome.status == "completed":
             self._client.complete_trial(
                 trial_index=index, raw_data=_raw_data(self._bindings, outcome.metrics)
             )
-        elif outcome.status == "failed":
+            return
+        point = tuple(parameters[name] for name in self._space.names)
+        if outcome.status == "failed" and point not in self._failed_points:
+            self._failed_points.add(point)
             self._client.mark_trial_failed(
                 trial_index=index, failed_reason=outcome.reason
             )
-        else:
-            self._client.mark_trial_abandoned(trial_index=index)
+            return
+        # Ax retries the points of failed trials but avoids abandoned ones. The
+        # driver never evaluates a failed point twice, so a repeat is abandoned.
+        self._client.mark_trial_abandoned(trial_index=index)

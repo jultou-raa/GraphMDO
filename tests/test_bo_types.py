@@ -265,6 +265,27 @@ class TestBOSpaceContains:
         assert not space.contains({"x": 0.4, "y": 0.2})
 
 
+class TestBOSpaceCardinality:
+    def test_a_continuous_variable_makes_the_space_infinite(self):
+        assert _space(X, N).cardinality() is None
+
+    def test_discrete_variables_multiply(self):
+        assert _space(N, MODE, FLAG).cardinality() == 5 * 3 * 2
+
+    def test_linear_constraints_remove_the_points_they_exclude(self):
+        m = RangeVar(name="m", lower=0, upper=3, value_type="int")
+        k = RangeVar(name="k", lower=0, upper=3, value_type="int")
+
+        assert _space(m, k, constraints=["m + k <= 3"]).cardinality() == 10
+
+    def test_a_space_too_large_to_enumerate_under_constraints_is_unknown(self):
+        big = RangeVar(name="m", lower=0, upper=10**6, value_type="int")
+        k = RangeVar(name="k", lower=0, upper=1, value_type="int")
+
+        assert _space(big, k).cardinality() == 2 * (10**6 + 1)
+        assert _space(big, k, constraints=["m + k <= 3"]).cardinality() is None
+
+
 class TestBOSpaceCentres:
     def test_box_centre_of_range_and_choice_variables(self):
         space = _space(
