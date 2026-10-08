@@ -18,9 +18,9 @@ The architecture consists of three primary layers:
     *   Solves coupled tools with a convergence-checked MDA (see [Coupled tools](#coupled-tools)).
     *   Handles variable promotion and data passing between components.
 
-3.  **Optimization Layer (Ax/SMT)**
-    *   Drives the execution layer to minimize/maximize objectives.
-    *   Uses Constrained Bayesian Optimization via Ax Platform (handling continuous, discrete, choices, and multi-objective definitions).
+3.  **Optimization Layer (GEMSEO driver + Ax)**
+    *   Drives the execution layer to minimize/maximize objectives through a backend-neutral Bayesian-optimization driver (see [Bayesian optimization](#bayesian-optimization)).
+    *   Uses Constrained Bayesian Optimization via Ax Platform by default (handling continuous, discrete, choices, and multi-objective definitions).
     *   Supports multi-fidelity surrogates (Co-Kriging) via SMT integration.
 
 ## The Study Schema Contract
@@ -56,6 +56,20 @@ The full list of codes is in [Study Schema](study-schema.md#validating-a-study).
 By default the coupled tools run one after the other, so a tool exception always propagates (GEMSEO's parallel execution drops every worker exception that is not a `ValueError`). When a coupled group stops above its accepted residual, the evaluation raises `MDANotConvergedError` instead of returning the unconverged values; this applies to `LocalEvaluator`, to `/evaluate` and to every optimizer evaluation. Couplings start from their `initial_guess`, or `0.0`. If any tool is declared `deterministic=False`, the chain and its algorithms do not cache.
 
 Evaluation failures share one hierarchy (`mdo_framework.core.errors`), all `ValueError` subclasses with a stable `code`: `ToolExecutionError` (`TOOL_FAILED`, the tool raised), `ToolOutputError` (`OUTPUT_INVALID`, outputs break the contract), `InfeasiblePointError` (`POINT_INFEASIBLE`, raised by a tool for a point it cannot compute) and `MDANotConvergedError` (`MDA_NOT_CONVERGED`). The Execution Service reports them as structured `422` errors, which `RemoteEvaluator` raises again as the same classes (see [Microservices](microservices.md#execution-service-port-8002)). `BayesianOptimizer.explore()` skips the samples that fail (GEMSEO's DOE logs and continues); if no sample evaluates, it raises the first typed error.
+
+## Bayesian optimization
+
+`BayesianOptimizer` builds a GEMSEO MDF scenario over the problem and runs a library derived from `BaseBOLibrary` (`mdo_framework.optimization.bo_library`). The driver owns the behaviour that must not depend on the backend; a backend (`AxOptimizationLibrary`, or the seeded `RandomSearchLibrary` used as the test reference) only implements three hooks: `_setup(space, bindings, prior)`, `_ask(n)` and `_tell(candidate, outcome)`.
+
+| Concern | Driver behaviour |
+| --- | --- |
+| Budget | `n_init + n_steps` evaluations, plus one when the start point is evaluated. Failed evaluations count; repeated proposals do not. |
+| Stopping | Only on the budget, `max_time`, an exhausted search space (every point of a finite space evaluated, or five generations without a new point) or `max_consecutive_failures` failed trials in a row. GEMSEO's objective and design tolerance stops are not used, so NaN outputs and plateaus never end a run early. The reason is the result's `stop_reason`. |
+| Start point x0 | The declared `initial` values, else the box centre, else the Chebyshev centre of the parameter constraints. Evaluated only with `evaluate_x0=True` or when every design variable declares an `initial`, and guarded like any trial. An `initial` that violates a parameter constraint is rejected before any tool call. |
+| Failures | An `EvaluationError` (`TOOL_FAILED`, `OUTPUT_INVALID`, `POINT_INFEASIBLE`, `MDA_NOT_CONVERGED`) or a non-finite output is a failed trial with its reason; the run goes on. Any other exception aborts the run: remote transport and contract errors keep their type, any other error is raised as `OptimizationExecutionError`, and both carry the `partial_result` of the trials so far. |
+| Names and signs | GEMSEO renames and negates objectives and constraints (`-f`, `f1_f2`, `-[c-2.0]`). Metric bindings undo this, so backends and the history only see user names and raw values, and maximisation, multi-objective runs with mixed directions and `>=` constraints work. |
+| Feasibility | Each constraint's `tolerance` is folded into the bound GEMSEO enforces, with GEMSEO's own inequality tolerance set to 0, so one rule decides feasibility everywhere. Backends receive constraint values divided by `scale`, which makes the run independent of the constraint's units. |
+| Result | The best feasible trial (the compromise point of the Pareto front for several objectives), or the least-violating trial with `feasible: false`. |
 
 ## Decoupled Services
 

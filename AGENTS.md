@@ -29,7 +29,7 @@
 -   `src/mdo_framework/validation.py` holds `validate_study()` (preflight against a request) and `validate_registry()` (tool registry and signature checks); `core/dependencies.py` is the shared dependency walk.
 -   `src/mdo_framework/db/` contains the FalkorDB integration (`client.py`, `graph_manager.py`).
 -   `src/mdo_framework/core/` contains schema-to-GEMSEO translation and execution helpers (`components.py`, `dependencies.py`, `errors.py`, `evaluators.py`, `mda.py`, `surrogates.py`, `topology.py`, `translator.py`).
--   `src/mdo_framework/optimization/` contains the optimizer orchestration (`optimizer.py`) and the Ax-backed algorithm library (`ax_algo_lib.py`).
+-   `src/mdo_framework/optimization/` contains the optimizer orchestration (`optimizer.py`), the backend-neutral Bayesian-optimization driver (`bo_library.py`, `bo_types.py`, `errors.py`) and its backends: Ax (`ax_algo_lib.py`) and a seeded random search (`random_search.py`).
 -   `src/services/graph/main.py` exposes the typed Graph Service API: `POST/PUT/DELETE` on `/variables` and `/tools`, `/connections/input`, `/connections/output`, `/schema`, `/clear`, `/health`. Conflicts return `409`, unknown nodes `404`, invalid bodies `422`.
 -   `src/services/execution/main.py` exposes the Execution Service API: `/evaluate`, `/health`, plus schema caching, a registry check on each loaded schema (`422` `SCHEMA_INVALID`), and pooled problem instances.
 -   `src/services/optimization/main.py` exposes the Optimization Service API: `/optimize` (with a `422` validation preflight), `/validate`, `/health`.
@@ -53,8 +53,8 @@
     -   Remote execution uses the Execution Service, which maintains a `SchemaProvider` cache and a `ProblemPool` of initialized GEMSEO problems.
 
 4.  **Optimization Layer**
-    -   `BayesianOptimizer` orchestrates Ax/GEMSEO optimization.
-    -   `ax_algo_lib.py` maintains explicit `trial_history` records and integrates constrained optimization behavior.
+    -   `BayesianOptimizer` builds the GEMSEO scenario and runs a `BaseBOLibrary` backend (`Ax_Bayesian` by default, `BO_RandomSearch`).
+    -   `BaseBOLibrary` owns the budget (`n_init + n_steps`, plus x0 when evaluated), stopping, failure classification, the guarded start point, user-name metric bindings and constraint feasibility; backends implement only `_setup`, `_ask` and `_tell`.
 
 5.  **Service Deployment**
     -   `docker-compose.yml` runs FalkorDB plus three FastAPI services.
@@ -68,7 +68,8 @@
 -   **Preserve Design Variable Order**: Keep FalkorDB insertion order for design variables; do not sort parameter names alphabetically before execution or optimization.
 -   **Use Keyword-Based Tool Invocation**: Wrapped tool functions must receive named inputs, not positional fallbacks that can scramble graph-defined ordering.
 -   **Raise Typed Evaluation Errors**: A point that cannot be evaluated raises an `EvaluationError` subclass from `core/errors.py` (`ToolExecutionError`, `ToolOutputError`, `MDANotConvergedError`), never a bare exception or a silently returned invalid value; services serialize them with `to_payload()`.
--   **Keep Optimization State Explicit**: Use `problem.optimum` and `trial_history` as the authoritative optimization outputs; avoid hidden cross-object attributes.
+-   **Keep Optimization State Explicit**: The library's `result` (`BORunResult`: trial records, stop reason, best trial, Pareto front) is the authoritative optimization output; avoid hidden cross-object attributes.
+-   **Keep Backends Thin**: Stopping, NaN handling, x0, metric naming and feasibility belong in `BaseBOLibrary`; a new backend implements only `_setup`, `_ask` and `_tell` and must pass the shared contract tests.
 -   **Respect Constraint Semantics**: Current optimization code uses GEMSEO/Ax convention `g(x) <= 0`; the paraboloid example encodes `c_xy = x - y`.
 -   **Extend Service Infrastructure, Do Not Bypass It**: Schema refresh/backoff belongs in `SchemaProvider`; reusable GEMSEO instances belong in `ProblemPool`.
 -   **Preserve Service Boundaries**: Cross-service calls should flow through `GRAPH_SERVICE_URL` and `EXECUTION_SERVICE_URL`, matching local and Docker Compose deployment.

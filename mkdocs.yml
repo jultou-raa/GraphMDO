@@ -48,6 +48,7 @@ nav:
       - Client: api/db/client.md
     - Optimization:
       - Optimizer: api/optimization/optimizer.md
+      - BO layer: api/optimization/bo_library.md
   - Developer Guide:
     - Contributing: dev-guide/contributing.md
     - Releasing: dev-guide/releasing.md
