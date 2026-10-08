@@ -161,6 +161,7 @@ def test_add_variable_stores_the_model_and_a_sequence_number(
         "lower": -10.0,
         "upper": 10.0,
         "value_type": "float",
+        "scaling": "linear",
         "initial": 1.0,
         "seq": 1,
     }
@@ -190,8 +191,10 @@ def test_add_variable_rejects_an_existing_name(
     [
         _range("x", initial=2.5, units="m"),
         _range("n", lower=0.0, upper=5.0, value_type="int", initial=3.0),
+        _range("lr", lower=1e-4, upper=1e-1, scaling="log"),
         ChoiceVar(name="material", choices=["steel", "alu"], initial="alu"),
-        ChoiceVar(name="count", choices=[1, 2, 3]),
+        ChoiceVar(name="count", choices=[1, 2, 3], ordered=True),
+        ChoiceVar(name="grade", choices=["a", "b"], ordered=False),
         ChoiceVar(name="ratio", choices=[0.5, 1.5]),
         ChoiceVar(name="flag", choices=[True, False]),
         FixedParam(name="label", value="abc", units="-"),

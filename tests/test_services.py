@@ -1866,7 +1866,16 @@ class TestStudyPreflight(unittest.TestCase):
         arguments = self.BayesianOptimizer.call_args.kwargs
         self.assertEqual(arguments["objectives"], [{"name": "f_xy", "minimize": True}])
         self.assertEqual(
-            arguments["constraints"], [{"name": "g_xy", "bound": 0.0, "op": "<="}]
+            arguments["constraints"],
+            [
+                {
+                    "name": "g_xy",
+                    "bound": 0.0,
+                    "op": "<=",
+                    "tolerance": 0.0,
+                    "scale": None,
+                }
+            ],
         )
         self.assertEqual(arguments["parameter_constraints"], ["x + y <= 1.5"])
 

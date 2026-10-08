@@ -118,8 +118,33 @@ def test_range_defaults() -> None:
     variable = _range()
     assert variable.kind == "range"
     assert variable.value_type == "float"
+    assert variable.scaling == "linear"
     assert variable.initial is None
     assert variable.units is None
+
+
+def test_range_accepts_log_scaling_for_a_positive_range() -> None:
+    variable = RangeVar(name="lr", lower=1e-4, upper=1e-1, scaling="log")
+    assert variable.scaling == "log"
+
+
+@pytest.mark.parametrize(("lower", "upper"), [(0.0, 1.0), (-1.0, 1.0)])
+def test_range_rejects_log_scaling_when_lower_is_not_positive(
+    lower: float, upper: float
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        RangeVar(name="lr", lower=lower, upper=upper, scaling="log")
+    assert "scaling" in _messages(exc_info)
+    assert "lower" in _messages(exc_info)
+
+
+def test_range_allows_a_non_positive_lower_with_linear_scaling() -> None:
+    assert _range(lower=-1.0, upper=1.0).scaling == "linear"
+
+
+def test_range_rejects_unknown_scaling() -> None:
+    with pytest.raises(ValidationError):
+        _range(scaling="exp")
 
 
 @pytest.mark.parametrize(("lower", "upper"), [(1.0, 1.0), (2.0, 1.0)])
@@ -182,8 +207,21 @@ def test_range_rejects_unknown_value_type() -> None:
 def test_choice_defaults() -> None:
     variable = ChoiceVar(name="m", choices=["a", "b"])
     assert variable.kind == "choice"
+    assert variable.ordered is None
     assert variable.initial is None
     assert variable.units is None
+
+
+@pytest.mark.parametrize("ordered", [True, False])
+def test_choice_accepts_an_explicit_ordered_flag(ordered: bool) -> None:
+    variable = ChoiceVar(name="m", choices=[1, 2, 3], ordered=ordered)
+    assert variable.ordered is ordered
+
+
+@pytest.mark.parametrize("ordered", ["yes", 1, 0.5])
+def test_choice_rejects_a_non_boolean_ordered_flag(ordered: Any) -> None:
+    with pytest.raises(ValidationError):
+        ChoiceVar(name="m", choices=[1, 2, 3], ordered=ordered)
 
 
 def test_choice_rejects_single_choice_and_points_to_fixed() -> None:
@@ -525,6 +563,30 @@ def test_constraint_defaults_and_validation() -> None:
         ConstraintSpec(name="c", bound=1, op="<")  # type: ignore[arg-type]
     with pytest.raises(ValidationError):
         ConstraintSpec(name="c", bound=float("nan"))
+
+
+def test_constraint_tolerance_and_scale_default_to_unset() -> None:
+    constraint = ConstraintSpec(name="c", bound=0)
+    assert constraint.tolerance == 0.0
+    assert constraint.scale is None
+
+
+def test_constraint_accepts_a_tolerance_and_a_scale() -> None:
+    constraint = ConstraintSpec(name="c", bound=1, tolerance=1e-3, scale=250)
+    assert constraint.tolerance == 1e-3
+    assert constraint.scale == 250.0
+
+
+@pytest.mark.parametrize("tolerance", [-1e-9, float("nan"), float("inf"), "0.1", True])
+def test_constraint_rejects_a_bad_tolerance(tolerance: Any) -> None:
+    with pytest.raises(ValidationError):
+        ConstraintSpec(name="c", bound=0, tolerance=tolerance)
+
+
+@pytest.mark.parametrize("scale", [0, -1.0, float("nan"), float("inf"), "2", True])
+def test_constraint_rejects_a_bad_scale(scale: Any) -> None:
+    with pytest.raises(ValidationError):
+        ConstraintSpec(name="c", bound=0, scale=scale)
 
 
 # --- StudySchema structure --------------------------------------------------
