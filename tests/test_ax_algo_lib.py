@@ -4,461 +4,458 @@ License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
-import unittest
-from typing import Any, cast
-from unittest.mock import MagicMock
+import logging
+import math
+import warnings
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from typing import Any
 
-import numpy as np
+import pytest
+from ax.api.client import Client
+from ax.core.optimization_config import (
+    MultiObjectiveOptimizationConfig,
+    OptimizationConfig,
+)
+from ax.core.parameter import ChoiceParameter, ParameterType, RangeParameter
+from ax.core.types import ComparisonOp
+from botorch.acquisition.logei import qLogNoisyExpectedImprovement
+from gemseo import create_scenario
 from gemseo.algos.design_space import DesignSpace
-from gemseo.algos.optimization_problem import OptimizationProblem
-from gemseo.algos.stop_criteria import MaxIterReachedException
-from gemseo.core.mdo_functions.mdo_function import MDOFunction
 
-from mdo_framework.optimization.ax_algo_lib import (
-    BUDGET_REACHED_MESSAGE,
-    AxOptimizationLibrary,
-    AxSettings,
-    _get_choice_parameter_type,
-    _get_range_parameter_type,
-    _require_ax_settings,
-    _validate_custom_ax_parameters,
-    build_from_ax_parameters,
-    build_from_design_space,
-    build_optimization_config,
-    build_outcome_constraints,
+from mdo_framework.core.components import ToolComponent
+from mdo_framework.core.errors import InfeasiblePointError
+from mdo_framework.core.topology import to_parameter_definition
+from mdo_framework.optimization import ax_algo_lib
+from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary, AxSettings
+from mdo_framework.optimization.bo_library import add_constraints
+from mdo_framework.optimization.bo_types import BOSpace, BORunResult, MetricBinding
+from mdo_framework.optimization.errors import OptimizationExecutionError
+from mdo_framework.schema import (
+    ChoiceVar,
+    ConstraintSpec,
+    DesignVariable,
+    ObjectiveSpec,
+    RangeVar,
 )
 
+SEED = 11
+X = RangeVar(name="x", lower=0.0, upper=10.0)
+Y = RangeVar(name="y", lower=0.0, upper=10.0)
+F = ObjectiveSpec(name="f")
 
-class TestAxOptimizationLibrary(unittest.TestCase):
-    def _add_variable(
-        self,
-        design_space: DesignSpace,
-        name: str,
-        lower_bound: float,
-        upper_bound: float,
-        *,
-        value: float | None = None,
-        integer: bool = False,
-    ) -> None:
-        kwargs: dict[str, Any] = {
-            "lower_bound": [lower_bound],
-            "upper_bound": [upper_bound],
-        }
-        if value is not None:
-            kwargs["value"] = [value]
-        if integer:
-            kwargs["type_"] = cast(Any, "integer")
-        design_space.add_variable(name, **kwargs)
 
-    def _make_problem(self, *, upper_bound: float = 1.0) -> OptimizationProblem:
-        design_space = DesignSpace()
-        self._add_variable(design_space, "x", 0.0, upper_bound)
-        problem = OptimizationProblem(design_space)
+class RecordingFactory:
+    """Client factory building real seeded Ax clients, and keeping them."""
 
-        def objective(x):
-            return np.array([x[0] ** 2])
+    def __init__(self, build: Callable[..., Client] = Client) -> None:
+        self.build = build
+        self.seeds: list[int | None] = []
 
-        problem.objective = MDOFunction(objective, "obj", expr="x**2")
-        return problem
+    def __call__(self, random_seed: int | None = None) -> Client:
+        self.seeds.append(random_seed)
+        return self.build(random_seed=random_seed)
 
-    def test_build_from_ax_parameters_validation_and_inference(self):
-        invalid_cases = [
-            [{"name": "x", "type": "choice"}],
-            [{"name": "x", "type": "range"}],
-            [{"name": "x", "type": "unrecognized", "bounds": [0.0, 1.0]}],
-            [{"name": "x", "type": "range", "bounds": [0.0]}],
-            [{"name": "x", "type": "choice", "values": []}],
-        ]
 
-        for parameters in invalid_cases:
-            with self.subTest(parameters=parameters):
-                with self.assertRaises(ValueError):
-                    build_from_ax_parameters(parameters)
-
-        inference_cases = [
-            (
-                [{"name": "x", "type": "range", "bounds": [0.0, 1.0]}],
-                "float",
-            ),
-            ([{"name": "x", "type": "choice", "values": [1.0]}], "float"),
-            ([{"name": "flag", "type": "choice", "values": [True, False]}], "bool"),
-        ]
-
-        for parameters, expected_type in inference_cases:
-            with self.subTest(parameters=parameters):
-                ax_parameters = build_from_ax_parameters(parameters)
-                self.assertEqual(ax_parameters[0].parameter_type, expected_type)
-
-        with self.assertRaises(ValueError):
-            _get_range_parameter_type(
-                {"name": "x", "type": "range", "value_type": "decimal"}
+def make_design_space(variables: Sequence[DesignVariable]) -> DesignSpace:
+    space = DesignSpace()
+    for variable in variables:
+        if isinstance(variable, ChoiceVar):
+            space.add_variable(
+                variable.name,
+                lower_bound=0,
+                upper_bound=len(variable.choices) - 1,
+                type_="integer",
+                value=0,
             )
-
-        with self.assertRaises(ValueError):
-            _get_choice_parameter_type(
-                {"name": "choice", "type": "choice", "value_type": "decimal"},
-                ["A", "B"],
+        else:
+            kwargs = {"type_": "integer"} if variable.value_type == "int" else {}
+            space.add_variable(
+                variable.name,
+                lower_bound=variable.lower,
+                upper_bound=variable.upper,
+                **kwargs,
             )
+    return space
 
-    def test_build_from_design_space_and_custom_layout_rules(self):
-        design_space = DesignSpace()
-        self._add_variable(design_space, "x", 0.0, 10.0)
-        self._add_variable(design_space, "count", 0.0, 5.0, integer=True)
 
-        physical_parameters = build_from_design_space(design_space, normalize=False)
-        normalized_parameters = build_from_design_space(design_space, normalize=True)
+@dataclass
+class Run:
+    """A finished run of the Ax library on a recorded tool."""
 
-        self.assertEqual(
-            [parameter.name for parameter in physical_parameters],
-            ["x", "count"],
-        )
-        self.assertEqual(
-            [parameter.parameter_type for parameter in normalized_parameters],
-            ["float", "float"],
-        )
+    result: BORunResult
+    library: AxOptimizationLibrary
+    calls: list[dict[str, Any]] = field(default_factory=list)
 
-        with self.assertRaises(ValueError):
-            _validate_custom_ax_parameters(
-                [
-                    {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
-                    {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
-                ],
-                design_space,
-                normalize=False,
-            )
+    @property
+    def client(self) -> Client:
+        return self.library._client
 
-    def test_build_outcome_constraints_and_optimization_config(self):
-        problem = self._make_problem()
+    @property
+    def experiment(self) -> Any:
+        return self.client._experiment
 
-        self.assertEqual(build_outcome_constraints([]), [])
+    @property
+    def config(self) -> Any:
+        return self.experiment.optimization_config
 
-        unsupported_constraint = MagicMock()
-        unsupported_constraint.name = "h"
-        unsupported_constraint.f_type = "eq"
-        with self.assertRaises(ValueError):
-            build_outcome_constraints([unsupported_constraint])
-
-        config = build_optimization_config(
-            [{"name": "a", "minimize": True}, {"name": "b", "minimize": False}],
-            problem,
-            [],
-        )
-        self.assertIsNotNone(config)
-
-    def test_seed_database_records_existing_points(self):
-        problem = self._make_problem()
-        problem.database.store(np.array([0.1]), {"obj": np.array([0.1])})
-        problem.database.store(np.array([0.2]), {"obj": np.array([0.2])})
-
-        client = MagicMock()
-        client.attach_baseline.return_value = 0
-        client.attach_trial.return_value = 1
-
-        algo = AxOptimizationLibrary()
-        algo._seed_database(
-            client,
-            problem,
-            problem.design_space,
-            normalize=False,
-            ax_parameters=[{"name": "x", "type": "range", "bounds": [0.0, 1.0]}],
-        )
-
-        client.attach_baseline.assert_called_once_with(parameters={"x": 0.1})
-        client.attach_trial.assert_called_once_with(parameters={"x": 0.2})
-        self.assertEqual(client.complete_trial.call_count, 2)
-        self.assertEqual(len(algo.trial_history), 2)
-
-    def test_seed_result_and_metric_normalization_contracts(self):
-        normalized_metrics = AxOptimizationLibrary._normalize_best_metrics("invalid")
-        self.assertEqual(normalized_metrics, {})
-
-        seed_results = AxOptimizationLibrary._extract_seed_results(
-            {
-                "obj": np.array([1.0]),
-                "g": np.array([-1.0, 2.0]),
-            },
-            {"obj", "g"},
-            {"g"},
-        )
-        self.assertEqual(seed_results, {"obj": 1.0, "g": 2.0})
-
-    def test_record_last_point_contracts(self):
-        design_space = DesignSpace()
-        self._add_variable(design_space, "x", 0.0, 1.0)
-        self._add_variable(design_space, "c_str", 0.0, 2.0, integer=True)
-        self._add_variable(design_space, "count", 0.0, 5.0, integer=True)
-
-        class DummyLastPoint:
-            design = np.array([0.5, 1.0, 2.0])
-            objective = np.array([10.0])
-            constraints = {"g": -1.0}
-
-        problem = MagicMock()
-        problem.design_space = design_space
-        problem.history.last_point = DummyLastPoint()
-        problem.objective.name = "obj"
-
-        algo = AxOptimizationLibrary()
-        algo._record_last_point(
-            problem,
-            [
-                {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
-                {"name": "c_str", "type": "choice", "values": ["A", "B", "C"]},
-                {
-                    "name": "count",
-                    "type": "range",
-                    "bounds": [0, 5],
-                    "value_type": "int",
-                },
-            ],
-        )
-
-        self.assertEqual(
-            algo.trial_history,
-            [
-                {
-                    "parameters": {"x": 0.5, "c_str": "B", "count": 2},
-                    "objectives": {"obj": 10.0, "g": -1.0},
-                }
-            ],
-        )
-
-        problem_with_no_history = self._make_problem()
-        problem_with_no_history.history = MagicMock()
-        type(problem_with_no_history.history).last_point = property(
-            lambda self: (_ for _ in ()).throw(ValueError("no history"))
-        )
-
-        algo = AxOptimizationLibrary()
-        algo._record_last_point(problem_with_no_history)
-        self.assertEqual(algo.trial_history, [])
-
-    def test_execute_trial_contracts(self):
-        problem = self._make_problem()
-
-        successful_cases = [
-            (
-                "scalar_int_metric",
-                {"obj": 5},
-                {"obj": 5.0},
-            ),
-            (
-                "multi_dimensional_metric",
-                {"obj": np.array([1.0, 3.0])},
-                {"obj": 3.0},
-            ),
+    def kinds(self) -> list[tuple[str, str]]:
+        """Return the (generation node, status) of every Ax trial."""
+        return [
+            (trial.generator_runs[0]._generation_node_name or "x0", trial.status.name)
+            for trial in self.experiment.trials.values()
         ]
 
-        for label, output, expected_raw_data in successful_cases:
-            with self.subTest(case=label):
-                algo = AxOptimizationLibrary()
-                client = MagicMock()
-                problem.evaluate_functions = MagicMock(return_value=(output, None))
+    def summary(self) -> Any:
+        """Return the Ax summary table of the trials."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            return self.client.summarize()
 
-                budget_exhausted = algo._execute_trial(
-                    client,
-                    problem,
-                    0,
-                    {"x": 0.5},
-                    {"obj"},
-                )
+    def metric(self, name: str) -> dict[int, float]:
+        """Return the value Ax holds for a metric, by trial index."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            frame = self.experiment.lookup_data().df
+        rows = frame[frame["metric_name"] == name]
+        return dict(zip(rows["trial_index"], rows["mean"], strict=True))
 
-                self.assertFalse(budget_exhausted)
-                client.complete_trial.assert_called_once_with(
-                    trial_index=0,
-                    raw_data=expected_raw_data,
-                )
-                self.assertEqual(
-                    algo.trial_history[-1],
-                    {"parameters": {"x": 0.5}, "objectives": expected_raw_data},
-                )
+    def generator_kwargs(self) -> dict[str, Any]:
+        """Return the fixed arguments of the BoTorch generator."""
+        node = self.client._generation_strategy._nodes[1]
+        return node.generator_spec_to_gen_from.generator_kwargs
 
-        abandonment_cases = [
-            (
-                "recoverable_error",
-                ValueError("boom"),
-                False,
-            ),
-            (
-                "budget_exhausted",
-                MaxIterReachedException(),
-                True,
-            ),
-            (
-                "missing_metrics",
-                ({"other": 1.0}, None),
-                False,
-            ),
-        ]
 
-        for label, outcome, expected_budget_exhausted in abandonment_cases:
-            with self.subTest(case=label):
-                algo = AxOptimizationLibrary()
-                client = MagicMock()
-                if isinstance(outcome, Exception):
-                    problem.evaluate_functions = MagicMock(side_effect=outcome)
-                else:
-                    problem.evaluate_functions = MagicMock(return_value=outcome)
+def run_study(
+    func: Callable[..., dict[str, float]],
+    variables: Sequence[DesignVariable] = (X,),
+    objectives: Sequence[ObjectiveSpec] = (F,),
+    constraints: Sequence[ConstraintSpec] = (),
+    *,
+    parameter_constraints: Sequence[str] = (),
+    library: AxOptimizationLibrary | None = None,
+    **options: Any,
+) -> Run:
+    calls: list[dict[str, Any]] = []
 
-                budget_exhausted = algo._execute_trial(
-                    client,
-                    problem,
-                    1,
-                    {"x": 0.25},
-                    {"obj"},
-                )
+    def recorded(**kwargs: Any) -> dict[str, float]:
+        calls.append(kwargs)
+        return func(**kwargs)
 
-                self.assertEqual(budget_exhausted, expected_budget_exhausted)
-                client.mark_trial_abandoned.assert_called_once_with(trial_index=1)
+    names = [variable.name for variable in variables]
+    outputs = list(
+        dict.fromkeys([*(o.name for o in objectives), *(c.name for c in constraints)])
+    )
+    discipline = ToolComponent(
+        "tool",
+        recorded,
+        names,
+        outputs,
+        specs={v.name: to_parameter_definition(v) for v in variables},
+    )
+    scenario = create_scenario(
+        [discipline],
+        formulation_name="MDF",
+        objective_name=[o.name for o in objectives],
+        design_space=make_design_space(variables),
+        maximize_objective=len(objectives) == 1 and not objectives[0].minimize,
+    )
+    add_constraints(scenario, constraints)
+    library = library or AxOptimizationLibrary()
+    options.setdefault("seed", SEED)
+    options.setdefault("n_init", 2)
+    options.setdefault("n_steps", 1)
+    settings = AxSettings(
+        design_variables=tuple(variables),
+        objectives=tuple(objectives),
+        constraints=tuple(constraints),
+        parameter_constraints=tuple(parameter_constraints),
+        enable_progress_bar=False,
+        log_problem=False,
+        **options,
+    )
+    library.execute(scenario.formulation.optimization_problem, settings_model=settings)
+    assert library.result is not None
+    return Run(library.result, library, calls)
 
-    def test_extract_best_solution_contracts(self):
-        problem = self._make_problem()
-        client = MagicMock()
-        client.get_best_parameterization.return_value = (
-            {"x": 0.5},
-            ({"obj": 0.25}, None),
-            0,
-            "arm_0",
-        )
 
-        problem.evaluate_functions = MagicMock(side_effect=MaxIterReachedException())
+def quadratic(x: float) -> dict[str, float]:
+    return {"f": (x - 3.0) ** 2}
 
-        algo = AxOptimizationLibrary()
-        algo._extract_best_solution(client, problem, False)
-        self.assertEqual(algo.best_objectives, {"obj": 0.25})
 
-        problem.evaluate_functions = MagicMock(side_effect=ValueError("boom"))
-        algo._extract_best_solution(client, problem, False)
-        self.assertEqual(algo.best_objectives, {"obj": 0.25})
+# Search space
 
-        client.get_pareto_frontier.return_value = []
-        with self.assertRaisesRegex(ValueError, "Pareto frontier is empty"):
-            algo._extract_best_solution(client, problem, True)
 
-    def test_normalized_design_vectors_are_unnormalized(self):
-        problem = self._make_problem(upper_bound=10.0)
-        problem.evaluate_functions = MagicMock(
-            return_value=({"obj": np.array([25.0])}, None)
-        )
+def test_parameters_are_configured_in_user_values():
+    variables = (
+        RangeVar(name="n", lower=1, upper=8, value_type="int"),
+        RangeVar(name="r", lower=1e-3, upper=1e3, scaling="log"),
+        ChoiceVar(name="k", choices=[1, 2, 4], ordered=True),
+        ChoiceVar(name="flag", choices=[True, False]),
+        ChoiceVar(name="mode", choices=["a", "b", "c"], ordered=False),
+        ChoiceVar(name="tag", choices=["p", "q", "r"]),
+        ChoiceVar(name="level", choices=[1.5, 2.5, 3.5]),
+    )
 
-        algo = AxOptimizationLibrary()
-        client = MagicMock()
+    def tool(n, r, k, flag, mode, tag, level):
+        return {"f": n + math.log(r) + k + int(flag) + len(mode + tag) + level}
 
-        algo._execute_trial(client, problem, 0, {"x": 0.5}, {"obj"}, normalize=True)
-        evaluated_x = problem.evaluate_functions.call_args.args[0]
-        self.assertEqual(float(evaluated_x[0]), 5.0)
+    run = run_study(tool, variables)
 
-        problem.evaluate_functions.reset_mock(return_value=True)
-        client.get_best_parameterization.return_value = (
-            {"x": 0.5},
-            ({"obj": 25.0}, None),
-            0,
-            "arm_0",
-        )
+    parameters = run.experiment.search_space.parameters
+    assert list(parameters) == ["n", "r", "k", "flag", "mode", "tag", "level"]
+    n, r, k, flag, mode, tag, level = (parameters[v.name] for v in variables)
+    assert isinstance(n, RangeParameter)
+    assert (n.parameter_type, n.lower, n.upper) == (ParameterType.INT, 1, 8)
+    assert (r.parameter_type, r.log_scale) == (ParameterType.FLOAT, True)
+    assert isinstance(k, ChoiceParameter)
+    assert (k.parameter_type, k.values, k.is_ordered) == (
+        ParameterType.INT,
+        [1, 2, 4],
+        True,
+    )
+    assert (flag.parameter_type, set(flag.values)) == (
+        ParameterType.BOOL,
+        {True, False},
+    )
+    assert (mode.parameter_type, mode.values, mode.is_ordered) == (
+        ParameterType.STRING,
+        ["a", "b", "c"],
+        False,
+    )
+    assert all(isinstance(call["n"], int) for call in run.calls)
+    assert all(isinstance(call["flag"], bool) for call in run.calls)
+    assert all(call["mode"] in ("a", "b", "c") for call in run.calls)
+    # the default order is the one of Ax: unordered for several strings only
+    assert [flag.is_ordered, tag.is_ordered, level.is_ordered] == [True, False, True]
 
-        algo._extract_best_solution(client, problem, False, normalize=True)
-        optimum_x = problem.evaluate_functions.call_args.args[0]
-        self.assertEqual(float(optimum_x[0]), 5.0)
-        self.assertEqual(float(problem.design_space.get_current_value()[0]), 5.0)
 
-    def test_configure_client_rejects_incompatible_custom_ax_parameters(self):
-        problem = self._make_problem()
-        algo = AxOptimizationLibrary(client_factory=lambda: MagicMock())
+def test_parameter_constraints_are_enforced_by_ax():
+    run = run_study(
+        lambda x, y: {"f": x + y},
+        (X, Y),
+        parameter_constraints=("x + y <= 5",),
+        n_init=3,
+    )
 
-        incompatible_settings = [
-            AxSettings(
-                max_iter=1,
-                n_init=1,
-                batch_size=1,
-                use_bonsai=False,
-                ax_parameters=[
-                    {"name": "custom_x", "type": "range", "bounds": [0.0, 1.0]}
-                ],
-                ax_objectives=[{"name": "obj", "minimize": True}],
-                normalize_design_space=False,
-            ),
-            AxSettings(
-                max_iter=1,
-                n_init=1,
-                batch_size=1,
-                use_bonsai=False,
-                ax_parameters=[{"name": "x", "type": "range", "bounds": [0.0, 1.0]}],
-                ax_objectives=[{"name": "obj", "minimize": True}],
-                normalize_design_space=True,
-            ),
-        ]
+    assert len(run.experiment.search_space.parameter_constraints) == 1
+    assert len(run.calls) == 4
+    assert all(call["x"] + call["y"] <= 5 + 1e-6 for call in run.calls)
 
-        for settings in incompatible_settings:
-            with self.subTest(settings=settings):
-                algo._settings = settings
-                with self.assertRaises(ValueError):
-                    algo._configure_client(problem)
 
-    def test_run_guards_and_loop_fallback(self):
-        with self.assertRaises(TypeError):
-            _require_ax_settings(cast(Any, object()))
+# Generation strategy
 
-        algo = AxOptimizationLibrary(client_factory=lambda: MagicMock())
-        algo._settings = AxSettings(
-            max_iter=1,
-            n_init=1,
-            batch_size=1,
-            use_bonsai=False,
-            ax_parameters=[{"name": "x", "type": "range", "bounds": [0.0, 1.0]}],
-            ax_objectives=[{"name": "obj", "minimize": True}],
-        )
-        with self.assertRaises(TypeError):
-            algo._run(cast(Any, MagicMock()))
 
-        problem = self._make_problem()
-        problem.database.store(np.array([0.2]), {"obj": np.array([0.04])})
-        problem.evaluate_functions = MagicMock(
-            return_value=({"obj": np.array([0.04])}, None)
-        )
+def test_the_budget_goes_to_sobol_then_botorch():
+    run = run_study(quadratic, n_init=2, n_steps=2)
 
-        mock_client = MagicMock()
-        mock_client.get_next_trials.return_value = {}
-        mock_client.get_best_parameterization.return_value = (
-            {"x": 0.2},
-            ({"obj": (0.04, None)}, None),
-            0,
-            "0_0",
-        )
+    assert run.result.stop_reason == "budget"
+    assert run.kinds() == [
+        ("GenerationStep_0_Sobol", "COMPLETED"),
+        ("GenerationStep_0_Sobol", "COMPLETED"),
+        ("GenerationStep_1_BoTorch", "COMPLETED"),
+        ("GenerationStep_1_BoTorch", "COMPLETED"),
+    ]
 
-        algo = AxOptimizationLibrary(client_factory=lambda: mock_client)
-        algo.execute(
-            problem,
-            max_iter=1,
-            n_init=1,
-            ax_parameters=[{"name": "x", "type": "range", "bounds": [0.0, 1.0]}],
-            ax_objectives=[{"name": "obj", "minimize": True}],
-        )
 
-        self.assertGreaterEqual(len(algo.trial_history), 2)
-        self.assertEqual(algo.trial_history[-1]["parameters"], {"x": 0.2})
+def test_a_single_objective_hard_codes_the_acquisition():
+    run = run_study(quadratic)
 
-        budget_problem = self._make_problem()
-        budget_problem.evaluate_functions = MagicMock(
-            side_effect=MaxIterReachedException()
-        )
-        budget_client = MagicMock()
-        budget_client.get_next_trials.return_value = {0: {"x": 0.5}}
-        budget_client.get_best_parameterization.return_value = (
-            {"x": 0.5},
-            ({"obj": 0.25}, None),
-            0,
-            "arm_0",
-        )
+    assert run.generator_kwargs() == {
+        "botorch_acqf_class": qLogNoisyExpectedImprovement
+    }
 
-        algo = AxOptimizationLibrary(client_factory=lambda: budget_client)
-        algo._settings = AxSettings(
-            max_iter=1,
-            n_init=1,
-            batch_size=1,
-            use_bonsai=False,
-            ax_parameters=[{"name": "x", "type": "range", "bounds": [0.0, 1.0]}],
-            ax_objectives=[{"name": "obj", "minimize": True}],
-        )
-        message, status = algo._run(budget_problem)
-        self.assertEqual(message, BUDGET_REACHED_MESSAGE)
-        self.assertEqual(status, 0)
+
+def test_bonsai_leaves_the_acquisition_to_ax(caplog: pytest.LogCaptureFixture):
+    with caplog.at_level(logging.WARNING, logger=ax_algo_lib.logger.name):
+        run = run_study(quadratic, use_bonsai=True)
+
+    assert "BONSAI" in caplog.text
+    assert run.client._generation_strategy.name == "bonsai"
+    assert run.generator_kwargs() == {}
+    assert run.kinds()[-1] == ("GenerationStep_1_BoTorch", "COMPLETED")
+
+
+# Metrics
+
+
+def test_a_maximised_objective_keeps_its_user_name_and_value():
+    run = run_study(
+        lambda x: {"f": -((x - 3.0) ** 2)},
+        objectives=(ObjectiveSpec(name="f", minimize=False),),
+    )
+
+    assert isinstance(run.config, OptimizationConfig)
+    assert (run.config.objective.metric.name, run.config.objective.minimize) == (
+        "f",
+        False,
+    )
+    assert sorted(run.metric("f").values()) == pytest.approx(
+        sorted(-((call["x"] - 3.0) ** 2) for call in run.calls)
+    )
+
+
+def test_multi_objective_has_directions_thresholds_and_ax_acquisition():
+    objectives = (
+        ObjectiveSpec(name="f1", minimize=True, threshold=20.0),
+        ObjectiveSpec(name="f2", minimize=False, threshold=-5.0),
+    )
+
+    run = run_study(
+        lambda x: {"f1": (x - 1.0) ** 2, "f2": -((x - 4.0) ** 2)},
+        objectives=objectives,
+        n_init=4,
+    )
+
+    assert isinstance(run.config, MultiObjectiveOptimizationConfig)
+    assert [(o.metric.name, o.minimize) for o in run.config.objective.objectives] == [
+        ("f1", True),
+        ("f2", False),
+    ]
+    assert [
+        (t.metric.name, t.bound, t.op) for t in run.config.objective_thresholds
+    ] == [("f1", 20.0, ComparisonOp.LEQ), ("f2", -5.0, ComparisonOp.GEQ)]
+    assert run.generator_kwargs() == {}
+
+
+def test_a_ge_constraint_keeps_its_user_name_and_is_scaled():
+    constraint = ConstraintSpec(name="g", op=">=", bound=4.0, scale=2.0)
+
+    run = run_study(lambda x: {"f": x, "g": x**2}, constraints=(constraint,))
+
+    (outcome_constraint,) = run.config.outcome_constraints
+    assert outcome_constraint.metric.name == "g"
+    assert outcome_constraint.op == ComparisonOp.GEQ
+    assert outcome_constraint.bound == pytest.approx(2.0)
+    assert sorted(run.metric("g").values()) == pytest.approx(
+        sorted(call["x"] ** 2 / 2.0 for call in run.calls)
+    )
+    assert sorted(run.metric("f").values()) == pytest.approx(
+        sorted(call["x"] for call in run.calls)
+    )
+
+
+def test_a_le_constraint_defaults_to_an_unscaled_bound():
+    run = run_study(
+        lambda x: {"f": x, "g": x - 5.0},
+        constraints=(ConstraintSpec(name="g", bound=1.0),),
+    )
+
+    (outcome_constraint,) = run.config.outcome_constraints
+    assert (outcome_constraint.op, outcome_constraint.bound) == (ComparisonOp.LEQ, 1.0)
+
+
+# Trials
+
+
+def test_x0_is_attached_as_the_baseline_with_its_outcome():
+    variables = (
+        RangeVar(name="n", lower=1, upper=8, value_type="int", initial=3),
+        RangeVar(name="x", lower=0.0, upper=10.0, initial=2.0),
+    )
+
+    run = run_study(lambda n, x: {"f": (x - 3.0) ** 2 + n}, variables, evaluate_x0=True)
+
+    baseline = run.experiment.trials[0]
+    assert baseline.arm.name == "baseline"
+    assert baseline.arm.parameters == {"n": 3, "x": 2.0}
+    assert run.kinds()[0] == ("x0", "COMPLETED")
+    assert run.metric("f")[0] == pytest.approx(4.0)
+    assert [kind for kind, _ in run.kinds()[1:]] == [
+        "GenerationStep_0_Sobol",
+        "GenerationStep_0_Sobol",
+        "GenerationStep_1_BoTorch",
+    ]
+
+
+def test_a_failed_x0_is_attached_as_failed_and_the_run_goes_on():
+    def tool(x):
+        if x == 2.0:
+            raise InfeasiblePointError("x0 is not computable")
+        return quadratic(x)
+
+    run = run_study(tool, (X.model_copy(update={"initial": 2.0}),), evaluate_x0=True)
+
+    assert run.result.stop_reason == "budget"
+    assert run.kinds()[0] == ("x0", "FAILED")
+    assert [status for _, status in run.kinds()[1:]] == ["COMPLETED"] * 3
+    reason = run.summary()["status_reason"][0]
+    assert reason == run.result.records[0].outcome.reason
+    assert "x0 is not computable" in reason
+
+
+def test_failed_trials_are_marked_failed_in_ax_with_the_reason():
+    def tool(x):
+        if x > 6.0:
+            raise InfeasiblePointError("above the limit")
+        return quadratic(x)
+
+    run = run_study(tool, n_init=5, n_steps=2)
+
+    failed = [r for r in run.result.records if r.outcome.status == "failed"]
+    assert failed
+    summary = run.summary()
+    ax_failed = summary[summary["trial_status"] == "FAILED"]
+    assert list(ax_failed["status_reason"]) == [r.outcome.reason for r in failed]
+    assert all("above the limit" in reason for reason in ax_failed["status_reason"])
+    assert len(ax_failed) == run.result.evaluations["failed"]
+
+
+def test_a_candidate_cut_by_the_stop_is_marked_abandoned_in_ax():
+    def tool(x):
+        raise InfeasiblePointError("never computable")
+
+    run = run_study(tool, batch_size=3, n_init=3, n_steps=2, max_consecutive_failures=1)
+
+    assert run.result.stop_reason == "consecutive_failures"
+    assert run.kinds() == [
+        ("GenerationStep_0_Sobol", "FAILED"),
+        ("GenerationStep_0_Sobol", "ABANDONED"),
+        ("GenerationStep_0_Sobol", "ABANDONED"),
+    ]
+    assert len(run.calls) == 1
+
+
+def test_asking_before_any_outcome_is_reported():
+    library = AxOptimizationLibrary()
+    library._settings = AxSettings(
+        design_variables=(X,), objectives=(F,), n_init=1, seed=SEED
+    )
+    binding = MetricBinding(
+        name="f", role="objective", gemseo_name="f", index=0, sign=1.0
+    )
+    library._setup(BOSpace((X,)), (binding,), ())
+    assert len(library._ask(1)) == 1
+
+    with pytest.raises(OptimizationExecutionError, match="before the initial trials"):
+        library._ask(1)
+
+
+# Client
+
+
+def test_the_seed_reaches_the_client_factory():
+    factory = RecordingFactory()
+
+    run_study(quadratic, library=AxOptimizationLibrary(client_factory=factory), seed=7)
+
+    assert factory.seeds == [7]
+
+
+def test_the_default_factory_is_the_client_of_the_module(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    factory = RecordingFactory(ax_algo_lib.Client)
+    monkeypatch.setattr(ax_algo_lib, "Client", factory)
+
+    run = run_study(quadratic, seed=5)
+
+    assert factory.seeds == [5]
+    assert run.result.stop_reason == "budget"
+
+
+def test_the_same_seed_gives_the_same_run():
+    first = run_study(quadratic, n_steps=2)
+    second = run_study(quadratic, n_steps=2)
+
+    assert first.calls == second.calls
