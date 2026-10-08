@@ -708,6 +708,79 @@ class TestExecutionService(unittest.TestCase):
             {name: type(value) for name, value in expected.items()},
         )
 
+    def test_evaluate_reports_evaluation_errors_as_structured_422(self):
+        from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
+
+        line = StudySchema(
+            variables=[RangeVar(name="x", lower=0.0, upper=1.0), StateVar(name="f")],
+            tools=[ToolSpec(name="T", inputs=["x"], outputs=["f"])],
+        )
+        no_fixed_point = StudySchema(
+            variables=[
+                RangeVar(name="x", lower=0.0, upper=1.0),
+                StateVar(name="f"),
+                StateVar(name="g"),
+            ],
+            tools=[
+                ToolSpec(name="T", inputs=["x", "g"], outputs=["f"]),
+                ToolSpec(name="U", inputs=["f"], outputs=["g"]),
+            ],
+        )
+
+        def diverging(x):
+            raise RuntimeError("solver diverged")
+
+        cases = [
+            (
+                "tool_failed",
+                line,
+                {"T": diverging},
+                {
+                    "code": "TOOL_FAILED",
+                    "message": "RuntimeError: solver diverged",
+                    "tool": "T",
+                    "retryable": False,
+                },
+            ),
+            (
+                "output_invalid",
+                line,
+                {"T": lambda x: float("nan")},
+                {"code": "OUTPUT_INVALID", "tool": "T", "retryable": False},
+            ),
+            (
+                "mda_not_converged",
+                no_fixed_point,
+                {"T": lambda x, g: g + 1.0 + x, "U": lambda f: f + 1.0},
+                {"code": "MDA_NOT_CONVERGED", "tool": None, "retryable": False},
+            ),
+        ]
+        for label, schema, tools, expected in cases:
+            with self.subTest(case=label):
+                mock_client = AsyncMock()
+                mock_resp = MagicMock()
+                mock_resp.json.return_value = schema.model_dump(mode="json")
+                mock_client.get.return_value = mock_resp
+                execution_app.state.schema_provider = SchemaProvider(mock_client)
+                pool = ProblemPool(TOOL_REGISTRY, size=1)
+                execution_app.state.problem_pool = pool
+
+                with (
+                    patch.dict(TOOL_REGISTRY, tools),
+                    patch.object(
+                        pool, "discard_instance", wraps=pool.discard_instance
+                    ) as discard,
+                ):
+                    response = self.client.post(
+                        "/evaluate", json={"inputs": {"x": 0.5}, "objectives": ["f"]}
+                    )
+
+                self.assertEqual(response.status_code, 422, response.text)
+                detail = response.json()["detail"]
+                self.assertEqual(detail | expected, detail)
+                self.assertIsInstance(detail["message"], str)
+                discard.assert_called_once()
+
     def test_evaluate_unknown_objective_input(self):
         from services.execution.main import TOOL_REGISTRY, ProblemPool, SchemaProvider
 

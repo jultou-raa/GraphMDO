@@ -14,6 +14,7 @@ from gemseo import create_scenario
 from gemseo.algos.design_space import DesignSpace
 from gemseo.core.discipline import Discipline
 
+from mdo_framework.core.errors import evaluation_error_from_payload
 from mdo_framework.optimization.ax_algo_lib import AxObjectiveDict
 from mdo_framework.optimization.parameter_codec import (
     ParameterDefinitionError,
@@ -212,6 +213,15 @@ class Evaluator(Protocol):
         ...
 
 
+def _response_detail(response: httpx.Response) -> Any:
+    """Returns the ``detail`` of a JSON error response, ``None`` otherwise."""
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    return body.get("detail") if isinstance(body, dict) else None
+
+
 class RemoteEvaluator:
     """Evaluates the design parameters remotely by communicating with the Execution microservice.
 
@@ -258,8 +268,13 @@ class RemoteEvaluator:
                 raise RemoteEvaluationTransportError(
                     f"Execution service returned HTTP {exc.response.status_code}."
                 ) from exc
+            detail = _response_detail(exc.response)
+            if (error := evaluation_error_from_payload(detail)) is not None:
+                raise error from exc
             raise RemoteEvaluationContractError(
-                f"Execution service rejected the evaluation request with HTTP {exc.response.status_code}."
+                "Execution service rejected the evaluation request with "
+                f"HTTP {exc.response.status_code}"
+                + (f": {detail}" if detail is not None else ".")
             ) from exc
         except httpx.RequestError as exc:
             raise RemoteEvaluationTransportError(

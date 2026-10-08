@@ -4,7 +4,8 @@ License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at http://mozilla.org/MPL/2.0/.
 """
 
-from typing import ClassVar
+from collections.abc import Mapping
+from typing import Any, ClassVar
 
 
 class EvaluationError(ValueError):
@@ -16,6 +17,7 @@ class EvaluationError(ValueError):
     Attributes:
         code: Stable machine-readable code of the error class.
         retryable: Whether evaluating the same point again may succeed.
+        message: What went wrong, without the tool prefix.
         tool: Name of the tool that failed, if any.
     """
 
@@ -29,8 +31,23 @@ class EvaluationError(ValueError):
             message: What went wrong.
             tool: Name of the tool that failed, prefixed to the message.
         """
+        self.message = message
         self.tool = tool
         super().__init__(f"Tool '{tool}': {message}" if tool else message)
+
+    def to_payload(self) -> dict[str, Any]:
+        """Serialize the error for a service response.
+
+        Returns:
+            The ``code``, ``message``, ``tool`` and ``retryable`` of the error;
+            ``evaluation_error_from_payload`` rebuilds the error from it.
+        """
+        return {
+            "code": self.code,
+            "message": self.message,
+            "tool": self.tool,
+            "retryable": self.retryable,
+        }
 
 
 class ToolError(EvaluationError):
@@ -55,3 +72,37 @@ class MDANotConvergedError(EvaluationError):
     """The coupled tools did not reach a fixed point within the MDA limits."""
 
     code: ClassVar[str] = "MDA_NOT_CONVERGED"
+
+
+# ToolError shares TOOL_FAILED with ToolExecutionError, the class actually raised.
+_ERRORS_BY_CODE: dict[str, type[EvaluationError]] = {
+    error_class.code: error_class
+    for error_class in (
+        EvaluationError,
+        ToolExecutionError,
+        ToolOutputError,
+        MDANotConvergedError,
+    )
+}
+
+
+def evaluation_error_from_payload(payload: Any) -> EvaluationError | None:
+    """Rebuild the error a service serialized with ``EvaluationError.to_payload``.
+
+    Args:
+        payload: The decoded ``detail`` of a service error response.
+
+    Returns:
+        The error with the same class, message and tool, or ``None`` if the
+        payload is not a serialized evaluation error.
+    """
+    if not isinstance(payload, Mapping):
+        return None
+    error_class = _ERRORS_BY_CODE.get(payload.get("code"))
+    message = payload.get("message")
+    tool = payload.get("tool")
+    if error_class is None or not isinstance(message, str):
+        return None
+    if tool is not None and not isinstance(tool, str):
+        return None
+    return error_class(message, tool=tool)

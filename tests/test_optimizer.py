@@ -11,6 +11,11 @@ import httpx
 import numpy as np
 from gemseo.core.discipline import Discipline
 
+from mdo_framework.core.errors import (
+    MDANotConvergedError,
+    ToolExecutionError,
+    ToolOutputError,
+)
 from mdo_framework.core.evaluators import LocalEvaluator
 from mdo_framework.optimization.ax_algo_lib import MAX_STALLED_GENERATIONS
 from mdo_framework.optimization.optimizer import (
@@ -245,6 +250,63 @@ class TestRemoteEvaluator(unittest.TestCase):
                     RemoteEvaluator("http://fake-url", client=client).evaluate(
                         {}, ["f_xy"]
                     )
+
+    @staticmethod
+    def _answering(status_code: int, body: object) -> RemoteEvaluator:
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(status_code, json=body)
+        )
+        client = httpx.Client(base_url="http://exec", transport=transport)
+        return RemoteEvaluator("http://exec", client=client)
+
+    def test_evaluation_errors_are_rebuilt_as_local_exceptions(self):
+        cases = [
+            ToolExecutionError("RuntimeError: solver diverged", tool="T"),
+            ToolOutputError("non-finite values for ['f']", tool="T"),
+            MDANotConvergedError("residual 1e+00 > 1e-06 (couplings: f, g)"),
+        ]
+        for error in cases:
+            with self.subTest(code=error.code):
+                evaluator = self._answering(422, {"detail": error.to_payload()})
+
+                with self.assertRaises(type(error)) as raised:
+                    evaluator.evaluate({"x": 0.5}, ["f"])
+
+                self.assertEqual(str(raised.exception), str(error))
+                self.assertEqual(raised.exception.tool, error.tool)
+                self.assertIsInstance(raised.exception.__cause__, httpx.HTTPStatusError)
+
+    def test_contract_errors_include_the_server_detail(self):
+        cases = [
+            (422, {"detail": "Unknown inputs: {'z'}"}, "Unknown inputs"),
+            (400, {"detail": "invalid choice 'd' for 'm'"}, "invalid choice"),
+            (
+                422,
+                {"detail": {"code": "SCHEMA_INVALID", "report": {"errors": []}}},
+                "SCHEMA_INVALID",
+            ),
+            (422, ["not", "a", "detail"], "HTTP 422"),
+        ]
+        for status_code, body, expected in cases:
+            with self.subTest(body=body):
+                evaluator = self._answering(status_code, body)
+
+                with self.assertRaises(RemoteEvaluationContractError) as raised:
+                    evaluator.evaluate({"x": 0.5}, ["f"])
+
+                self.assertIn(expected, str(raised.exception))
+                self.assertIn(f"HTTP {status_code}", str(raised.exception))
+
+    def test_non_json_error_body_is_a_contract_error(self):
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(418, text="<html>teapot</html>")
+        )
+        client = httpx.Client(base_url="http://exec", transport=transport)
+
+        with self.assertRaises(RemoteEvaluationContractError) as raised:
+            RemoteEvaluator("http://exec", client=client).evaluate({"x": 0.5}, ["f"])
+
+        self.assertIn("HTTP 418", str(raised.exception))
 
     @patch("mdo_framework.optimization.optimizer.httpx.Client")
     def test_close_only_closes_owned_client(self, mock_httpx_client):

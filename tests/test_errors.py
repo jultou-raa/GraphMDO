@@ -12,6 +12,7 @@ from mdo_framework.core.errors import (
     ToolError,
     ToolExecutionError,
     ToolOutputError,
+    evaluation_error_from_payload,
 )
 
 
@@ -55,3 +56,52 @@ def test_message_is_unchanged_without_a_tool():
 
     assert error.tool is None
     assert str(error) == "point failed"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        EvaluationError("point rejected"),
+        ToolExecutionError("RuntimeError: solver diverged", tool="T"),
+        ToolOutputError("non-finite values for ['f']", tool="T"),
+        MDANotConvergedError("residual 1e+00 > 1e-06 (couplings: y1, y2)"),
+    ],
+    ids=lambda error: type(error).__name__,
+)
+def test_payload_round_trip_rebuilds_the_same_error(error):
+    payload = error.to_payload()
+
+    rebuilt = evaluation_error_from_payload(payload)
+
+    assert payload == {
+        "code": error.code,
+        "message": error.message,
+        "tool": error.tool,
+        "retryable": error.retryable,
+    }
+    assert type(rebuilt) is type(error)
+    assert str(rebuilt) == str(error)
+    assert rebuilt.tool == error.tool
+
+
+def test_payload_message_has_no_tool_prefix():
+    error = ToolExecutionError("KeyError: 'a'", tool="T")
+
+    assert str(error) == "Tool 'T': KeyError: 'a'"
+    assert error.to_payload()["message"] == "KeyError: 'a'"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"code": "UNKNOWN", "message": "m", "tool": None},
+        {"code": "TOOL_FAILED"},
+        {"code": "TOOL_FAILED", "message": 3, "tool": None},
+        {"code": "TOOL_FAILED", "message": "m", "tool": 3},
+        {"message": "m"},
+        "TOOL_FAILED",
+        None,
+    ],
+)
+def test_unknown_or_malformed_payload_is_not_an_evaluation_error(payload):
+    assert evaluation_error_from_payload(payload) is None
