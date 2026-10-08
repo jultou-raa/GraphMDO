@@ -251,6 +251,7 @@ def test_x0_is_evaluated_if_asked_or_every_variable_has_an_initial(
 def test_the_gemseo_hooks_used_by_the_driver_still_exist():
     assert callable(BaseDriverLibrary._check_stopping_criteria)
     assert callable(BaseDriverLibrary._init_iter_observer)
+    assert callable(BaseDriverLibrary._finalize_previous_iteration)
     assert callable(BaseOptimizationLibrary._check_constraints_handling)
     assert callable(BaseOptimizationLibrary._pre_run)
 
@@ -816,18 +817,46 @@ def test_the_backend_is_never_told_about_nan():
     assert library.told[1][1].reason.startswith("NON_FINITE_OUTPUT")
 
 
-def test_candidates_past_the_budget_are_abandoned():
-    library = ScriptedLibrary([{"x": 1.0}, {"x": 2.0}, {"x": 3.0}, {"x": 4.0}], extra=3)
+def test_candidates_beyond_the_requested_count_are_abandoned():
+    library = ScriptedLibrary([{"x": 1.0}, {"x": 2.0}, {"x": 3.0}, {"x": 4.0}], extra=1)
     study = make_study(quadratic, [X], library=library)
 
     result = study.run(n_init=1, n_steps=1)
 
     statuses = [r.outcome.status for r in result.records]
-    assert statuses == ["completed", "completed", "abandoned", "abandoned"]
+    assert statuses == ["completed", "abandoned", "completed", "abandoned"]
     assert result.stop_reason == "budget"
-    assert len(study.calls) == 2
+    assert study.calls == [{"x": 1.0}, {"x": 3.0}]
+    assert library.asked == [1, 1]
     assert [outcome.status for _, outcome in library.told] == statuses
-    assert result.records[2].outcome.reason
+    assert result.records[1].outcome.reason == "surplus"
+
+
+def test_a_repeated_failed_proposal_is_told_but_neither_evaluated_nor_recorded():
+    def tool(x):
+        raise RuntimeError("always")
+
+    library = ScriptedLibrary([{"x": 2.0}] * 8)
+    study = make_study(tool, [X], library=library)
+
+    result = study.run(n_init=5, n_steps=5, max_consecutive_failures=5)
+
+    assert len(study.calls) == 1
+    assert len(result.records) == 1
+    assert result.stop_reason == "search_space_exhausted"
+    assert len(library.told) == 6
+    assert all(outcome == result.records[0].outcome for _, outcome in library.told)
+
+
+def test_a_proposal_repeating_x0_is_told_the_x0_outcome():
+    library = ScriptedLibrary([{"x": 5.0}, {"x": 2.0}])
+    study = make_study(quadratic, [X], library=library)
+
+    result = study.run(n_init=1, n_steps=1, evaluate_x0=True)
+
+    assert study.calls == [{"x": 5.0}, {"x": 2.0}]
+    assert [r.phase for r in result.records] == ["x0", "init"]
+    assert library.told[0][1] == result.records[0].outcome
 
 
 def test_the_rest_of_a_batch_is_abandoned_after_too_many_failures():

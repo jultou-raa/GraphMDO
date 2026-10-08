@@ -214,6 +214,7 @@ class BaseBOLibrary(BaseOptimizationLibrary):
         self._bindings: tuple[MetricBinding, ...] = ()
         self._start: dict[str, Any] = {}
         self._records: list[TrialRecord] = []
+        self._outcomes: dict[tuple[float, ...], TrialOutcome] = {}
 
     @abstractmethod
     def _setup(
@@ -268,6 +269,7 @@ class BaseBOLibrary(BaseOptimizationLibrary):
         settings = self._settings
         self.result = None
         self._records = []
+        self._outcomes = {}
         self._bindings = build_metric_bindings(
             problem, settings.objectives, settings.constraints
         )
@@ -318,11 +320,14 @@ class BaseBOLibrary(BaseOptimizationLibrary):
             remaining = settings.max_iter - _evaluations_done(counter)
             if remaining <= 0:
                 return "budget"
-            candidates = self._ask(min(settings.batch_size, remaining))
+            requested = min(settings.batch_size, remaining)
+            candidates = self._ask(requested)
             evaluated = _evaluations_done(counter)
             stop: StopReason | None = None
-            for candidate in candidates:
-                if stop is None:
+            for position, candidate in enumerate(candidates):
+                if position >= requested:
+                    self._abandon(candidate, "surplus")
+                elif stop is None:
                     stop = self._try(candidate, self._next_phase())
                 else:
                     self._abandon(candidate, stop)
@@ -339,12 +344,19 @@ class BaseBOLibrary(BaseOptimizationLibrary):
     def _try(self, candidate: Candidate, phase: Phase) -> StopReason | None:
         """Evaluate a candidate, record it, and tell the backend.
 
-        A point GEMSEO already evaluated is not evaluated again, nor recorded:
-        the backend is only told what it got the first time.
+        A point already evaluated in this run, successfully or not, is not
+        evaluated again, nor recorded: the backend is told the outcome it had.
+        A point GEMSEO's database already holds from an earlier run is not
+        recorded either.
 
         Returns:
             The reason to stop the run, ``None`` to go on.
         """
+        key = tuple(self._space.to_vector(candidate.parameters).tolist())
+        if (known := self._outcomes.get(key)) is not None:
+            if phase != "x0":
+                self._tell(candidate, known)
+            return None
         counter = self._problem.evaluation_counter
         before = _evaluations_done(counter)
         stop: StopReason | None = None
@@ -357,6 +369,7 @@ class BaseBOLibrary(BaseOptimizationLibrary):
         if stop is not None:
             self._abandon(candidate, stop, phase)
             return stop
+        self._outcomes[key] = outcome
         if _evaluations_done(counter) > before:
             self._records.append(
                 TrialRecord(len(self._records), phase, candidate.parameters, outcome)
@@ -368,8 +381,16 @@ class BaseBOLibrary(BaseOptimizationLibrary):
         return None
 
     def _abandon(
-        self, candidate: Candidate, reason: StopReason, phase: Phase | None = None
+        self, candidate: Candidate, reason: str, phase: Phase | None = None
     ) -> None:
+        """Record and tell a candidate that will not be evaluated.
+
+        Args:
+            candidate: The candidate.
+            reason: Why: the stop reason of the run, or ``"surplus"`` for a
+                candidate beyond the number requested from the backend.
+            phase: Phase of the candidate, the next phase by default.
+        """
         outcome = TrialOutcome("abandoned", reason=reason)
         phase = phase or self._next_phase()
         self._records.append(
