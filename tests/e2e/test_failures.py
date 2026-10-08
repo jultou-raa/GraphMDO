@@ -10,6 +10,7 @@ import math
 
 import pytest
 
+from mdo_framework.optimization.optimizer import OptimizationExecutionError
 from mdo_framework.schema import RangeVar, StateVar, StudySchema, ToolSpec
 
 pytestmark = pytest.mark.e2e
@@ -41,59 +42,69 @@ def fails_near_centre(x: float) -> float:
     return (x - 8) ** 2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="#46, #47: tool exceptions are abandoned instead of failed trials",
-)
+def always_down(x: float) -> float:
+    raise RuntimeError("license server down")
+
+
 def test_tool_exceptions_become_failed_trials(build_optimizer, recorded, ax_recorder):
     tool = recorded(diverging)
     optimizer, _ = build_optimizer(LINE_SCHEMA, {"T": tool}, MINIMIZE_F)
 
-    optimizer.optimize(n_steps=4, n_init=4)
+    result = optimizer.optimize(n_steps=2, n_init=4)
 
     raising = sum(1 for call in tool.calls if call["x"] > 7)
-    assert len(tool.calls) == 9
-    assert raising >= 1
+    assert len(tool.calls) == 6
+    assert raising == 2
+    assert result["stop_reason"] == "budget"
     assert ax_recorder.count("FAILED") == raising
+    assert result["evaluations"]["failed"] == raising
+    failed = [entry for entry in result["history"] if entry["status"] == "failed"]
+    assert len(failed) == raising
+    assert {entry["phase"] for entry in failed} == {"init", "bo"}
+    assert all("solver diverged" in entry["reason"] for entry in failed)
+    assert result["best_parameters"]["x"] <= 7
 
 
 @pytest.mark.parametrize(
-    "function",
-    [
-        nan_above_7,
-        pytest.param(
-            plateau_above_3,
-            marks=pytest.mark.xfail(
-                strict=True, reason="#43: objective plateaus stop the run early"
-            ),
-        ),
-    ],
-    ids=["nan", "plateau"],
+    "function", [nan_above_7, plateau_above_3], ids=["nan", "plateau"]
 )
 def test_nan_or_penalty_plateau_uses_full_budget(build_optimizer, recorded, function):
     tool = recorded(function)
     optimizer, _ = build_optimizer(LINE_SCHEMA, {"T": tool}, MINIMIZE_F)
 
-    optimizer.optimize(n_steps=4, n_init=3)
+    result = optimizer.optimize(n_steps=4, n_init=3)
 
-    assert len(tool.calls) == 8
+    assert len(tool.calls) == 7
+    assert result["stop_reason"] == "budget"
 
 
-@pytest.mark.xfail(
-    strict=True, reason="#48: a failure at the initial point x0 aborts the run"
-)
 def test_failure_at_initial_point(build_optimizer, recorded):
     tool = recorded(fails_near_centre)
     optimizer, _ = build_optimizer(LINE_SCHEMA, {"T": tool}, MINIMIZE_F)
 
-    result = optimizer.optimize(n_steps=3, n_init=3)
+    result = optimizer.optimize(n_steps=3, n_init=3, evaluate_x0=True)
 
+    start = result["history"][0]
+    assert (start["phase"], start["status"]) == ("x0", "failed")
+    assert "mesh generation failed" in start["reason"]
+    assert result["stop_reason"] == "budget"
     assert abs(result["best_parameters"]["x"] - 5) >= 0.5
 
 
-@pytest.mark.xfail(
-    strict=True, reason="#45: no feasible point crashes, no feasibility flag"
-)
+def test_failure_limit_stops_a_run_where_nothing_completes(build_optimizer, recorded):
+    tool = recorded(always_down)
+    optimizer, _ = build_optimizer(LINE_SCHEMA, {"T": tool}, MINIMIZE_F)
+
+    with pytest.raises(OptimizationExecutionError, match="No trial") as caught:
+        optimizer.optimize(n_steps=5, n_init=5, max_consecutive_failures=3)
+
+    partial = caught.value.partial_result
+    assert partial["stop_reason"] == "consecutive_failures"
+    assert len(tool.calls) == 3
+    assert [entry["status"] for entry in partial["history"]] == ["failed"] * 3
+    assert partial["best_parameters"] is None
+
+
 def test_infeasible_problem_is_flagged(build_optimizer, recorded):
     schema = StudySchema(
         variables=[
@@ -111,3 +122,7 @@ def test_infeasible_problem_is_flagged(build_optimizer, recorded):
     result = optimizer.optimize(n_steps=2, n_init=2)
 
     assert result["feasible"] is False
+    assert result["constraints"]["g"]["satisfied"] is False
+    assert result["constraints"]["g"]["margin"] < 0
+    assert result["best_parameters"] is not None
+    assert not any(entry["feasible"] for entry in result["history"])

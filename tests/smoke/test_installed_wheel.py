@@ -45,4 +45,5 @@ def test_installed_wheel_runs_a_real_optimization(tmp_path, monkeypatch) -> None
     result = optimizer.optimize(n_steps=6, n_init=3)
 
     assert result["stop_reason"] == "budget"
-    assert result["evaluations"]["completed"] == 9
+    assert result["evaluations"] == {"x0": 0, "init": 3, "bo": 6, "failed": 0}
+    assert len(result["history"]) == 9

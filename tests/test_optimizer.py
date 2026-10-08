@@ -711,7 +711,7 @@ class TestBayesianOptimizer(OptimizerTestCase):
 
     def test_a_seeded_ax_multi_objective_run_with_bonsai(self):
         objectives = [
-            ObjectiveSpec(name="f_xy"),
+            ObjectiveSpec(name="f_xy", threshold=1000.0),
             ObjectiveSpec(name="g_xy", minimize=False, threshold=-1.0),
         ]
 

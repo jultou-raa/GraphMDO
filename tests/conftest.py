@@ -27,6 +27,15 @@ def pytest_runtest_makereport(item, call):
 
 
 @pytest.fixture(autouse=True)
+def close_matplotlib_figures():
+    """Close the figures GEMSEO's post-processing leaves open after a run."""
+    yield
+    import matplotlib.pyplot as plt
+
+    plt.close("all")
+
+
+@pytest.fixture(autouse=True)
 def remove_created_directories_on_pass(request):
     """Remove directories created during the test if the test passes.
 

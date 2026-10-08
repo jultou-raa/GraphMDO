@@ -9,7 +9,14 @@ Choice and integer values reach tools exactly as declared in the graph.
 import pytest
 
 from mdo_framework.optimization.optimizer import BayesianOptimizer
-from mdo_framework.schema import ChoiceVar, RangeVar, StateVar, StudySchema, ToolSpec
+from mdo_framework.schema import (
+    ChoiceVar,
+    ObjectiveSpec,
+    RangeVar,
+    StateVar,
+    StudySchema,
+    ToolSpec,
+)
 
 pytestmark = pytest.mark.e2e
 
@@ -86,12 +93,12 @@ def test_choice_values_round_trip(build_optimizer, recorded, choices):
 
 def test_remote_discipline_delivers_declared_numeric_choices():
     service = RecordingExecutionService()
-    parameters = [
-        {"name": "c", "type": "choice", "values": [1, 2, 3], "value_type": "int"},
-        {"name": "z", "type": "range", "bounds": [0.0, 1.0], "value_type": "float"},
+    design_variables = [
+        ChoiceVar(name="c", choices=[1, 2, 3]),
+        RangeVar(name="z", lower=0.0, upper=1.0),
     ]
     result = BayesianOptimizer(
-        service, parameters, [{"name": "f", "minimize": True}]
+        service, design_variables, [ObjectiveSpec(name="f")]
     ).optimize(n_steps=4, n_init=4)
 
     received_c = [p["c"] for p in service.received]

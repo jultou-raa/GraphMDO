@@ -4,13 +4,12 @@ License, v. 2.0. If a copy of the MPL was not distributed with this
 file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 Real Ax/GEMSEO tests for the optimization budget contract:
-total evaluations = 1 (x0) + n_init (Sobol) + n_steps (BoTorch).
+total evaluations = n_init (Sobol) + n_steps (BoTorch), plus the start point x0
+when it is evaluated.
 """
 
 import pytest
 
-from mdo_framework.optimization import ax_algo_lib
-from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
 from mdo_framework.optimization.optimizer import OptimizationConfigurationError
 from mdo_framework.schema import ChoiceVar, RangeVar, StateVar, StudySchema, ToolSpec
 
@@ -32,49 +31,65 @@ DISCRETE_SCHEMA = StudySchema(
 MINIMIZE_F_XY = [{"name": "f_xy", "minimize": True}]
 
 
-@pytest.fixture
-def stop_messages(monkeypatch):
-    messages = []
-    real_run = AxOptimizationLibrary._run
-
-    def spy(self, problem):
-        result = real_run(self, problem)
-        messages.append(result[0])
-        return result
-
-    monkeypatch.setattr(AxOptimizationLibrary, "_run", spy)
-    return messages
-
-
-@pytest.mark.parametrize(("n_init", "n_steps"), [(5, 5), (2, 3), (3, 4)])
+@pytest.mark.parametrize(
+    ("n_init", "n_steps", "evaluate_x0"), [(5, 5, True), (2, 3, False), (3, 4, None)]
+)
 def test_n_steps_counts_bo_iterations(
-    build_optimizer, ax_recorder, stop_messages, n_init, n_steps
+    build_optimizer, recorded, ax_recorder, n_init, n_steps, evaluate_x0
 ):
-    calls = []
-
-    def paraboloid(x, y):
-        calls.append((x, y))
-        return {"f_xy": (x - 3) ** 2 + x * y + (y + 4) ** 2 - 3, "c_xy": x - y}
-
+    tool = recorded(
+        lambda x, y: {"f_xy": (x - 3) ** 2 + x * y + (y + 4) ** 2 - 3, "c_xy": x - y}
+    )
     optimizer, _ = build_optimizer(
         PARABOLOID_SCHEMA,
-        {"Paraboloid": paraboloid},
+        {"Paraboloid": tool},
         MINIMIZE_F_XY,
         [{"name": "c_xy", "op": "<=", "bound": 0.0}],
     )
-    optimizer.optimize(n_steps=n_steps, n_init=n_init)
+    result = optimizer.optimize(n_steps=n_steps, n_init=n_init, evaluate_x0=evaluate_x0)
 
-    assert len(calls) == 1 + n_init + n_steps
-    assert ax_recorder.trial_kinds() == {
-        ("x0", "COMPLETED"): 1,
+    x0 = 1 if evaluate_x0 else 0
+    assert len(tool.calls) == x0 + n_init + n_steps
+    assert result["evaluations"] == {
+        "x0": x0,
+        "init": n_init,
+        "bo": n_steps,
+        "failed": 0,
+    }
+    expected_kinds = {
         ("GenerationStep_0_Sobol", "COMPLETED"): n_init,
         ("GenerationStep_1_BoTorch", "COMPLETED"): n_steps,
     }
-    assert stop_messages == [ax_algo_lib.BUDGET_REACHED_MESSAGE]
+    if x0:
+        expected_kinds[("x0", "COMPLETED")] = 1
+    assert ax_recorder.trial_kinds() == expected_kinds
+    assert result["stop_reason"] == "budget"
+
+
+def test_declared_initial_values_enable_the_start_point(build_optimizer, recorded):
+    schema = StudySchema(
+        variables=[
+            RangeVar(name="x", lower=-10.0, upper=10.0, initial=2.0),
+            RangeVar(name="y", lower=-10.0, upper=10.0, initial=-3.0),
+            StateVar(name="f_xy"),
+            StateVar(name="c_xy"),
+        ],
+        tools=[
+            ToolSpec(name="Paraboloid", inputs=["x", "y"], outputs=["f_xy", "c_xy"])
+        ],
+    )
+    tool = recorded(lambda x, y: {"f_xy": x**2 + y**2, "c_xy": x - y})
+    optimizer, _ = build_optimizer(schema, {"Paraboloid": tool}, MINIMIZE_F_XY)
+
+    result = optimizer.optimize(n_steps=2, n_init=2)
+
+    assert tool.calls[0] == {"x": 2.0, "y": -3.0}
+    assert len(tool.calls) == 1 + 2 + 2
+    assert result["history"][0]["phase"] == "x0"
 
 
 def test_exhausted_discrete_space_terminates_and_reports_why(
-    build_optimizer, ax_recorder, stop_messages
+    build_optimizer, ax_recorder
 ):
     calls = []
 
@@ -90,8 +105,7 @@ def test_exhausted_discrete_space_terminates_and_reports_why(
     assert set(calls) <= {"a", "b", "c"}
     assert len(calls) == len(set(calls))
     assert result["best_parameters"] == {"m": "b"}
-    assert len(stop_messages) == 1
-    assert stop_messages[0].startswith(ax_algo_lib.STALLED_MESSAGE_PREFIX)
+    assert result["stop_reason"] == "search_space_exhausted"
     statuses = {status for _, status in ax_recorder.trial_kinds()}
     assert statuses == {"COMPLETED"}
 
