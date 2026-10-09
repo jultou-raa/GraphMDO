@@ -844,7 +844,7 @@ class TestRemoteDiscipline(unittest.TestCase):
         self.assertEqual(discipline.default_input_data["x"][0], 0.0)
 
 
-def _line_explorer(tools, *, coupled=False):
+def _line_explorer(tools, *, coupled=False, algorithm="Ax_Bayesian"):
     """BayesianOptimizer over x in [0, 1] minimizing f, built from real GEMSEO."""
     from mdo_framework.core.topology import TopologicalAnalyzer
     from mdo_framework.core.translator import GraphProblemBuilder
@@ -864,6 +864,7 @@ def _line_explorer(tools, *, coupled=False):
         evaluator,
         resolved.design_variables,
         [ObjectiveSpec(name="f")],
+        algorithm=algorithm,
     )
 
 
@@ -892,6 +893,45 @@ def test_explore_keeps_the_samples_that_evaluate(tmp_path, monkeypatch):
     inputs = history.get_view(variable_names="x").to_numpy().ravel()
     assert 0 < len(inputs) < 8
     assert (inputs <= 0.5).all()
+
+
+def test_explore_keeps_a_remote_transport_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    transport = httpx.MockTransport(lambda request: httpx.Response(503))
+    client = httpx.Client(base_url="http://exec", transport=transport)
+    optimizer = BayesianOptimizer(
+        RemoteEvaluator("http://exec", client=client),
+        [RangeVar(name="x", lower=0.0, upper=1.0)],
+        [ObjectiveSpec(name="f")],
+    )
+
+    with pytest.raises(RemoteEvaluationTransportError, match="HTTP 503"):
+        optimizer.explore(n_samples=2)
+
+
+def test_a_run_ended_before_it_started_reports_that_it_did_not_run(
+    tmp_path, monkeypatch
+):
+    from gemseo.algos.stop_criteria import MaxTimeReached
+
+    from mdo_framework.optimization import optimizer as optimizer_module
+    from mdo_framework.optimization.random_search import RandomSearchLibrary
+
+    class StoppedLibrary(RandomSearchLibrary):
+        """GEMSEO swallows a termination raised before the run starts."""
+
+        def _pre_run(self, problem):
+            super()._pre_run(problem)
+            raise MaxTimeReached
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(optimizer_module.ALGORITHMS, "BO_RandomSearch", StoppedLibrary)
+    optimizer = _line_explorer({"T": lambda x: x}, algorithm="BO_RandomSearch")
+
+    with pytest.raises(OptimizationExecutionError, match="did not run") as raised:
+        optimizer.optimize(n_steps=1, n_init=1)
+
+    assert raised.value.partial_result is None
 
 
 def test_failure_recorder_never_caches_a_non_deterministic_tool():

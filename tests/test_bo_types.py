@@ -159,6 +159,20 @@ class TestMetricBindingMargin:
         assert not _constraint().satisfied(float("nan"))
 
     @pytest.mark.parametrize(
+        "missing", [{"op": None, "bound": 1.0}, {"op": "<=", "bound": None}]
+    )
+    def test_a_constraint_needs_an_operator_and_a_bound(self, missing):
+        with pytest.raises(ValueError, match="needs an operator and a bound"):
+            MetricBinding(
+                name="c",
+                role="constraint",
+                gemseo_name="c",
+                index=0,
+                sign=1.0,
+                **missing,
+            )
+
+    @pytest.mark.parametrize(
         ("op", "bound", "tolerance"),
         [("<=", 0.1, 0.2), (">=", 0.1, 0.2), ("<=", 0.7, 0.1), (">=", -0.3, 0.6)],
     )

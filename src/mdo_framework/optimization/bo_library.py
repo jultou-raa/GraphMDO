@@ -371,7 +371,9 @@ class BaseBOLibrary(BaseOptimizationLibrary):
         stop: StopReason | None = None
         try:
             outcome = self._evaluate(candidate)
-        except MaxIterReachedException:
+        except MaxIterReachedException:  # pragma: no cover
+            # Safety net: the loop never asks for more than the remaining
+            # budget, so GEMSEO's own budget signal is not expected here.
             stop = "budget"
         except MaxTimeReached:
             stop = "max_time"

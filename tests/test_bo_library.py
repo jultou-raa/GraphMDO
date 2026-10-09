@@ -744,6 +744,19 @@ def test_a_finite_space_stops_once_every_point_is_evaluated_without_asking():
     assert library.asked == [1, 1, 1]
 
 
+def test_a_batch_larger_than_the_unseen_points_returns_what_is_left():
+    study = make_study(
+        lambda x: {"f": float(len(str(x)))},
+        [ChoiceVar(name="x", choices=["a", "b", "c"])],
+    )
+
+    result = study.run(n_init=2, n_steps=5, batch_size=4, seed=1)
+
+    assert result.stop_reason == "search_space_exhausted"
+    assert sorted(study.points("x")) == ["a", "b", "c"]
+    assert [r.outcome.status for r in result.records] == ["completed"] * 3
+
+
 def test_a_log_range_is_sampled_on_a_log_scale():
     variable = RangeVar(name="x", lower=1e-3, upper=1e3, scaling="log")
     study = make_study(lambda x: {"f": x}, [variable])

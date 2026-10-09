@@ -126,6 +126,10 @@ class MetricBinding:
     tolerance: float = 0.0
     scale: float = 1.0
 
+    def __post_init__(self) -> None:
+        if self.role == "constraint" and (self.op is None or self.bound is None):
+            raise ValueError(f"constraint {self.name!r} needs an operator and a bound")
+
     def user_value(self, output_data: Mapping[str, Any]) -> float:
         """Return the raw user value from the output data of GEMSEO.
 
@@ -150,7 +154,7 @@ class MetricBinding:
         Raises:
             ValueError: If the binding is not a constraint.
         """
-        if self.role != "constraint" or self.op is None or self.bound is None:
+        if self.role != "constraint":
             raise ValueError(f"{self.name!r} is not a constraint, it has no margin")
         if self.op == "<=":
             return self.bound - value
@@ -170,8 +174,6 @@ class MetricBinding:
         """
         if self.role != "constraint":
             return True
-        if self.op is None or self.bound is None:
-            raise ValueError(f"constraint {self.name!r} has no operator or bound")
         limit = _folded_bound(self.op, self.bound, self.tolerance)
         if self.op == "<=":
             return value <= limit
