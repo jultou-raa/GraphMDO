@@ -647,6 +647,24 @@ def _partial_initial_warnings(
     ]
 
 
+def _constraint_scale_warnings(
+    constraints: Sequence[ConstraintSpec],
+) -> list[Finding]:
+    return [
+        Finding(
+            code="CONSTRAINT_NO_SCALE",
+            message=(
+                f"constraint '{constraint.name}' has no scale; set the typical "
+                "magnitude of the variable so violations of different "
+                "constraints can be compared"
+            ),
+            names=(constraint.name,),
+        )
+        for constraint in constraints
+        if constraint.scale is None
+    ]
+
+
 def validate_study(
     schema: StudySchema,
     *,
@@ -688,5 +706,6 @@ def validate_study(
         *_unused_warnings(schema, walk, has_targets),
         *signature_warnings,
         *_partial_initial_warnings(walk.design_variables),
+        *_constraint_scale_warnings(constraints),
     ]
     return ValidationReport(errors=tuple(errors), warnings=tuple(warnings))

@@ -77,6 +77,8 @@ class RangeVar(_Strict):
         lower: Inclusive lower bound.
         upper: Inclusive upper bound, strictly above ``lower``.
         value_type: ``"int"`` for integral values, ``"float"`` otherwise.
+        scaling: ``"log"`` to search the range on a logarithmic scale, which
+            requires ``lower > 0``; ``"linear"`` otherwise.
         initial: Optional starting point within the bounds.
         units: Optional free-form unit label.
     """
@@ -86,6 +88,7 @@ class RangeVar(_Strict):
     lower: Finite
     upper: Finite
     value_type: Literal["float", "int"] = "float"
+    scaling: Literal["linear", "log"] = "linear"
     initial: Finite | None = None
     units: str | None = None
 
@@ -95,6 +98,10 @@ class RangeVar(_Strict):
         if not self.lower < self.upper:
             violations.append(
                 f"lower ({self.lower}) must be strictly below upper ({self.upper})"
+            )
+        if self.scaling == "log" and not self.lower > 0:
+            violations.append(
+                f"lower ({self.lower}) must be positive when scaling is 'log'"
             )
         if self.value_type == "int":
             for label, value in (
@@ -121,6 +128,8 @@ class ChoiceVar(_Strict):
         kind: Discriminator, always ``"choice"``.
         name: Variable name.
         choices: At least two unique values sharing one Python type.
+        ordered: ``True`` if the order of ``choices`` is meaningful, ``False``
+            if they are unordered categories, ``None`` for the backend default.
         initial: Optional starting value, one of ``choices``.
         units: Optional free-form unit label.
     """
@@ -128,6 +137,7 @@ class ChoiceVar(_Strict):
     kind: Literal["choice"] = "choice"
     name: Name
     choices: list[Scalar]
+    ordered: StrictBool | None = None
     initial: Scalar | None = None
     units: str | None = None
 
@@ -309,11 +319,17 @@ class ConstraintSpec(_Strict):
         name: Name of the produced variable to constrain.
         bound: Constraint bound.
         op: ``"<="`` for an upper bound, ``">="`` for a lower bound.
+        tolerance: Violation of the bound, in the units of the variable, that
+            still counts as satisfied.
+        scale: Typical magnitude of the variable, used to compare violations of
+            different constraints. ``None`` when unknown.
     """
 
     name: Name
     bound: Finite
     op: Literal["<=", ">="] = "<="
+    tolerance: Annotated[Finite, Field(ge=0)] = 0.0
+    scale: Annotated[Finite, Field(gt=0)] | None = None
 
 
 class Finding(_Strict):

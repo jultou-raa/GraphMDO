@@ -14,7 +14,7 @@ dependencies = [
     "botorch>=0.17.2,<0.17.3",
     "falkordb>=1.6.0",
     "fastapi>=0.133.1",
-    "gemseo>=6.3.1 ; python_full_version < '3.14'",
+    "gemseo>=6.3.1,<6.4 ; python_full_version < '3.14'",
     "httpx>=0.28.1",
     "lxml>=6.0.2",
     "networkx<3.5",
@@ -55,6 +55,3 @@ omit = ["test/*", "tests/*", "**/__init__.py", "main.py"]
 
 [tool.pytest.ini_options]
 markers = ["e2e: real Ax + GEMSEO run, no mocks"]
-
-[tool.ruff.lint.per-file-ignores]
-"src/mdo_framework/optimization/ax_algo_lib.py" = ["E402"]  # avoid futur warning

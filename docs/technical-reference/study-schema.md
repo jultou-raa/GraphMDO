@@ -51,6 +51,7 @@ The same study as JSON (`schema.model_dump(mode="json")`, which is also what `GE
       "lower": 0.5,
       "upper": 5.0,
       "value_type": "float",
+      "scaling": "linear",
       "initial": null,
       "units": "mm"
     },
@@ -58,6 +59,7 @@ The same study as JSON (`schema.model_dump(mode="json")`, which is also what `GE
       "kind": "choice",
       "name": "n_ribs",
       "choices": [2, 3, 4],
+      "ordered": null,
       "initial": null,
       "units": null
     },
@@ -113,6 +115,7 @@ Design variable bounded by `[lower, upper]`.
 | `lower` | `float` (finite) | required | Inclusive lower bound, strictly below `upper`. |
 | `upper` | `float` (finite) | required | Inclusive upper bound, strictly above `lower`. |
 | `value_type` | `"float"` or `"int"` | `"float"` | With `"int"`, `lower`, `upper` and `initial` (when given) must be integral. |
+| `scaling` | `"linear"` or `"log"` | `"linear"` | With `"log"`, the range is searched on a logarithmic scale and `lower` must be positive. |
 | `initial` | `float` (finite) or `null` | `null` | Optional starting point. When given, it lies within `[lower, upper]`. |
 | `units` | `str` or `null` | `null` | None. |
 
@@ -125,6 +128,7 @@ Categorical design variable.
 | `kind` | `"choice"` | `"choice"` | Discriminator. |
 | `name` | `Name` | required | |
 | `choices` | list of `Scalar` | required | At least 2 values, all of the same type (`1` and `1.0` are different types), no duplicates. |
+| `ordered` | `bool` or `null` | `null` | `true` if the order of `choices` is meaningful, `false` for unordered categories, `null` for the backend default. |
 | `initial` | `Scalar` or `null` | `null` | Optional starting value. When given, it equals one of `choices` and has the same type. |
 | `units` | `str` or `null` | `null` | None. |
 
@@ -154,7 +158,7 @@ Output of a tool, or a coupling variable.
 | `initial_guess` | `float` (finite), non-empty list of `float` (finite), or `null` | `null` | A list must contain at least one value. Seeds the multidisciplinary analysis of a coupling. |
 | `units` | `str` or `null` | `null` | None. |
 
-`initial` is the declared starting value of a design variable. It is checked by the preflight (bounds, and `INITIAL_OUT_OF_SPACE` against linear parameter constraints). The optimizer does not use it yet and starts from the centre of the design space.
+`initial` is the declared starting value of a design variable. It is checked by the preflight (bounds, and `INITIAL_OUT_OF_SPACE` against linear parameter constraints). The optimizer starts from the declared `initial` values, from the centre of the bounds for the variables without one, or, when no variable declares one and that centre violates a parameter constraint, from the Chebyshev centre of the constraints. This start point x0 is evaluated when `evaluate_x0=True`, or by default when every design variable declares an `initial`; it then adds one evaluation to the `n_init + n_steps` budget (see [Architecture](architecture.md#bayesian-optimization)).
 
 ### Roles
 
@@ -239,7 +243,7 @@ report = validate_study(
 print(report.valid)  # True
 ```
 
--   `ObjectiveSpec(name, minimize=True, threshold=None)` names an output to optimize. `constraints=[ConstraintSpec(name, bound, op="<=")]` names outputs to bound (`op` is `"<="` or `">="`). Thresholds and bounds are finite.
+-   `ObjectiveSpec(name, minimize=True, threshold=None)` names an output to optimize. `constraints=[ConstraintSpec(name, bound, op="<=", tolerance=0.0, scale=None)]` names outputs to bound (`op` is `"<="` or `">="`). Thresholds and bounds are finite. `tolerance` (finite, `>= 0`) is the violation of the bound, in the units of the output, that still counts as satisfied. `scale` (finite, `> 0`, or `None`) is the typical magnitude of the output, used to compare violations of different constraints; without it the warning `CONSTRAINT_NO_SCALE` is reported.
 -   `parameter_constraints` are linear inequalities over range design variables, written `<lhs> <= <rhs>` or `<lhs> >= <rhs>`. Each side is a sum of numbers, names and `<number>*<name>` terms joined by `+` or `-`, for example `x + 2*y <= 8`.
 -   `registry` maps tool names to callables. Without it the registry checks are skipped; the Optimization Service has no registry, the Execution Service does.
 
@@ -295,6 +299,7 @@ Two things that look similar are not findings of this table:
 | `UNUSED_VARIABLE` | No tool uses the variable. |
 | `UNUSED_TOOL` | The tool is not needed by the objectives and constraints. Only reported when they resolve. |
 | `PARTIAL_INITIAL` | Some design variables have an `initial` and others do not. |
+| `CONSTRAINT_NO_SCALE` | A constraint has no `scale`. `names` holds the constraint's output. |
 | `SIGNATURE_UNCHECKED` | A registered function accepts `**kwargs` or cannot be inspected. |
 | `DEFAULTED_ARG_UNWIRED` | A function argument has a default and is not fed by a graph input (after the `arg_map` renames); the default is used. |
 

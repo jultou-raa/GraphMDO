@@ -75,12 +75,6 @@ class TopologicalAnalyzer:
             tools=walk.tools,
         )
 
-    def extract_parameters(
-        self, design_variables: Sequence[DesignVariable]
-    ) -> list[ParameterDefinition]:
-        """Format design variables into optimizer-ready parameter definitions."""
-        return [to_parameter_definition(variable) for variable in design_variables]
-
 
 def to_parameter_definition(variable: DesignVariable) -> ParameterDefinition:
     """Converts a design variable into a parameter definition.

@@ -15,7 +15,6 @@ from pydantic import ValidationError
 import services.execution.main as execution
 from mdo_framework.core.components import ToolComponent, to_tool_value
 from mdo_framework.core.evaluators import LocalEvaluator
-from mdo_framework.core.topology import TopologicalAnalyzer
 from mdo_framework.core.translator import GraphProblemBuilder
 from mdo_framework.optimization.parameter_codec import ParameterValueError
 from mdo_framework.schema import (
@@ -52,12 +51,9 @@ class RecordingTool:
 
 
 def build_local(tool):
-    analyzer = TopologicalAnalyzer(GEARBOX_SCHEMA)
-    resolved = analyzer.resolve_dependencies(["f"])
-    parameters = analyzer.extract_parameters(resolved.design_variables)
     builder = GraphProblemBuilder(GEARBOX_SCHEMA)
     mda = builder.build_problem({"T": tool})
-    return GEARBOX_SCHEMA, parameters, LocalEvaluator(mda, builder.variable_specs)
+    return GEARBOX_SCHEMA, LocalEvaluator(mda, builder.variable_specs)
 
 
 def test_to_tool_value_decodes_specs():
@@ -112,7 +108,7 @@ def test_choice_initial_must_be_declared_and_is_not_a_default():
 
 def test_local_and_execution_service_pass_identical_tool_inputs(monkeypatch):
     local_tool = RecordingTool()
-    schema, _, evaluator = build_local(local_tool)
+    schema, evaluator = build_local(local_tool)
     remote_tool = RecordingTool()
     registry = {"T": remote_tool}
     monkeypatch.setattr(execution, "TOOL_REGISTRY", registry)

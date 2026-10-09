@@ -444,7 +444,7 @@ def test_valid_study_has_no_finding() -> None:
     report = validate_study(
         schema,
         objectives=_minimize(),
-        constraints=[ConstraintSpec(name="f", bound=3.0)],
+        constraints=[ConstraintSpec(name="f", bound=3.0, scale=3.0)],
         parameter_constraints=["x + y <= 3"],
         registry={"paraboloid": _paraboloid_fn},
     )
@@ -1060,3 +1060,56 @@ def test_all_or_no_initial_values_is_clean(with_initial: bool) -> None:
     report = _validate(schema)
 
     assert "PARTIAL_INITIAL" not in _codes(report.warnings)
+
+
+def test_constraint_without_a_scale_is_a_warning() -> None:
+    report = _validate(
+        _paraboloid(),
+        constraints=[ConstraintSpec(name="f", bound=3.0)],
+    )
+
+    warning = _only(report.warnings, "CONSTRAINT_NO_SCALE")
+    assert warning.names == ("f",)
+    assert "scale" in warning.message
+    assert report.valid
+
+
+def test_every_constraint_without_a_scale_gets_its_own_warning() -> None:
+    schema = StudySchema(
+        variables=[
+            _range("x"),
+            StateVar(name="f"),
+            StateVar(name="g1"),
+            StateVar(name="g2"),
+        ],
+        tools=[_tool("t", ["x"], ["f", "g1", "g2"])],
+    )
+
+    report = _validate(
+        schema,
+        constraints=[
+            ConstraintSpec(name="g1", bound=1.0),
+            ConstraintSpec(name="g2", bound=1.0, scale=10.0),
+            ConstraintSpec(name="f", bound=1.0, op=">="),
+        ],
+    )
+
+    unscaled = [
+        finding.names
+        for finding in report.warnings
+        if finding.code == "CONSTRAINT_NO_SCALE"
+    ]
+    assert unscaled == [("g1",), ("f",)]
+
+
+def test_constraints_with_a_scale_are_clean() -> None:
+    report = _validate(
+        _paraboloid(),
+        constraints=[ConstraintSpec(name="f", bound=3.0, scale=3.0)],
+    )
+
+    assert "CONSTRAINT_NO_SCALE" not in _codes(report.warnings)
+
+
+def test_no_constraint_means_no_scale_warning() -> None:
+    assert "CONSTRAINT_NO_SCALE" not in _codes(_validate(_paraboloid()).warnings)

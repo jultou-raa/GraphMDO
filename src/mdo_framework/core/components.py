@@ -13,7 +13,11 @@ from gemseo.core.discipline.base_discipline import CacheType
 from gemseo.typing import JacobianData, StrKeyMapping
 from gemseo.utils.constants import READ_ONLY_EMPTY_DICT
 
-from mdo_framework.core.errors import ToolExecutionError, ToolOutputError
+from mdo_framework.core.errors import (
+    InfeasiblePointError,
+    ToolExecutionError,
+    ToolOutputError,
+)
 from mdo_framework.optimization.parameter_codec import (
     ParameterDefinition,
     index_to_value,
@@ -138,6 +142,9 @@ class ToolComponent(Discipline):
             result = self.func(**kwargs)
         except MemoryError:
             raise
+        except InfeasiblePointError as exc:
+            # The tool's own verdict on the point; only the tool name is added.
+            raise InfeasiblePointError(exc.message, tool=self.name) from exc
         except Exception as exc:
             raise ToolExecutionError(
                 f"{type(exc).__name__}: {exc}", tool=self.name

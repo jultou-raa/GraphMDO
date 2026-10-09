@@ -62,12 +62,11 @@ class TestTopologicalAnalyzer(unittest.TestCase):
             ),
         )
 
-    def test_extract_parameters(self):
-        analyzer = TopologicalAnalyzer(self.schema)
-        resolved = analyzer.resolve_dependencies(["out1"])
+    def test_resolved_design_variables_convert_to_parameter_definitions(self):
+        resolved = TopologicalAnalyzer(self.schema).resolve_dependencies(["out1"])
 
         self.assertEqual(
-            analyzer.extract_parameters(resolved.design_variables),
+            [to_parameter_definition(v) for v in resolved.design_variables],
             [
                 {
                     "name": "x",
@@ -130,10 +129,6 @@ class TestFixedParametersAreNotDesignVariables(unittest.TestCase):
 
         self.assertEqual(resolved.design_variables, (speed,))
         self.assertEqual(resolved.fixed_parameters, (rho, gravity))
-        self.assertEqual(
-            [p["name"] for p in analyzer.extract_parameters(resolved.design_variables)],
-            ["v"],
-        )
 
     def test_only_fixed_inputs_leave_no_design_variable(self):
         schema = StudySchema(
@@ -164,10 +159,6 @@ class TestDesignVariableOrder(unittest.TestCase):
 
         self.assertEqual(
             [variable.name for variable in resolved.design_variables],
-            ["zeta", "mid", "alpha"],
-        )
-        self.assertEqual(
-            [p["name"] for p in analyzer.extract_parameters(resolved.design_variables)],
             ["zeta", "mid", "alpha"],
         )
 

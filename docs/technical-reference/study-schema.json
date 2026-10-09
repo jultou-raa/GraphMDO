@@ -2,7 +2,7 @@
   "$defs": {
     "ChoiceVar": {
       "additionalProperties": false,
-      "description": "Categorical design variable taking one of several homogeneous values.\n\nAttributes:\n    kind: Discriminator, always ``\"choice\"``.\n    name: Variable name.\n    choices: At least two unique values sharing one Python type.\n    initial: Optional starting value, one of ``choices``.\n    units: Optional free-form unit label.",
+      "description": "Categorical design variable taking one of several homogeneous values.\n\nAttributes:\n    kind: Discriminator, always ``\"choice\"``.\n    name: Variable name.\n    choices: At least two unique values sharing one Python type.\n    ordered: ``True`` if the order of ``choices`` is meaningful, ``False``\n        if they are unordered categories, ``None`` for the backend default.\n    initial: Optional starting value, one of ``choices``.\n    units: Optional free-form unit label.",
       "properties": {
         "choices": {
           "items": {
@@ -56,6 +56,18 @@
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "title": "Name",
           "type": "string"
+        },
+        "ordered": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ordered"
         },
         "units": {
           "anyOf": [
@@ -132,7 +144,7 @@
     },
     "RangeVar": {
       "additionalProperties": false,
-      "description": "Continuous or integer design variable bounded by ``[lower, upper]``.\n\nAttributes:\n    kind: Discriminator, always ``\"range\"``.\n    name: Variable name.\n    lower: Inclusive lower bound.\n    upper: Inclusive upper bound, strictly above ``lower``.\n    value_type: ``\"int\"`` for integral values, ``\"float\"`` otherwise.\n    initial: Optional starting point within the bounds.\n    units: Optional free-form unit label.",
+      "description": "Continuous or integer design variable bounded by ``[lower, upper]``.\n\nAttributes:\n    kind: Discriminator, always ``\"range\"``.\n    name: Variable name.\n    lower: Inclusive lower bound.\n    upper: Inclusive upper bound, strictly above ``lower``.\n    value_type: ``\"int\"`` for integral values, ``\"float\"`` otherwise.\n    scaling: ``\"log\"`` to search the range on a logarithmic scale, which\n        requires ``lower > 0``; ``\"linear\"`` otherwise.\n    initial: Optional starting point within the bounds.\n    units: Optional free-form unit label.",
       "properties": {
         "initial": {
           "anyOf": [
@@ -160,6 +172,15 @@
           "maxLength": 50,
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
           "title": "Name",
+          "type": "string"
+        },
+        "scaling": {
+          "default": "linear",
+          "enum": [
+            "linear",
+            "log"
+          ],
+          "title": "Scaling",
           "type": "string"
         },
         "units": {

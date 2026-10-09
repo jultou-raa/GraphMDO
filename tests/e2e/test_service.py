@@ -15,19 +15,8 @@ from fastapi.testclient import TestClient
 
 import services.execution.main as execution
 import services.optimization.main as optimization
-from mdo_framework.optimization.ax_algo_lib import AxOptimizationLibrary
-from mdo_framework.optimization.optimizer import (
-    AX_OBJECTIVE_KEYS,
-    BayesianOptimizer,
-    OptimizationConfigurationError,
-)
-from mdo_framework.schema import (
-    ObjectiveSpec,
-    RangeVar,
-    StateVar,
-    StudySchema,
-    ToolSpec,
-)
+from mdo_framework.optimization.optimizer import OptimizationConfigurationError
+from mdo_framework.schema import RangeVar, StateVar, StudySchema, ToolSpec
 
 pytestmark = pytest.mark.e2e
 
@@ -68,26 +57,91 @@ def services(monkeypatch):
         yield optimization_client
 
 
-def test_optimize_service_end_to_end(services, monkeypatch):
-    forwarded = []
-    real_execute = AxOptimizationLibrary.execute
-
-    def spy(self, problem, **settings):
-        forwarded.extend(settings["ax_objectives"])
-        return real_execute(self, problem, **settings)
-
-    monkeypatch.setattr(AxOptimizationLibrary, "execute", spy)
+def test_optimize_service_end_to_end(services):
     response = services.post(
         "/optimize", json={**DOCUMENTED_PAYLOAD, "n_init": 2, "n_steps": 2}
     )
 
     assert response.status_code == 200, response.text
     body = response.json()
+    assert set(body) == {
+        "best_parameters",
+        "best_objectives",
+        "feasible",
+        "constraints",
+        "pareto_front",
+        "history",
+        "stop_reason",
+        "evaluations",
+    }
     assert "f_xy" in body["best_objectives"]
     assert set(body["best_parameters"]) == {"x", "y"}
-    assert body["history"]
-    assert forwarded == [{"name": "f_xy", "minimize": True}]
-    assert all(set(objective) <= AX_OBJECTIVE_KEYS for objective in forwarded)
+    assert body["feasible"] is True
+    assert body["pareto_front"] == []
+    assert body["stop_reason"] == "budget"
+    assert body["evaluations"] == {"x0": 0, "init": 2, "bo": 2, "failed": 0}
+    assert [entry["status"] for entry in body["history"]] == ["completed"] * 4
+
+
+def test_evaluate_x0_and_failure_limit_are_forwarded(services):
+    response = services.post(
+        "/optimize",
+        json={
+            **DOCUMENTED_PAYLOAD,
+            "n_init": 2,
+            "n_steps": 1,
+            "evaluate_x0": True,
+            "max_consecutive_failures": 2,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["history"][0]["phase"] == "x0"
+    assert body["history"][0]["parameters"] == {"x": 5.0, "y": 5.0}
+    assert body["evaluations"] == {"x0": 1, "init": 2, "bo": 1, "failed": 0}
+
+
+def test_multi_objective_request_forwards_thresholds(services, ax_recorder):
+    objectives = [
+        {"name": "f_xy", "minimize": True, "threshold": 1000.0},
+        {"name": "c_xy", "minimize": False, "threshold": -20.0},
+    ]
+    response = services.post(
+        "/optimize", json={"objectives": objectives, "n_init": 3, "n_steps": 2}
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["pareto_front"]
+    assert set(body["best_objectives"]) == {"f_xy", "c_xy"}
+    assert ax_recorder.objective_thresholds() == {"f_xy": 1000.0, "c_xy": -20.0}
+
+
+def test_failing_tool_aborts_with_the_partial_result(services):
+    def failing(x, y):
+        raise RuntimeError("solver diverged")
+
+    execution.app.state.problem_pool = execution.ProblemPool(
+        {"Paraboloid": failing}, size=1
+    )
+    response = services.post(
+        "/optimize",
+        json={
+            **DOCUMENTED_PAYLOAD,
+            "n_init": 3,
+            "n_steps": 3,
+            "max_consecutive_failures": 2,
+        },
+    )
+
+    assert response.status_code == 500, response.text
+    detail = response.json()["detail"]
+    assert "No trial completed" in detail["message"]
+    partial = detail["partial_result"]
+    assert partial["stop_reason"] == "consecutive_failures"
+    assert [entry["status"] for entry in partial["history"]] == ["failed", "failed"]
+    assert "solver diverged" in partial["history"][0]["reason"]
 
 
 @pytest.mark.parametrize(
@@ -99,21 +153,13 @@ def test_optimize_service_end_to_end(services, monkeypatch):
         ({**DOCUMENTED_PAYLOAD, "fidelity_parameter": "f1"}, "fidelity_parameter"),
         ({**DOCUMENTED_PAYLOAD, "n_steps": 0}, "n_steps"),
         ({**DOCUMENTED_PAYLOAD, "n_init": 0}, "n_init"),
+        ({**DOCUMENTED_PAYLOAD, "max_consecutive_failures": 0}, "max_consecutive"),
     ],
 )
 def test_unsupported_fields_are_rejected_with_422(services, payload, field):
     response = services.post("/optimize", json=payload)
     assert response.status_code == 422
     assert field in response.text
-
-
-def test_objective_threshold_is_forwarded():
-    objective = ObjectiveSpec(name="f", minimize=False, threshold=1.5)
-    assert optimization.objective_to_ax(objective) == {
-        "name": "f",
-        "minimize": False,
-        "threshold": 1.5,
-    }
 
 
 def test_validate_reports_a_valid_study(services):
@@ -155,15 +201,6 @@ def test_invalid_study_is_rejected_before_any_tool_runs(
     assert optimized.json()["detail"] == validated.json()
     assert code in [finding["code"] for finding in validated.json()["errors"]]
     assert calls == []
-
-
-def test_optimizer_rejects_unsupported_objective_keys():
-    with pytest.raises(OptimizationConfigurationError, match="fidelity"):
-        BayesianOptimizer(
-            evaluator=object(),
-            parameters=[{"name": "x", "type": "range", "bounds": [0.0, 1.0]}],
-            objectives=[{"name": "f", "minimize": True, "fidelity": None}],
-        )
 
 
 def test_configuration_error_from_constructor_maps_to_400(services, monkeypatch):

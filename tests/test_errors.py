@@ -8,6 +8,7 @@ import pytest
 
 from mdo_framework.core.errors import (
     EvaluationError,
+    InfeasiblePointError,
     MDANotConvergedError,
     ToolError,
     ToolExecutionError,
@@ -24,6 +25,7 @@ from mdo_framework.core.errors import (
         (ToolExecutionError, "TOOL_FAILED"),
         (ToolOutputError, "OUTPUT_INVALID"),
         (MDANotConvergedError, "MDA_NOT_CONVERGED"),
+        (InfeasiblePointError, "POINT_INFEASIBLE"),
     ],
 )
 def test_error_codes_are_stable(error_class, code):
@@ -65,6 +67,7 @@ def test_message_is_unchanged_without_a_tool():
         ToolExecutionError("RuntimeError: solver diverged", tool="T"),
         ToolOutputError("non-finite values for ['f']", tool="T"),
         MDANotConvergedError("residual 1e+00 > 1e-06 (couplings: y1, y2)"),
+        InfeasiblePointError("mesh cannot be generated", tool="Mesher"),
     ],
     ids=lambda error: type(error).__name__,
 )

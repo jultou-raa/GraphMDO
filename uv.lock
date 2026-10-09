@@ -772,7 +772,7 @@ requires-dist = [
     { name = "botorch", specifier = ">=0.17.2,<0.17.3" },
     { name = "falkordb", specifier = ">=1.6.0" },
     { name = "fastapi", specifier = ">=0.133.1" },
-    { name = "gemseo", marker = "python_full_version < '3.14'", specifier = ">=6.3.1" },
+    { name = "gemseo", marker = "python_full_version < '3.14'", specifier = ">=6.3.1,<6.4" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "lxml", specifier = ">=6.0.2" },
     { name = "networkx", specifier = "<3.5" },

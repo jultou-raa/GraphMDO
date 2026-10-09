@@ -21,7 +21,14 @@ from mdo_framework.core.topology import TopologicalAnalyzer
 from mdo_framework.core.translator import GraphProblemBuilder
 from mdo_framework.optimization import ax_algo_lib
 from mdo_framework.optimization.optimizer import BayesianOptimizer
-from mdo_framework.schema import RangeVar, StateVar, StudySchema, ToolSpec
+from mdo_framework.schema import (
+    ConstraintSpec,
+    ObjectiveSpec,
+    RangeVar,
+    StateVar,
+    StudySchema,
+    ToolSpec,
+)
 
 SEED = 0
 # The box centre x0 = (-3, 3) is far from the optimum.
@@ -62,8 +69,9 @@ class AxRecorder:
     def __init__(self) -> None:
         self.clients: list[Client] = []
 
-    def __call__(self) -> Client:
-        self.clients.append(Client(random_seed=SEED))
+    def __call__(self, random_seed: int | None = None) -> Client:
+        seed = SEED if random_seed is None else random_seed
+        self.clients.append(Client(random_seed=seed))
         return self.clients[-1]
 
     def trial_kinds(self, index: int = -1) -> Counter[tuple[str, str]]:
@@ -82,6 +90,11 @@ class AxRecorder:
         return sum(
             n for (_, trial_status), n in kinds.items() if trial_status == status
         )
+
+    def objective_thresholds(self, index: int = -1) -> dict[str, float]:
+        """The objective thresholds of the experiment, by metric name."""
+        config = self.clients[index]._experiment.optimization_config
+        return {t.metric.name: t.bound for t in config.objective_thresholds}
 
 
 @pytest.fixture(autouse=True)
@@ -114,10 +127,12 @@ def build_optimizer() -> Callable[..., tuple[BayesianOptimizer, LocalEvaluator]]
     def build(
         schema: StudySchema,
         registry: dict[str, Callable[..., Any]],
-        objectives: list[dict[str, Any]],
-        constraints: list[dict[str, Any]] | None = None,
+        objectives: list[dict[str, Any] | ObjectiveSpec],
+        constraints: list[dict[str, Any] | ConstraintSpec] | None = None,
     ) -> tuple[BayesianOptimizer, LocalEvaluator]:
-        outputs = [output["name"] for output in objectives + (constraints or [])]
+        objective_specs = [ObjectiveSpec.model_validate(o) for o in objectives]
+        constraint_specs = [ConstraintSpec.model_validate(c) for c in constraints or []]
+        outputs = [spec.name for spec in objective_specs + constraint_specs]
         analyzer = TopologicalAnalyzer(schema)
         resolved = analyzer.resolve_dependencies(outputs)
         builder = GraphProblemBuilder(schema)
@@ -126,9 +141,9 @@ def build_optimizer() -> Callable[..., tuple[BayesianOptimizer, LocalEvaluator]]
         )
         optimizer = BayesianOptimizer(
             evaluator,
-            analyzer.extract_parameters(resolved.design_variables),
-            objectives,
-            constraints,
+            resolved.design_variables,
+            objective_specs,
+            constraint_specs,
         )
         return optimizer, evaluator
 
